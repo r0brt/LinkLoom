@@ -1,0 +1,82 @@
+import Foundation
+import Testing
+@testable import LinkLoomCore
+
+@Suite("File enumeration")
+struct FileEnumeratorTests {
+    @Test func returnsOnlyVisibleSupportedFilesInRelativePathOrder() throws {
+        let directory = try TemporaryDirectory()
+        try directory.write("a.pdf", bytes: Data("pdf".utf8))
+        try directory.write("b.JPG", bytes: Data("jpeg".utf8))
+        try directory.write("c.png", bytes: Data("png".utf8))
+        try directory.write("d.heic", bytes: Data("heic".utf8))
+        try directory.write("e.JPEG", bytes: Data("jpeg alias".utf8))
+        try directory.write(".hidden.pdf", bytes: Data("hidden".utf8))
+        try directory.write(".hidden/inside.pdf", bytes: Data("hidden descendant".utf8))
+        try directory.write("notes.txt", bytes: Data("unsupported".utf8))
+        try directory.write("Ignored.app/inside.pdf", bytes: Data("package descendant".utf8))
+
+        let files = try DefaultFileEnumerator().files(in: directory.url)
+
+        #expect(files.map(\.relativePath) == ["a.pdf", "b.JPG", "c.png", "d.heic", "e.JPEG"])
+        #expect(files.map(\.mediaType) == [.pdf, .jpeg, .png, .heic, .jpeg])
+    }
+
+    @Test func skipsFileWhoseMetadataBecomesUnavailable() throws {
+        let directory = try TemporaryDirectory()
+        try directory.write("a-unavailable.pdf", bytes: Data("unavailable".utf8))
+        try directory.write("z-available.pdf", bytes: Data("available".utf8))
+        let enumerator = DefaultFileEnumerator { url, keys in
+            if url.lastPathComponent == "a-unavailable.pdf" {
+                throw MetadataProbeError()
+            }
+            return try url.resourceValues(forKeys: keys)
+        }
+
+        let files = try enumerator.files(in: directory.url)
+
+        #expect(files.map(\.relativePath) == ["z-available.pdf"])
+    }
+
+    @Test func sortsPathsByLocaleIndependentUTF8Order() throws {
+        let directory = try TemporaryDirectory()
+        try directory.write("file2.pdf", bytes: Data("two".utf8))
+        try directory.write("file10.pdf", bytes: Data("ten".utf8))
+
+        let files = try DefaultFileEnumerator().files(in: directory.url)
+
+        #expect(files.map(\.relativePath) == ["file10.pdf", "file2.pdf"])
+    }
+
+    @Test func relativePathRejectsSymlinkOutsideRoot() throws {
+        let root = try TemporaryDirectory()
+        let external = try TemporaryDirectory()
+        let target = try external.write("outside.pdf", bytes: Data("outside".utf8))
+        let link = root.url.appendingPathComponent("linked.pdf")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: target)
+
+        let relativePath = DefaultFileEnumerator.relativePath(for: link, under: root.url)
+
+        #expect(relativePath == nil)
+    }
+
+    @Test func relativePathRejectsSiblingWithCommonPrefix() {
+        let root = URL(fileURLWithPath: "/tmp/source")
+        let siblingFile = URL(fileURLWithPath: "/tmp/source-other/file.pdf")
+
+        let relativePath = DefaultFileEnumerator.relativePath(for: siblingFile, under: root)
+
+        #expect(relativePath == nil)
+    }
+
+    @Test func relativePathSupportsFilesystemRoot() {
+        let root = URL(fileURLWithPath: "/")
+        let file = URL(fileURLWithPath: "/tmp/file.pdf")
+
+        let relativePath = DefaultFileEnumerator.relativePath(for: file, under: root)
+
+        #expect(relativePath == "tmp/file.pdf")
+    }
+}
+
+private struct MetadataProbeError: Error {}
