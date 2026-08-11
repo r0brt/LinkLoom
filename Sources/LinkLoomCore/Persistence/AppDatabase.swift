@@ -48,6 +48,36 @@ public enum AppDatabase {
             try db.create(index: "document_content_hash", on: "document", columns: ["contentHash"])
             try db.create(index: "document_status", on: "document", columns: ["status"])
         }
+        migrator.registerMigration("v2_extraction") { db in
+            try db.create(table: "documentExtraction") { table in
+                table.column("documentID", .text).primaryKey()
+                    .references("document", onDelete: .cascade)
+                table.column("analysisVersion", .text).notNull()
+                table.column("method", .text).notNull()
+                table.column("joinedText", .text).notNull()
+                table.column("updatedAt", .datetime).notNull()
+            }
+            try db.create(table: "extractedPage") { table in
+                table.column("documentID", .text).notNull()
+                    .references("document", onDelete: .cascade)
+                table.column("pageIndex", .integer).notNull()
+                table.column("text", .text).notNull()
+                table.column("regionsJSON", .blob).notNull()
+                table.primaryKey(["documentID", "pageIndex"])
+            }
+            try db.create(virtualTable: "extractionFTS", using: FTS5()) { table in
+                table.column("documentID").notIndexed()
+                table.column("joinedText")
+                table.tokenizer = .unicode61()
+            }
+            try db.execute(sql: """
+                CREATE TRIGGER documentExtraction_delete_fts
+                AFTER DELETE ON documentExtraction
+                BEGIN
+                    DELETE FROM extractionFTS WHERE documentID = OLD.documentID;
+                END
+                """)
+        }
         try migrator.migrate(writer)
     }
 }

@@ -37,6 +37,63 @@ public actor DocumentRepository {
         }
     }
 
+    public func pendingExtraction(
+        sourceRootID: UUID,
+        limit: Int
+    ) async throws -> [DocumentRecord] {
+        guard limit > 0 else { return [] }
+        return try await dbWriter.read { db in
+            try DocumentRecord
+                .filter(Column("sourceRootID") == sourceRootID)
+                .filter(Column("availability") == DocumentAvailability.available.rawValue)
+                .filter(Column("status") == DocumentStatus.discovered.rawValue)
+                .order(Column("relativePath"))
+                .limit(limit)
+                .fetchAll(db)
+        }
+    }
+
+    public func pendingExtraction(
+        sourceRootID: UUID,
+        analysisVersion: String,
+        limit: Int
+    ) async throws -> [DocumentRecord] {
+        guard limit > 0 else { return [] }
+        return try await dbWriter.read { db in
+            try DocumentRecord.fetchAll(
+                db,
+                sql: """
+                    SELECT document.*
+                    FROM document
+                    LEFT JOIN documentExtraction
+                        ON documentExtraction.documentID = document.id
+                    WHERE document.sourceRootID = ?
+                        AND document.availability = ?
+                        AND (
+                            document.status = ?
+                            OR (
+                                document.status = ?
+                                AND (
+                                    documentExtraction.analysisVersion IS NULL
+                                    OR documentExtraction.analysisVersion <> ?
+                                )
+                            )
+                        )
+                    ORDER BY document.relativePath
+                    LIMIT ?
+                    """,
+                arguments: [
+                    sourceRootID,
+                    DocumentAvailability.available,
+                    DocumentStatus.discovered,
+                    DocumentStatus.ready,
+                    analysisVersion,
+                    limit,
+                ]
+            )
+        }
+    }
+
     public func save(_ document: DocumentRecord) async throws {
         try await dbWriter.write { db in
             try document.save(db)
@@ -107,6 +164,42 @@ public actor DocumentRepository {
             try db.execute(
                 sql: "UPDATE document SET status = ?, pageCount = ?, failureCode = ? WHERE id = ?",
                 arguments: [status, pageCount, failureCode, id]
+            )
+        }
+    }
+
+    func recoverInterruptedExtraction(sourceRootID: UUID) async throws {
+        try await dbWriter.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE document
+                    SET status = ?, pageCount = NULL, failureCode = NULL
+                    WHERE sourceRootID = ? AND status = ?
+                    """,
+                arguments: [
+                    DocumentStatus.discovered,
+                    sourceRootID,
+                    DocumentStatus.extracting,
+                ]
+            )
+        }
+    }
+
+    func restoreAfterInterruption(_ document: DocumentRecord) async throws {
+        try await dbWriter.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE document
+                    SET status = ?, pageCount = ?, failureCode = ?
+                    WHERE id = ? AND status = ?
+                    """,
+                arguments: [
+                    document.status,
+                    document.pageCount,
+                    document.failureCode,
+                    document.id,
+                    DocumentStatus.extracting,
+                ]
             )
         }
     }
