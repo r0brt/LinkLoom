@@ -23,6 +23,7 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var documents: [DocumentRecord] = []
     @Published public private(set) var scanState: AppScanState = .idle
     @Published public private(set) var lastErrorCode: String?
+    @Published public private(set) var unavailableSourceIDs = Set<UUID>()
 
     private let sourceRepository: SourceRootRepository
     private let documentRepository: DocumentRepository
@@ -30,20 +31,29 @@ public final class AppModel: ObservableObject {
     private let catalog: any CatalogScanning
     private let ingestion: any PendingIngesting
     private let documentLoader: @Sendable (UUID) async throws -> [DocumentRecord]
+    private let watchScheduler: (any SourceWatchScheduling)?
+    private let sourceResolver: @Sendable (SourceRootRecord) throws -> URL
     private var isExclusiveSourceOperationActive = false
+    private var watchedSourceIDs = Set<UUID>()
+    private var watchChangesTask: Task<Void, Never>?
 
     public init(
         sources: SourceRootRepository,
         documents: DocumentRepository,
         sourceAccess: any SourceAccessing,
         catalog: any CatalogScanning,
-        ingestion: any PendingIngesting
+        ingestion: any PendingIngesting,
+        watchScheduler: (any SourceWatchScheduling)? = nil
     ) {
         sourceRepository = sources
         documentRepository = documents
         self.sourceAccess = sourceAccess
         self.catalog = catalog
         self.ingestion = ingestion
+        self.watchScheduler = watchScheduler
+        sourceResolver = { source in
+            try sourceAccess.resolve(source.bookmarkData).url
+        }
         documentLoader = { sourceID in
             try await documents.all(sourceRootID: sourceID)
         }
@@ -63,6 +73,29 @@ public final class AppModel: ObservableObject {
         self.catalog = catalog
         self.ingestion = ingestion
         self.documentLoader = documentLoader
+        watchScheduler = nil
+        sourceResolver = { source in URL(fileURLWithPath: source.pathHint) }
+    }
+
+    init(
+        sources: SourceRootRepository,
+        documents: DocumentRepository,
+        sourceAccess: any SourceAccessing,
+        catalog: any CatalogScanning,
+        ingestion: any PendingIngesting,
+        watchScheduler: any SourceWatchScheduling,
+        sourceResolver: @escaping @Sendable (SourceRootRecord) throws -> URL
+    ) {
+        sourceRepository = sources
+        documentRepository = documents
+        self.sourceAccess = sourceAccess
+        self.catalog = catalog
+        self.ingestion = ingestion
+        documentLoader = { sourceID in
+            try await documents.all(sourceRootID: sourceID)
+        }
+        self.watchScheduler = watchScheduler
+        self.sourceResolver = sourceResolver
     }
 
     public func reload() async throws {
@@ -71,6 +104,7 @@ public final class AppModel: ObservableObject {
             selectedSourceID = sources.first?.id
         }
         _ = try await reloadDocuments()
+        await startWatchingSavedSources()
     }
 
     public func addSource(_ url: URL) async {
@@ -84,6 +118,7 @@ public final class AppModel: ObservableObject {
             sources = try await sourceRepository.all()
             selectedSourceID = source.id
             documents = try await documentRepository.all(sourceRootID: source.id)
+            await startWatching(source)
             lastErrorCode = nil
         } catch {
             lastErrorCode = "sourceAddFailure"
@@ -115,6 +150,9 @@ public final class AppModel: ObservableObject {
         defer { endExclusiveSourceOperation() }
         do {
             try await sourceRepository.remove(id: source.id)
+            await watchScheduler?.stop(sourceID: source.id)
+            watchedSourceIDs.remove(source.id)
+            unavailableSourceIDs.remove(source.id)
             sources = try await sourceRepository.all()
             if selectedSourceID == source.id {
                 selectedSourceID = sources.first?.id
@@ -136,6 +174,13 @@ public final class AppModel: ObservableObject {
         } catch {
             lastErrorCode = "documentLoadFailure"
         }
+    }
+
+    public func stopWatching() async {
+        watchChangesTask?.cancel()
+        watchChangesTask = nil
+        await watchScheduler?.stopAll()
+        watchedSourceIDs.removeAll()
     }
 
     private func reloadDocuments() async throws -> Bool {
@@ -162,5 +207,62 @@ public final class AppModel: ObservableObject {
 
     private func endExclusiveSourceOperation() {
         isExclusiveSourceOperationActive = false
+    }
+
+    private func startWatchingSavedSources() async {
+        guard watchScheduler != nil else { return }
+        startReceivingWatchChangesIfNeeded()
+        let savedSourceIDs = Set(sources.map(\.id))
+        for removedSourceID in watchedSourceIDs.subtracting(savedSourceIDs) {
+            await watchScheduler?.stop(sourceID: removedSourceID)
+            watchedSourceIDs.remove(removedSourceID)
+            unavailableSourceIDs.remove(removedSourceID)
+        }
+        for source in sources where !watchedSourceIDs.contains(source.id) {
+            await startWatching(source)
+        }
+    }
+
+    private func startWatching(_ source: SourceRootRecord) async {
+        guard let watchScheduler else { return }
+        do {
+            let url = try sourceResolver(source)
+            watchedSourceIDs.insert(source.id)
+            unavailableSourceIDs.remove(source.id)
+            await watchScheduler.start(source: source, url: url)
+            if !(await watchScheduler.isWatching(sourceID: source.id)) {
+                watchedSourceIDs.remove(source.id)
+                unavailableSourceIDs.insert(source.id)
+            }
+        } catch {
+            unavailableSourceIDs.insert(source.id)
+        }
+    }
+
+    private func startReceivingWatchChangesIfNeeded() {
+        guard watchChangesTask == nil, let watchScheduler else { return }
+        let changes = watchScheduler.changes
+        watchChangesTask = Task { [weak self] in
+            for await change in changes {
+                guard !Task.isCancelled else { return }
+                await self?.receive(change)
+            }
+        }
+    }
+
+    private func receive(_ change: DirectoryChange) async {
+        guard watchedSourceIDs.contains(change.sourceRootID) else { return }
+        switch change.kind {
+        case .rootUnavailable:
+            unavailableSourceIDs.insert(change.sourceRootID)
+            if let watchScheduler,
+               !(await watchScheduler.isWatching(sourceID: change.sourceRootID)) {
+                watchedSourceIDs.remove(change.sourceRootID)
+            }
+        case .rootAvailable:
+            unavailableSourceIDs.remove(change.sourceRootID)
+        case .contentChanged:
+            break
+        }
     }
 }

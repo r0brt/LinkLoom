@@ -45,12 +45,22 @@ public struct ScanDashboard: View {
                         .font(.caption.monospaced())
                         .textSelection(.enabled)
                 }
+                if model.unavailableSourceIDs.contains(source.id) {
+                    Label(
+                        "Quelle vorübergehend nicht verfügbar",
+                        systemImage: "externaldrive.badge.exclamationmark"
+                    )
+                    .foregroundStyle(.orange)
+                }
             }
             Spacer()
             Button("Jetzt analysieren") {
                 Task { await model.scanSelectedSource() }
             }
-            .disabled(model.scanState != .idle)
+            .disabled(
+                model.scanState != .idle
+                    || model.unavailableSourceIDs.contains(source.id)
+            )
         }
         if model.scanState != .idle {
             ProgressView(scanProgressTitle)

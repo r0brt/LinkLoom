@@ -268,6 +268,266 @@ struct AppModelTests {
         sourceAccess.releaseBookmarkCreation()
         await add.value
     }
+
+    @Test @MainActor func reloadStartsWatchingEachResolvedSource() async throws {
+        let fixture = try AppModelFixture()
+        let first = try await fixture.addSource(named: "First")
+        let second = try await fixture.addSource(named: "Second")
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler,
+            sourceResolver: { source in
+                URL(fileURLWithPath: "/resolved/\(source.displayName)")
+            }
+        )
+
+        try await model.reload()
+
+        #expect(await scheduler.startedSources == [
+            WatchedSource(sourceID: first.id, path: "/resolved/First"),
+            WatchedSource(sourceID: second.id, path: "/resolved/Second"),
+        ])
+    }
+
+    @Test @MainActor func rootLifecycleEventsUpdateOnlySourceAvailabilityState() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler,
+            sourceResolver: { _ in URL(fileURLWithPath: "/resolved/Archive") }
+        )
+        try await model.reload()
+
+        scheduler.emit(DirectoryChange(sourceRootID: source.id, kind: .rootUnavailable))
+        await waitUntil { model.unavailableSourceIDs == [source.id] }
+        scheduler.emit(DirectoryChange(sourceRootID: source.id, kind: .rootAvailable))
+        await waitUntil { model.unavailableSourceIDs.isEmpty }
+
+        #expect(model.documents.isEmpty)
+    }
+
+    @Test @MainActor func reloadRestartsWatcherAfterUnexpectedFailure() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler,
+            sourceResolver: { _ in URL(fileURLWithPath: "/resolved/Archive") }
+        )
+        try await model.reload()
+
+        await scheduler.fail(sourceID: source.id)
+        await waitUntil { model.unavailableSourceIDs == [source.id] }
+        try await model.reload()
+
+        #expect(await scheduler.startedSources.count == 2)
+        #expect(model.unavailableSourceIDs.isEmpty)
+    }
+
+    @Test @MainActor func unavailableEventDuringStartWinsOverActiveWatcherState() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let scheduler = FakeSourceWatchScheduler(rootUnavailableDuringStart: true)
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler,
+            sourceResolver: { _ in URL(fileURLWithPath: "/resolved/Archive") }
+        )
+
+        try await model.reload()
+
+        #expect(await scheduler.isWatching(sourceID: source.id))
+        #expect(model.unavailableSourceIDs == [source.id])
+    }
+
+    @Test @MainActor func stopWatchingStopsEverySourceStream() async throws {
+        let fixture = try AppModelFixture()
+        _ = try await fixture.addSource(named: "Archive")
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler,
+            sourceResolver: { _ in URL(fileURLWithPath: "/resolved/Archive") }
+        )
+        try await model.reload()
+
+        await model.stopWatching()
+
+        #expect(await scheduler.stopAllCount == 1)
+    }
+
+    @Test @MainActor func terminationWaitsForWatcherShutdownBeforeReplying() async throws {
+        let shutdown = BlockingShutdown()
+        let replies = TerminationReplyRecorder()
+        let coordinator = AppTerminationCoordinator {
+            await shutdown.run()
+        }
+
+        let decision = coordinator.requestTermination { allowed in
+            await replies.record(allowed)
+        }
+        await shutdown.waitUntilStarted()
+
+        #expect(decision == .terminateLater)
+        #expect(await replies.values.isEmpty)
+        await shutdown.release()
+        try await waitUntilAsync { await replies.values == [true] }
+    }
+
+    @MainActor
+    private func waitUntil(
+        condition: @escaping @MainActor () -> Bool
+    ) async {
+        let deadline = ContinuousClock.now + .seconds(2)
+        while !condition() {
+            guard ContinuousClock.now < deadline else {
+                Issue.record("Timed out waiting for AppModel state")
+                return
+            }
+            await Task.yield()
+        }
+    }
+}
+
+private actor BlockingShutdown {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func run() async {
+        for waiter in startWaiters {
+            waiter.resume()
+        }
+        startWaiters.removeAll()
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func waitUntilStarted() async {
+        guard continuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private actor TerminationReplyRecorder {
+    private(set) var values: [Bool] = []
+
+    func record(_ value: Bool) {
+        values.append(value)
+    }
+}
+
+private func waitUntilAsync(
+    timeout: Duration = .seconds(2),
+    condition: @escaping @Sendable () async -> Bool
+) async throws {
+    try await withThrowingTaskGroup(of: Void.self) { group in
+        group.addTask {
+            while !(await condition()) {
+                try Task.checkCancellation()
+                await Task.yield()
+            }
+        }
+        group.addTask {
+            try await ContinuousClock().sleep(for: timeout)
+            throw AppModelTestError.timeout
+        }
+        _ = try await group.next()
+        group.cancelAll()
+    }
+}
+
+private struct WatchedSource: Sendable, Equatable {
+    let sourceID: UUID
+    let path: String
+}
+
+private actor FakeSourceWatchScheduler: SourceWatchScheduling {
+    nonisolated let changes: AsyncStream<DirectoryChange>
+    nonisolated private let continuation: AsyncStream<DirectoryChange>.Continuation
+    private(set) var startedSources: [WatchedSource] = []
+    private(set) var stopAllCount = 0
+    private var activeSourceIDs = Set<UUID>()
+    private let rootUnavailableDuringStart: Bool
+    private var availabilityProbeCount = 0
+
+    init(rootUnavailableDuringStart: Bool = false) {
+        let pair = AsyncStream<DirectoryChange>.makeStream()
+        changes = pair.stream
+        continuation = pair.continuation
+        self.rootUnavailableDuringStart = rootUnavailableDuringStart
+    }
+
+    func start(source: SourceRootRecord, url: URL) async {
+        startedSources.append(WatchedSource(sourceID: source.id, path: url.path))
+        activeSourceIDs.insert(source.id)
+        if rootUnavailableDuringStart {
+            continuation.yield(DirectoryChange(
+                sourceRootID: source.id,
+                kind: .rootUnavailable
+            ))
+            while availabilityProbeCount == 0 {
+                await Task.yield()
+            }
+        }
+    }
+
+    func isWatching(sourceID: UUID) -> Bool {
+        availabilityProbeCount += 1
+        return activeSourceIDs.contains(sourceID)
+    }
+
+    func stop(sourceID: UUID) {
+        activeSourceIDs.remove(sourceID)
+    }
+
+    func stopAll() {
+        stopAllCount += 1
+        activeSourceIDs.removeAll()
+    }
+
+    func fail(sourceID: UUID) {
+        activeSourceIDs.remove(sourceID)
+        continuation.yield(DirectoryChange(
+            sourceRootID: sourceID,
+            kind: .rootUnavailable
+        ))
+    }
+
+    nonisolated func emit(_ change: DirectoryChange) {
+        continuation.yield(change)
+    }
 }
 
 private actor CountingCatalogScanner: CatalogScanning {
@@ -525,4 +785,5 @@ private enum AppModelTestError: Error {
     case documentLoadFailed
     case ingestionFailed
     case unusedSourceResolution
+    case timeout
 }

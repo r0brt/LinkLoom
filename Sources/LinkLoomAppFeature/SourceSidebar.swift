@@ -12,7 +12,12 @@ public struct SourceSidebar: View {
     public var body: some View {
         List(selection: selection) {
             ForEach(model.sources) { source in
-                Label(source.displayName, systemImage: "folder")
+                Label(
+                    source.displayName,
+                    systemImage: model.unavailableSourceIDs.contains(source.id)
+                        ? "externaldrive.badge.exclamationmark"
+                        : "folder"
+                )
                     .tag(source.id)
                     .contextMenu {
                         Button("Quelle entfernen", role: .destructive) {

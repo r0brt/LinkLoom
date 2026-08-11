@@ -1,3 +1,4 @@
+import AppKit
 import LinkLoomAppFeature
 import LinkLoomCore
 import SwiftUI
@@ -5,6 +6,7 @@ import SwiftUI
 @main
 @MainActor
 struct LinkLoomApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var model: AppModel
 
     init() {
@@ -27,12 +29,20 @@ struct LinkLoomApp: App {
                 extractions: extractions,
                 extractor: CompositeTextExtractor()
             )
+            let watchScheduler = RescanScheduler(
+                watcher: FSEventsDirectoryWatcher(),
+                rescanner: IncrementalRescanner(
+                    catalog: catalog,
+                    ingestion: ingestion
+                )
+            )
             _model = StateObject(wrappedValue: AppModel(
                 sources: sources,
                 documents: documents,
                 sourceAccess: sourceAccess,
                 catalog: CatalogScanner(service: catalog),
-                ingestion: PendingIngester(pipeline: ingestion)
+                ingestion: PendingIngester(pipeline: ingestion),
+                watchScheduler: watchScheduler
             ))
         } catch {
             fatalError("LinkLoom database initialization failed")
@@ -43,6 +53,7 @@ struct LinkLoomApp: App {
         WindowGroup {
             ContentView(model: model)
                 .task {
+                    appDelegate.configure(model: model)
                     try? await model.reload()
                 }
         }
@@ -58,6 +69,42 @@ struct LinkLoomApp: App {
         return applicationSupport
             .appendingPathComponent("LinkLoom", isDirectory: true)
             .appendingPathComponent("linkloom.sqlite", isDirectory: false)
+    }
+}
+
+@MainActor
+private final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var terminationCoordinator: AppTerminationCoordinator?
+
+    func configure(model: AppModel) {
+        guard terminationCoordinator == nil else { return }
+        terminationCoordinator = AppTerminationCoordinator { [weak model] in
+            await model?.stopWatching()
+        }
+    }
+
+    func applicationShouldTerminate(
+        _ sender: NSApplication
+    ) -> NSApplication.TerminateReply {
+        guard let terminationCoordinator else { return .terminateNow }
+        _ = terminationCoordinator.requestTermination { allowed in
+            sender.reply(toApplicationShouldTerminate: allowed)
+        }
+        return .terminateLater
+    }
+}
+
+private struct IncrementalRescanner: SourceRescanning {
+    let catalog: CatalogService
+    let ingestion: IngestionPipeline
+
+    func rescan(source: SourceRootRecord) async {
+        do {
+            _ = try await catalog.scan(source: source)
+            _ = await ingestion.processPending(source: source)
+        } catch {
+            // The durable catalog remains retryable after transient source failures.
+        }
     }
 }
 
