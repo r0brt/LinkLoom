@@ -1,0 +1,528 @@
+import Combine
+import Foundation
+import Testing
+@testable import LinkLoomAppFeature
+import LinkLoomCore
+
+@Suite("Diagnostic app model")
+struct AppModelTests {
+    @Test @MainActor func scanPublishesProgressAndReloadsDocuments() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let expectedDocument = fixture.document(sourceRootID: source.id, path: "ready.pdf")
+        let scanner = FakeCatalogScanner {
+            try await fixture.documents.save(expectedDocument)
+        }
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: scanner,
+            ingestion: FakePendingIngester()
+        )
+        try await model.reload()
+        var observedStates: [AppScanState] = []
+        let observation = model.$scanState.sink { observedStates.append($0) }
+
+        await model.scanSelectedSource()
+        _ = observation
+
+        #expect(observedStates == [.idle, .scanning, .extracting, .idle])
+        #expect(model.documents == [expectedDocument])
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func scanFailureAppearsWithoutRemovingExistingDocuments() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let existingDocument = fixture.document(sourceRootID: source.id, path: "existing.pdf")
+        try await fixture.documents.save(existingDocument)
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner { throw AppModelTestError.scanFailed },
+            ingestion: FakePendingIngester()
+        )
+        try await model.reload()
+
+        await model.scanSelectedSource()
+
+        #expect(model.scanState == .idle)
+        #expect(model.lastErrorCode == "scanFailure")
+        #expect(model.documents == [existingDocument])
+    }
+
+    @Test @MainActor func addingSourcePersistsAndSelectsIt() async throws {
+        let fixture = try AppModelFixture()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester()
+        )
+        try await model.reload()
+        let selectedURL = fixture.directory.appendingPathComponent("Selected", isDirectory: true)
+
+        await model.addSource(selectedURL)
+
+        let persisted = try #require(try await fixture.sources.all().first)
+        #expect(model.sources == [persisted])
+        #expect(model.selectedSourceID == persisted.id)
+        #expect(persisted.displayName == "Selected")
+        #expect(persisted.pathHint == selectedURL.path)
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func removingSelectedSourceClearsItsDocuments() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        try await fixture.documents.save(
+            fixture.document(sourceRootID: source.id, path: "existing.pdf")
+        )
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester()
+        )
+        try await model.reload()
+
+        await model.removeSource(source)
+
+        #expect(try await fixture.sources.all().isEmpty)
+        #expect(model.sources.isEmpty)
+        #expect(model.selectedSourceID == nil)
+        #expect(model.documents.isEmpty)
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func selectingSourceReloadsItsDocuments() async throws {
+        let fixture = try AppModelFixture()
+        _ = try await fixture.addSource(named: "First")
+        let second = try await fixture.addSource(named: "Second")
+        let secondDocument = fixture.document(
+            sourceRootID: second.id,
+            path: "second.pdf"
+        )
+        try await fixture.documents.save(secondDocument)
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester()
+        )
+        try await model.reload()
+
+        await model.selectSource(id: second.id)
+
+        #expect(model.selectedSourceID == second.id)
+        #expect(model.documents == [secondDocument])
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func overlappingScanDoesNotStartTwiceOrPublishIdleEarly() async throws {
+        let fixture = try AppModelFixture()
+        _ = try await fixture.addSource(named: "Archive")
+        let scanner = OverlappingCatalogScanner()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: scanner,
+            ingestion: FakePendingIngester()
+        )
+        try await model.reload()
+        let firstScan = Task { await model.scanSelectedSource() }
+        await scanner.waitUntilFirstScanStarts()
+
+        await model.scanSelectedSource()
+
+        #expect(await scanner.callCount == 1)
+        #expect(model.scanState == .scanning)
+        await scanner.releaseFirstScan()
+        await firstScan.value
+        #expect(model.scanState == .idle)
+    }
+
+    @Test @MainActor func staleSourceLoadCannotOverwriteNewerSelection() async throws {
+        let fixture = try AppModelFixture()
+        let first = try await fixture.addSource(named: "First")
+        let second = try await fixture.addSource(named: "Second")
+        let firstDocument = fixture.document(sourceRootID: first.id, path: "first.pdf")
+        let secondDocument = fixture.document(sourceRootID: second.id, path: "second.pdf")
+        let loader = ReorderedDocumentLoader(
+            documentsBySource: [
+                first.id: [firstDocument],
+                second.id: [secondDocument],
+            ],
+            blockedSourceID: second.id
+        )
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            documentLoader: { sourceID in
+                await loader.load(sourceID: sourceID)
+            }
+        )
+        try await model.reload()
+        let slowSelection = Task { await model.selectSource(id: second.id) }
+        await loader.waitUntilBlockedLoadStarts()
+
+        await model.selectSource(id: first.id)
+        await loader.releaseBlockedLoad()
+        await slowSelection.value
+
+        #expect(model.selectedSourceID == first.id)
+        #expect(model.documents == [firstDocument])
+    }
+
+    @Test @MainActor func activeScanKeepsOwnedSourceSelectedAndPersisted() async throws {
+        let fixture = try AppModelFixture()
+        let first = try await fixture.addSource(named: "First")
+        let second = try await fixture.addSource(named: "Second")
+        let scanner = OverlappingCatalogScanner()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: scanner,
+            ingestion: FakePendingIngester()
+        )
+        try await model.reload()
+        let scan = Task { await model.scanSelectedSource() }
+        await scanner.waitUntilFirstScanStarts()
+
+        await model.selectSource(id: second.id)
+        await model.removeSource(first)
+        await model.addSource(
+            fixture.directory.appendingPathComponent("Third", isDirectory: true)
+        )
+
+        #expect(model.selectedSourceID == first.id)
+        #expect(try await fixture.sources.all() == [first, second])
+        await scanner.releaseFirstScan()
+        await scan.value
+    }
+
+    @Test @MainActor func staleSourceLoadCannotClearNewerSelectionError() async throws {
+        let fixture = try AppModelFixture()
+        let first = try await fixture.addSource(named: "First")
+        let second = try await fixture.addSource(named: "Second")
+        let loader = StaleErrorDocumentLoader(
+            currentSourceID: first.id,
+            blockedSourceID: second.id
+        )
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            documentLoader: { sourceID in
+                try await loader.load(sourceID: sourceID)
+            }
+        )
+        try await model.reload()
+        let staleSelection = Task { await model.selectSource(id: second.id) }
+        await loader.waitUntilBlockedLoadStarts()
+
+        await model.selectSource(id: first.id)
+        #expect(model.lastErrorCode == "documentLoadFailure")
+        await loader.releaseBlockedLoad()
+        await staleSelection.value
+
+        #expect(model.selectedSourceID == first.id)
+        #expect(model.lastErrorCode == "documentLoadFailure")
+    }
+
+    @Test @MainActor func scanDoesNotStartWhileSourceMutationIsSuspended() async throws {
+        let fixture = try AppModelFixture()
+        _ = try await fixture.addSource(named: "First")
+        let sourceAccess = BlockingBookmarkSourceAccess()
+        let scanner = CountingCatalogScanner()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: sourceAccess,
+            catalog: scanner,
+            ingestion: FailingPendingIngester()
+        )
+        try await model.reload()
+        let add = Task {
+            await model.addSource(
+                fixture.directory.appendingPathComponent("Second", isDirectory: true)
+            )
+        }
+        await sourceAccess.waitUntilBookmarkCreationStarts()
+
+        await model.scanSelectedSource()
+
+        #expect(await scanner.callCount == 0)
+        sourceAccess.releaseBookmarkCreation()
+        await add.value
+    }
+}
+
+private actor CountingCatalogScanner: CatalogScanning {
+    private(set) var callCount = 0
+
+    func scan(source: SourceRootRecord) async throws {
+        callCount += 1
+    }
+}
+
+private struct FailingPendingIngester: PendingIngesting {
+    func processPending(source: SourceRootRecord) async throws {
+        throw AppModelTestError.ingestionFailed
+    }
+}
+
+private final class BlockingBookmarkSourceAccess: SourceAccessing, @unchecked Sendable {
+    private let condition = NSCondition()
+    private var started = false
+    private var released = false
+
+    func createBookmark(for url: URL) throws -> Data {
+        condition.lock()
+        started = true
+        condition.broadcast()
+        while !released {
+            condition.wait()
+        }
+        condition.unlock()
+        return Data(url.path.utf8)
+    }
+
+    func resolve(_ bookmark: Data) throws -> ResolvedSource {
+        throw AppModelTestError.unusedSourceResolution
+    }
+
+    func withAccess<T: Sendable>(
+        to bookmark: Data,
+        operation: @Sendable (URL) async throws -> T
+    ) async throws -> T {
+        try await operation(URL(fileURLWithPath: String(decoding: bookmark, as: UTF8.self)))
+    }
+
+    func waitUntilBookmarkCreationStarts() async {
+        while true {
+            let didStart = condition.withLock { started }
+            if didStart { return }
+            await Task.yield()
+        }
+    }
+
+    func releaseBookmarkCreation() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
+}
+
+private actor StaleErrorDocumentLoader {
+    private let currentSourceID: UUID
+    private let blockedSourceID: UUID
+    private var currentSourceLoadCount = 0
+    private var blockedContinuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(currentSourceID: UUID, blockedSourceID: UUID) {
+        self.currentSourceID = currentSourceID
+        self.blockedSourceID = blockedSourceID
+    }
+
+    func load(sourceID: UUID) async throws -> [DocumentRecord] {
+        if sourceID == currentSourceID {
+            currentSourceLoadCount += 1
+            if currentSourceLoadCount > 1 {
+                throw AppModelTestError.documentLoadFailed
+            }
+            return []
+        }
+        if sourceID == blockedSourceID {
+            for waiter in startWaiters {
+                waiter.resume()
+            }
+            startWaiters.removeAll()
+            await withCheckedContinuation { continuation in
+                blockedContinuation = continuation
+            }
+        }
+        return []
+    }
+
+    func waitUntilBlockedLoadStarts() async {
+        guard blockedContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func releaseBlockedLoad() {
+        blockedContinuation?.resume()
+        blockedContinuation = nil
+    }
+}
+
+private actor ReorderedDocumentLoader {
+    private let documentsBySource: [UUID: [DocumentRecord]]
+    private let blockedSourceID: UUID
+    private var shouldBlock = true
+    private var blockedContinuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(
+        documentsBySource: [UUID: [DocumentRecord]],
+        blockedSourceID: UUID
+    ) {
+        self.documentsBySource = documentsBySource
+        self.blockedSourceID = blockedSourceID
+    }
+
+    func load(sourceID: UUID) async -> [DocumentRecord] {
+        if sourceID == blockedSourceID, shouldBlock {
+            shouldBlock = false
+            for waiter in startWaiters {
+                waiter.resume()
+            }
+            startWaiters.removeAll()
+            await withCheckedContinuation { continuation in
+                blockedContinuation = continuation
+            }
+        }
+        return documentsBySource[sourceID] ?? []
+    }
+
+    func waitUntilBlockedLoadStarts() async {
+        guard shouldBlock else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func releaseBlockedLoad() {
+        blockedContinuation?.resume()
+        blockedContinuation = nil
+    }
+}
+
+private actor OverlappingCatalogScanner: CatalogScanning {
+    private(set) var callCount = 0
+    private var firstScanContinuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func scan(source: SourceRootRecord) async throws {
+        callCount += 1
+        guard callCount == 1 else { return }
+        for waiter in startWaiters {
+            waiter.resume()
+        }
+        startWaiters.removeAll()
+        await withCheckedContinuation { continuation in
+            firstScanContinuation = continuation
+        }
+    }
+
+    func waitUntilFirstScanStarts() async {
+        guard callCount == 0 else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(continuation)
+        }
+    }
+
+    func releaseFirstScan() {
+        firstScanContinuation?.resume()
+        firstScanContinuation = nil
+    }
+}
+
+private final class AppModelFixture: @unchecked Sendable {
+    let directory: URL
+    let sources: SourceRootRepository
+    let documents: DocumentRepository
+    let sourceAccess = FakeSourceAccess()
+
+    init() throws {
+        directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("LinkLoomAppModelTests-\(UUID().uuidString)", isDirectory: true)
+        let database = try AppDatabase.makeQueue(
+            at: directory.appendingPathComponent("linkloom.sqlite")
+        )
+        sources = SourceRootRepository(dbWriter: database)
+        documents = DocumentRepository(dbWriter: database)
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    func addSource(named name: String) async throws -> SourceRootRecord {
+        try await sources.add(
+            url: directory.appendingPathComponent(name, isDirectory: true),
+            sourceAccess: sourceAccess,
+            now: Date(timeIntervalSince1970: 100)
+        )
+    }
+
+    func document(sourceRootID: UUID, path: String) -> DocumentRecord {
+        DocumentRecord(
+            sourceRootID: sourceRootID,
+            relativePath: path,
+            contentHash: "hash-\(path)",
+            byteCount: 10,
+            modifiedAt: Date(timeIntervalSince1970: 200),
+            mediaType: .pdf,
+            status: .ready,
+            pageCount: 1,
+            lastSeenAt: Date(timeIntervalSince1970: 200)
+        )
+    }
+}
+
+private struct FakeCatalogScanner: CatalogScanning {
+    private let operation: @Sendable () async throws -> Void
+
+    init(operation: @escaping @Sendable () async throws -> Void = {}) {
+        self.operation = operation
+    }
+
+    func scan(source: SourceRootRecord) async throws {
+        try await operation()
+    }
+}
+
+private struct FakePendingIngester: PendingIngesting {
+    func processPending(source: SourceRootRecord) async throws {}
+}
+
+private struct FakeSourceAccess: SourceAccessing {
+    func createBookmark(for url: URL) throws -> Data {
+        Data(url.path.utf8)
+    }
+
+    func resolve(_ bookmark: Data) throws -> ResolvedSource {
+        throw AppModelTestError.unusedSourceResolution
+    }
+
+    func withAccess<T: Sendable>(
+        to bookmark: Data,
+        operation: @Sendable (URL) async throws -> T
+    ) async throws -> T {
+        try await operation(URL(fileURLWithPath: String(decoding: bookmark, as: UTF8.self)))
+    }
+}
+
+private enum AppModelTestError: Error {
+    case scanFailed
+    case documentLoadFailed
+    case ingestionFailed
+    case unusedSourceResolution
+}
