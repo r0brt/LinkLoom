@@ -325,6 +325,19 @@ struct CatalogServiceTests {
 
 @Suite("Document repository")
 struct DocumentRepositoryTests {
+    @Test func modifiedDateRoundTripsWithoutLosingFilesystemPrecision() async throws {
+        let fixture = try await CatalogFixture.make()
+        var document = fixture.document("precise.pdf")
+        document.modifiedAt = Date(timeIntervalSinceReferenceDate: 808_153_296.688_353_4)
+
+        try await fixture.documents.save(document)
+
+        let stored = try #require(
+            try await fixture.documents.all(sourceRootID: fixture.source.id).first
+        )
+        #expect(stored.modifiedAt == document.modifiedAt)
+    }
+
     @Test func pendingExtractionReturnsOnlyAvailableDiscoveredDocumentsWithinLimit() async throws {
         let fixture = try await CatalogFixture.make()
         let first = fixture.document("a.pdf", status: .discovered, availability: .available)

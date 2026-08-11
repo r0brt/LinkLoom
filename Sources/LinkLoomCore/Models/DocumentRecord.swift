@@ -24,6 +24,24 @@ public enum DocumentAvailability: String, Codable, DatabaseValueConvertible, Sen
 public struct DocumentRecord: Codable, FetchableRecord, PersistableRecord, Identifiable, Sendable, Equatable {
     public static let databaseTableName = "document"
 
+    public static func databaseDateEncodingStrategy(
+        for column: String
+    ) -> DatabaseDateEncodingStrategy {
+        column == "modifiedAt" ? .timeIntervalSinceReferenceDate : .deferredToDate
+    }
+
+    public static func databaseDateDecodingStrategy(
+        for column: String
+    ) -> DatabaseDateDecodingStrategy {
+        guard column == "modifiedAt" else { return .deferredToDate }
+        return .custom { databaseValue in
+            if let seconds = Double.fromDatabaseValue(databaseValue) {
+                return Date(timeIntervalSinceReferenceDate: seconds)
+            }
+            return Date.fromDatabaseValue(databaseValue)
+        }
+    }
+
     public var id: UUID
     public var sourceRootID: UUID
     public var relativePath: String
