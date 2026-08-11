@@ -1,0 +1,48 @@
+name: Policy
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Policy / validate
+    runs-on: ubuntu-latest
+    env:
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      HEAD_BRANCH: ${{ github.head_ref }}
+    steps:
+      - name: Validate pull request title
+        shell: bash
+        run: |
+          title_pattern='^(feat|fix|docs|refactor|test|chore|build|ci|perf|revert)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^[:space:]].*$'
+
+          if (( ${#PR_TITLE} > 72 )); then
+            echo "Pull request title must not exceed 72 characters."
+            exit 1
+          fi
+
+          if [[ ! "$PR_TITLE" =~ $title_pattern ]]; then
+            echo "Pull request title must follow Conventional Commits."
+            echo "Example: feat(preview): add metadata extraction"
+            exit 1
+          fi
+
+      - name: Validate branch name
+        shell: bash
+        run: |
+          branch_pattern='^(codex/)?(feat|fix|docs|refactor|test|chore|hotfix)/([0-9]+-)?[a-z0-9]+(-[a-z0-9]+)*$'
+
+          if [[ "$HEAD_BRANCH" == dependabot/* ]]; then
+            exit 0
+          fi
+
+          if [[ ! "$HEAD_BRANCH" =~ $branch_pattern ]]; then
+            echo "Branch name does not follow the repository convention."
+            echo "Expected: <type>/<optional-issue>-<short-description>"
+            echo "Codex branches may use a leading codex/ prefix."
+            exit 1
+          fi
