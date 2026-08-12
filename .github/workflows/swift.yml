@@ -1,0 +1,44 @@
+name: Swift
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: swift-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Swift / test
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+      - name: Test
+        run: swift test
+
+  release-build:
+    name: Swift / release-build
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          swift --version
+          xcodebuild -version
+      - name: Release build
+        run: swift build -c release

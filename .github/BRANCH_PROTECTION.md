@@ -25,7 +25,14 @@ Require this check immediately:
 Policy / validate
 ```
 
-The workflow in [`workflows/pr-policy.yml`](workflows/pr-policy.yml) supplies that check. When application tooling is added, also require its build, automated test, lint, type-check, and security checks. A new check should first run reliably on pull requests before administrators make it required.
+After each of these checks has run reliably on pull requests, make it required:
+
+```text
+Swift / test
+Swift / release-build
+```
+
+The workflows in [`workflows/pr-policy.yml`](workflows/pr-policy.yml) and [`workflows/swift.yml`](workflows/swift.yml) supply these checks. When application tooling is added, also require its build, automated test, lint, type-check, and security checks. A new check should first run reliably on pull requests before administrators make it required.
 
 ## Merge and branch settings
 
