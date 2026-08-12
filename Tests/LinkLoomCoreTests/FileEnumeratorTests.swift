@@ -37,6 +37,51 @@ struct FileEnumeratorTests {
         }
     }
 
+    @Test func throwsWhenSupportedFileRegularityMetadataIsMissing() throws {
+        let directory = try TemporaryDirectory()
+        try directory.write("incomplete.pdf", bytes: Data("pdf".utf8))
+        let enumerator = DefaultFileEnumerator { url, _ in
+            try url.resourceValues(forKeys: [
+                .fileSizeKey,
+                .contentModificationDateKey,
+            ])
+        }
+
+        #expect(throws: FileEnumerationError.self) {
+            try enumerator.files(in: directory.url)
+        }
+    }
+
+    @Test func throwsWhenSupportedFileSizeMetadataIsMissing() throws {
+        let directory = try TemporaryDirectory()
+        try directory.write("incomplete.pdf", bytes: Data("pdf".utf8))
+        let enumerator = DefaultFileEnumerator { url, _ in
+            try url.resourceValues(forKeys: [
+                .isRegularFileKey,
+                .contentModificationDateKey,
+            ])
+        }
+
+        #expect(throws: FileEnumerationError.self) {
+            try enumerator.files(in: directory.url)
+        }
+    }
+
+    @Test func throwsWhenSupportedFileModificationDateMetadataIsMissing() throws {
+        let directory = try TemporaryDirectory()
+        try directory.write("incomplete.pdf", bytes: Data("pdf".utf8))
+        let enumerator = DefaultFileEnumerator { url, _ in
+            try url.resourceValues(forKeys: [
+                .isRegularFileKey,
+                .fileSizeKey,
+            ])
+        }
+
+        #expect(throws: FileEnumerationError.self) {
+            try enumerator.files(in: directory.url)
+        }
+    }
+
     @Test func unsupportedFileDoesNotRequireMetadata() throws {
         let directory = try TemporaryDirectory()
         try directory.write("notes.txt", bytes: Data("ignored".utf8))
@@ -45,6 +90,16 @@ struct FileEnumeratorTests {
         }
 
         #expect(try enumerator.files(in: directory.url).isEmpty)
+    }
+
+    @Test func ignoresSupportedExtensionEntryKnownNotToBeARegularFile() throws {
+        let directory = try TemporaryDirectory()
+        try FileManager.default.createDirectory(
+            at: directory.url.appendingPathComponent("folder.pdf"),
+            withIntermediateDirectories: false
+        )
+
+        #expect(try DefaultFileEnumerator().files(in: directory.url).isEmpty)
     }
 
     @Test func throwsWhenRootCannotBeEnumerated() {

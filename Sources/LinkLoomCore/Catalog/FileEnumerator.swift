@@ -15,6 +15,7 @@ public protocol FileEnumerating: Sendable {
 enum FileEnumerationError: Error {
     case rootUnavailable
     case incompleteTraversal(URL, any Error)
+    case incompleteMetadata(URL)
 }
 
 public struct DefaultFileEnumerator: FileEnumerating {
@@ -103,17 +104,26 @@ public struct DefaultFileEnumerator: FileEnumerating {
                 continue
             }
             let values = try resourceValuesOperation(url, keys)
-            guard values.isRegularFile == true,
-                  let relativePath = Self.relativePath(for: url, under: root)
+            guard let isRegularFile = values.isRegularFile else {
+                throw FileEnumerationError.incompleteMetadata(url)
+            }
+            guard isRegularFile else {
+                continue
+            }
+            guard let fileSize = values.fileSize,
+                  let contentModificationDate = values.contentModificationDate
             else {
+                throw FileEnumerationError.incompleteMetadata(url)
+            }
+            guard let relativePath = Self.relativePath(for: url, under: root) else {
                 continue
             }
             files.append(FileCandidate(
                 url: url,
                 relativePath: relativePath,
                 mediaType: mediaType,
-                byteCount: Int64(values.fileSize ?? 0),
-                modifiedAt: values.contentModificationDate ?? .distantPast
+                byteCount: Int64(fileSize),
+                modifiedAt: contentModificationDate
             ))
         }
         if let traversalError {
