@@ -24,11 +24,12 @@ public protocol DirectoryWatching: Sendable {
 }
 
 public protocol SourceRescanning: Sendable {
-    func rescan(source: SourceRootRecord) async
+    func rescan(source: SourceRootRecord) async throws
 }
 
 public protocol SourceWatchScheduling: Sendable {
     var changes: AsyncStream<DirectoryChange> { get }
+    var rescanCompletions: AsyncStream<UUID> { get }
 
     func start(source: SourceRootRecord, url: URL) async
     func isWatching(sourceID: UUID) async -> Bool

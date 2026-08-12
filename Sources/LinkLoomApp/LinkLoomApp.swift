@@ -98,13 +98,9 @@ private struct IncrementalRescanner: SourceRescanning {
     let catalog: CatalogService
     let ingestion: IngestionPipeline
 
-    func rescan(source: SourceRootRecord) async {
-        do {
-            _ = try await catalog.scan(source: source)
-            _ = await ingestion.processPending(source: source)
-        } catch {
-            // The durable catalog remains retryable after transient source failures.
-        }
+    func rescan(source: SourceRootRecord) async throws {
+        _ = try await catalog.scan(source: source)
+        _ = await ingestion.processPending(source: source)
     }
 }
 

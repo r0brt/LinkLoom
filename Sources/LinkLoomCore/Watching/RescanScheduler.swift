@@ -2,7 +2,9 @@ import Foundation
 
 public actor RescanScheduler: SourceWatchScheduling {
     public nonisolated let changes: AsyncStream<DirectoryChange>
+    public nonisolated let rescanCompletions: AsyncStream<UUID>
     private nonisolated let changeContinuation: AsyncStream<DirectoryChange>.Continuation
+    private nonisolated let rescanCompletionContinuation: AsyncStream<UUID>.Continuation
     private let watcher: any DirectoryWatching
     private let rescanner: any SourceRescanning
     private let debounceDuration: Duration
@@ -16,8 +18,11 @@ public actor RescanScheduler: SourceWatchScheduling {
         rescanner: any SourceRescanning
     ) {
         let changeStream = AsyncStream<DirectoryChange>.makeStream()
+        let completionStream = AsyncStream<UUID>.makeStream()
         changes = changeStream.stream
+        rescanCompletions = completionStream.stream
         changeContinuation = changeStream.continuation
+        rescanCompletionContinuation = completionStream.continuation
         self.watcher = watcher
         self.rescanner = rescanner
         debounceDuration = .milliseconds(500)
@@ -29,8 +34,11 @@ public actor RescanScheduler: SourceWatchScheduling {
         debounceDuration: Duration
     ) {
         let changeStream = AsyncStream<DirectoryChange>.makeStream()
+        let completionStream = AsyncStream<UUID>.makeStream()
         changes = changeStream.stream
+        rescanCompletions = completionStream.stream
         changeContinuation = changeStream.continuation
+        rescanCompletionContinuation = completionStream.continuation
         self.watcher = watcher
         self.rescanner = rescanner
         self.debounceDuration = debounceDuration
@@ -124,11 +132,14 @@ public actor RescanScheduler: SourceWatchScheduling {
         debounceGenerations[source.id] = generation
         let duration = debounceDuration
         let rescanner = self.rescanner
+        let completionContinuation = rescanCompletionContinuation
         debounceTasks[source.id] = Task { [weak self] in
             do {
                 try await ContinuousClock().sleep(for: duration)
                 try Task.checkCancellation()
-                await rescanner.rescan(source: source)
+                try await rescanner.rescan(source: source)
+                try Task.checkCancellation()
+                completionContinuation.yield(source.id)
                 await self?.debounceDidEnd(
                     sourceID: source.id,
                     generation: generation

@@ -157,6 +157,61 @@ struct RescanSchedulerTests {
         await scheduler.stopAll()
     }
 
+    @Test func successfulRescanPublishesSourceCompletion() async throws {
+        let watcher = RestartableDirectoryWatcher()
+        let scheduler = RescanScheduler(
+            watcher: watcher,
+            rescanner: CountingSourceRescanner(),
+            debounceDuration: .milliseconds(10)
+        )
+        let source = source(named: "Archive")
+        let completions = UUIDRecorder()
+        let observation = Task {
+            for await sourceID in scheduler.rescanCompletions {
+                await completions.record(sourceID)
+            }
+        }
+        await scheduler.start(source: source, url: URL(fileURLWithPath: source.pathHint))
+        await watcher.waitUntilStreamCount(1)
+        watcher.emitToLatest(DirectoryChange(
+            sourceRootID: source.id,
+            kind: .contentChanged
+        ))
+
+        try await waitUntil { await completions.values == [source.id] }
+        observation.cancel()
+        await scheduler.stopAll()
+    }
+
+    @Test func failedRescanDoesNotPublishCompletion() async throws {
+        let watcher = RestartableDirectoryWatcher()
+        let rescanner = FailingSourceRescanner()
+        let scheduler = RescanScheduler(
+            watcher: watcher,
+            rescanner: rescanner,
+            debounceDuration: .milliseconds(10)
+        )
+        let source = source(named: "Archive")
+        let completions = UUIDRecorder()
+        let observation = Task {
+            for await sourceID in scheduler.rescanCompletions {
+                await completions.record(sourceID)
+            }
+        }
+        await scheduler.start(source: source, url: URL(fileURLWithPath: source.pathHint))
+        await watcher.waitUntilStreamCount(1)
+        watcher.emitToLatest(DirectoryChange(
+            sourceRootID: source.id,
+            kind: .contentChanged
+        ))
+        try await waitUntil { await rescanner.didRun }
+        try await ContinuousClock().sleep(for: .milliseconds(20))
+
+        #expect(await completions.values.isEmpty)
+        observation.cancel()
+        await scheduler.stopAll()
+    }
+
     @Test func watcherFailurePublishesUnavailableAndAllowsRestart() async throws {
         let watcher = FailingDirectoryWatcher()
         let rescanner = CountingSourceRescanner()
@@ -242,6 +297,14 @@ private actor DirectoryChangeRecorder {
 
     func record(_ change: DirectoryChange) {
         changes.append(change)
+    }
+}
+
+private actor UUIDRecorder {
+    private(set) var values: [UUID] = []
+
+    func record(_ value: UUID) {
+        values.append(value)
     }
 }
 
@@ -384,12 +447,21 @@ private final class FakeDirectoryWatcher: DirectoryWatching, @unchecked Sendable
 private actor CountingSourceRescanner: SourceRescanning {
     private var counts: [UUID: Int] = [:]
 
-    func rescan(source: SourceRootRecord) async {
+    func rescan(source: SourceRootRecord) async throws {
         counts[source.id, default: 0] += 1
     }
 
     func count(sourceID: UUID) -> Int {
         counts[sourceID, default: 0]
+    }
+}
+
+private actor FailingSourceRescanner: SourceRescanning {
+    private(set) var didRun = false
+
+    func rescan(source: SourceRootRecord) async throws {
+        didRun = true
+        throw RescanSchedulerTestError.rescanFailed
     }
 }
 
@@ -401,7 +473,7 @@ private actor MissingMarkingRescanner: SourceRescanning {
         self.documents = documents
     }
 
-    func rescan(source: SourceRootRecord) async {
+    func rescan(source: SourceRootRecord) async throws {
         callCount += 1
         _ = try? await documents.markMissing(
             sourceRootID: source.id,
@@ -456,6 +528,7 @@ private struct WatcherSourceAccess: SourceAccessing {
 }
 
 private enum RescanSchedulerTestError: Error {
+    case rescanFailed
     case timeout
     case unusedResolution
     case watcherFailed
