@@ -454,17 +454,130 @@ struct AppModelTests {
         await model.stopWatching()
     }
 
-    @Test @MainActor func completionStartingDuringSourceAdditionCannotCommit() async throws {
+    @Test @MainActor func completionDuringSourceAdditionRunsAfterOperation() async throws {
         let fixture = try AppModelFixture()
         let first = try await fixture.addSource(named: "First")
         let sourceAccess = BlockingBookmarkSourceAccess()
-        let loader = BlockingSourceSnapshotLoader(snapshot: [first])
         let scheduler = FakeSourceWatchScheduler()
         let model = AppModel(
             sources: fixture.sources,
             documents: fixture.documents,
             sourceAccess: sourceAccess,
             catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler,
+            sourceResolver: { _ in fixture.directory }
+        )
+        try await model.reload()
+        try await fixture.sources.updateLastScan(
+            id: first.id,
+            at: Date(timeIntervalSince1970: 500)
+        )
+        let add = Task {
+            await model.addSource(
+                fixture.directory.appendingPathComponent("Second", isDirectory: true)
+            )
+        }
+        await sourceAccess.waitUntilBookmarkCreationStarts()
+
+        scheduler.completeRescan(sourceID: first.id)
+        try await ContinuousClock().sleep(for: .milliseconds(20))
+        #expect(model.sources.first?.lastScanAt == nil)
+        sourceAccess.releaseBookmarkCreation()
+        await add.value
+        let secondID = try #require(model.selectedSourceID)
+        await waitUntil {
+            model.sources.first(where: { $0.id == first.id })?.lastScanAt != nil
+        }
+
+        #expect(model.sources.map(\.id).contains(secondID))
+        #expect(model.selectedSourceID == secondID)
+        await model.stopWatching()
+    }
+
+    @Test @MainActor func completionDuringFailedSourceAdditionRunsAfterOperation() async throws {
+        let fixture = try AppModelFixture()
+        let first = try await fixture.addSource(named: "First")
+        let sourceAccess = BlockingBookmarkSourceAccess(throwsAfterRelease: true)
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler,
+            sourceResolver: { _ in fixture.directory }
+        )
+        try await model.reload()
+        try await fixture.sources.updateLastScan(
+            id: first.id,
+            at: Date(timeIntervalSince1970: 500)
+        )
+        let add = Task {
+            await model.addSource(
+                fixture.directory.appendingPathComponent("Second", isDirectory: true)
+            )
+        }
+        await sourceAccess.waitUntilBookmarkCreationStarts()
+
+        scheduler.completeRescan(sourceID: first.id)
+        try await ContinuousClock().sleep(for: .milliseconds(20))
+        #expect(model.sources.first?.lastScanAt == nil)
+        sourceAccess.releaseBookmarkCreation()
+        await add.value
+        await waitUntil { model.sources.first?.lastScanAt != nil }
+
+        #expect(model.lastErrorCode == "sourceAddFailure")
+        await model.stopWatching()
+    }
+
+    @Test @MainActor func shutdownRejectsQueuedCompletionAfterSourceOperation() async throws {
+        let fixture = try AppModelFixture()
+        let first = try await fixture.addSource(named: "First")
+        let sourceAccess = BlockingBookmarkSourceAccess()
+        let completionLoader = ImmediateSourceSnapshotLoader(snapshot: [first])
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler,
+            sourceResolver: { _ in fixture.directory },
+            sourceLoader: { await completionLoader.load() }
+        )
+        try await model.reload()
+        let add = Task {
+            await model.addSource(
+                fixture.directory.appendingPathComponent("Second", isDirectory: true)
+            )
+        }
+        await sourceAccess.waitUntilBookmarkCreationStarts()
+        scheduler.completeRescan(sourceID: first.id)
+        try await ContinuousClock().sleep(for: .milliseconds(20))
+
+        await model.stopWatching()
+        sourceAccess.releaseBookmarkCreation()
+        await add.value
+        try await ContinuousClock().sleep(for: .milliseconds(20))
+
+        #expect(await completionLoader.didRun == false)
+    }
+
+    @Test @MainActor func replacementDrainWaitsForCancelledDrainToFinish() async throws {
+        let fixture = try AppModelFixture()
+        let first = try await fixture.addSource(named: "First")
+        let sourceAccess = BlockingBookmarkSourceAccess()
+        let catalog = BlockingCatalogScanner()
+        let loader = CancellationResistantFirstSourceLoader(snapshot: [first])
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: sourceAccess,
+            catalog: catalog,
             ingestion: FakePendingIngester(),
             watchScheduler: scheduler,
             sourceResolver: { _ in fixture.directory },
@@ -477,26 +590,31 @@ struct AppModelTests {
             )
         }
         await sourceAccess.waitUntilBookmarkCreationStarts()
-
         scheduler.completeRescan(sourceID: first.id)
-        try await ContinuousClock().sleep(for: .milliseconds(20))
-        #expect(await loader.didStart == false)
         sourceAccess.releaseBookmarkCreation()
         await add.value
-        let secondID = try #require(model.selectedSourceID)
-        await loader.release()
-        await Task.yield()
+        await loader.waitUntilFirstLoadStarts()
+        let scan = Task { await model.scanSelectedSource() }
+        await catalog.waitUntilScanStarts()
+        scheduler.completeRescan(sourceID: first.id)
+        await catalog.releaseScan()
+        await scan.value
+        try await ContinuousClock().sleep(for: .milliseconds(20))
+        await loader.releaseFirstLoad()
 
-        #expect(model.sources.map(\.id).contains(secondID))
-        #expect(model.selectedSourceID == secondID)
+        try await waitUntilAsync { await loader.loadCount >= 2 }
+        #expect(await loader.loadCount >= 2)
         await model.stopWatching()
     }
 
-    @Test @MainActor func completionStartingDuringReloadCannotCommit() async throws {
+    @Test @MainActor func completionStartingDuringReloadRunsAfterReloadFinishes() async throws {
         let fixture = try AppModelFixture()
         let first = try await fixture.addSource(named: "First")
+        let second = try await fixture.addSource(named: "Second")
+        var refreshedFirst = first
+        refreshedFirst.lastScanAt = Date(timeIntervalSince1970: 500)
         let documentLoader = BlockingSecondDocumentLoader(initial: [], late: [])
-        let completionLoader = ImmediateSourceSnapshotLoader(snapshot: [first])
+        let completionLoader = ImmediateSourceSnapshotLoader(snapshot: [refreshedFirst, second])
         let scheduler = FakeSourceWatchScheduler()
         let model = AppModel(
             sources: fixture.sources,
@@ -510,7 +628,6 @@ struct AppModelTests {
             documentLoader: { sourceID in await documentLoader.load(sourceID: sourceID) }
         )
         try await model.reload()
-        let second = try await fixture.addSource(named: "Second")
         let reload = Task { try await model.reload() }
         await documentLoader.waitUntilSecondLoadStarts()
 
@@ -519,8 +636,9 @@ struct AppModelTests {
         #expect(await completionLoader.didRun == false)
         await documentLoader.releaseSecondLoad()
         try await reload.value
+        await waitUntil { model.sources == [refreshedFirst, second] }
 
-        #expect(model.sources.map(\.id).contains(second.id))
+        #expect(model.sources == [refreshedFirst, second])
         await model.stopWatching()
     }
 
@@ -949,6 +1067,27 @@ private actor CountingCatalogScanner: CatalogScanning {
     }
 }
 
+private actor BlockingCatalogScanner: CatalogScanning {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func scan(source: SourceRootRecord) async {
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func waitUntilScanStarts() async {
+        guard continuation == nil else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func releaseScan() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 private struct FailingPendingIngester: PendingIngesting {
     func processPending(source: SourceRootRecord) async throws {
         throw AppModelTestError.ingestionFailed
@@ -959,6 +1098,11 @@ private final class BlockingBookmarkSourceAccess: SourceAccessing, @unchecked Se
     private let condition = NSCondition()
     private var started = false
     private var released = false
+    private let throwsAfterRelease: Bool
+
+    init(throwsAfterRelease: Bool = false) {
+        self.throwsAfterRelease = throwsAfterRelease
+    }
 
     func createBookmark(for url: URL) throws -> Data {
         condition.lock()
@@ -968,6 +1112,9 @@ private final class BlockingBookmarkSourceAccess: SourceAccessing, @unchecked Se
             condition.wait()
         }
         condition.unlock()
+        if throwsAfterRelease {
+            throw AppModelTestError.scanFailed
+        }
         return Data(url.path.utf8)
     }
 
@@ -1132,27 +1279,6 @@ private actor TwoStageSourceLoader {
     }
 }
 
-private actor BlockingSourceSnapshotLoader {
-    private let snapshot: [SourceRootRecord]
-    private(set) var didStart = false
-    private var continuation: CheckedContinuation<Void, Never>?
-
-    init(snapshot: [SourceRootRecord]) {
-        self.snapshot = snapshot
-    }
-
-    func load() async -> [SourceRootRecord] {
-        didStart = true
-        await withCheckedContinuation { continuation = $0 }
-        return snapshot
-    }
-
-    func release() {
-        continuation?.resume()
-        continuation = nil
-    }
-}
-
 private actor ImmediateSourceSnapshotLoader {
     private let snapshot: [SourceRootRecord]
     private(set) var didRun = false
@@ -1164,6 +1290,36 @@ private actor ImmediateSourceSnapshotLoader {
     func load() -> [SourceRootRecord] {
         didRun = true
         return snapshot
+    }
+}
+
+private actor CancellationResistantFirstSourceLoader {
+    private let snapshot: [SourceRootRecord]
+    private(set) var loadCount = 0
+    private var firstContinuation: CheckedContinuation<Void, Never>?
+    private var firstStartWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(snapshot: [SourceRootRecord]) {
+        self.snapshot = snapshot
+    }
+
+    func load() async -> [SourceRootRecord] {
+        loadCount += 1
+        guard loadCount == 1 else { return snapshot }
+        firstStartWaiters.forEach { $0.resume() }
+        firstStartWaiters.removeAll()
+        await withCheckedContinuation { firstContinuation = $0 }
+        return snapshot
+    }
+
+    func waitUntilFirstLoadStarts() async {
+        guard loadCount == 0 else { return }
+        await withCheckedContinuation { firstStartWaiters.append($0) }
+    }
+
+    func releaseFirstLoad() {
+        firstContinuation?.resume()
+        firstContinuation = nil
     }
 }
 

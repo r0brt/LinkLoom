@@ -39,7 +39,10 @@ public final class AppModel: ObservableObject {
     private var watchedSourceIDs = Set<UUID>()
     private var watchChangesTask: Task<Void, Never>?
     private var rescanCompletionsTask: Task<Void, Never>?
+    private var rescanDrainTask: Task<Void, Never>?
     private var incrementalRefreshGeneration = 0
+    private var pendingRescanSourceIDs = Set<UUID>()
+    private var isProcessingRescanCompletions = false
     private var watchLifecycleGeneration = 0
 
     public init(
@@ -110,14 +113,21 @@ public final class AppModel: ObservableObject {
 
     public func reload() async throws {
         activeReloadCount += 1
-        defer { activeReloadCount -= 1 }
         invalidateIncrementalRefreshes()
-        sources = try await sourceRepository.all()
-        if !sources.contains(where: { $0.id == selectedSourceID }) {
-            selectedSourceID = sources.first?.id
+        do {
+            sources = try await sourceRepository.all()
+            if !sources.contains(where: { $0.id == selectedSourceID }) {
+                selectedSourceID = sources.first?.id
+            }
+            _ = try await reloadDocuments()
+            await startWatchingSavedSources()
+            activeReloadCount -= 1
+            await processPendingRescanCompletions()
+        } catch {
+            activeReloadCount -= 1
+            await processPendingRescanCompletions()
+            throw error
         }
-        _ = try await reloadDocuments()
-        await startWatchingSavedSources()
     }
 
     public func addSource(_ url: URL) async {
@@ -199,13 +209,18 @@ public final class AppModel: ObservableObject {
         let stoppingGeneration = watchLifecycleGeneration
         let changesTask = watchChangesTask
         let completionsTask = rescanCompletionsTask
+        let drainTask = rescanDrainTask
         changesTask?.cancel()
         completionsTask?.cancel()
+        drainTask?.cancel()
         watchChangesTask = nil
         rescanCompletionsTask = nil
+        rescanDrainTask = nil
+        pendingRescanSourceIDs.removeAll()
         watchedSourceIDs.removeAll()
         await changesTask?.value
         await completionsTask?.value
+        await drainTask?.value
         guard stoppingGeneration == watchLifecycleGeneration else { return }
         await watchScheduler?.stopAll()
     }
@@ -243,6 +258,18 @@ public final class AppModel: ObservableObject {
 
     private func endExclusiveSourceOperation() {
         isExclusiveSourceOperationActive = false
+        guard !pendingRescanSourceIDs.isEmpty,
+              rescanCompletionsTask != nil
+        else {
+            return
+        }
+        let previousDrainTask = rescanDrainTask
+        previousDrainTask?.cancel()
+        rescanDrainTask = Task { [weak self] in
+            await previousDrainTask?.value
+            guard !Task.isCancelled else { return }
+            await self?.processPendingRescanCompletions()
+        }
     }
 
     private func invalidateIncrementalRefreshes() {
@@ -306,8 +333,37 @@ public final class AppModel: ObservableObject {
     }
 
     private func receiveRescanCompletion(sourceID: UUID) async {
-        guard !isExclusiveSourceOperationActive, activeReloadCount == 0 else { return }
-        let generation = incrementalRefreshGeneration
+        invalidateIncrementalRefreshes()
+        pendingRescanSourceIDs.insert(sourceID)
+        await processPendingRescanCompletions()
+    }
+
+    private func processPendingRescanCompletions() async {
+        guard !isProcessingRescanCompletions,
+              !isExclusiveSourceOperationActive,
+              activeReloadCount == 0
+        else {
+            return
+        }
+        isProcessingRescanCompletions = true
+        defer { isProcessingRescanCompletions = false }
+        while !pendingRescanSourceIDs.isEmpty,
+              !isExclusiveSourceOperationActive,
+              activeReloadCount == 0,
+              !Task.isCancelled {
+            let sourceIDs = pendingRescanSourceIDs
+            let generation = incrementalRefreshGeneration
+            await refreshAfterRescan(
+                sourceIDs: sourceIDs,
+                generation: generation
+            )
+            if generation == incrementalRefreshGeneration {
+                pendingRescanSourceIDs.subtract(sourceIDs)
+            }
+        }
+    }
+
+    private func refreshAfterRescan(sourceIDs: Set<UUID>, generation: Int) async {
         let selectionAtStart = selectedSourceID
         do {
             let refreshedSources = try await sourceLoader()
@@ -322,14 +378,15 @@ public final class AppModel: ObservableObject {
                 selectedSourceID = sources.first?.id
             }
             let selectionChanged = selectedSourceID != previousSelection
-            guard selectionChanged || sourceID == selectedSourceID else { return }
+            let selectedSourceCompleted = selectedSourceID.map(sourceIDs.contains) ?? false
+            guard selectionChanged || selectedSourceCompleted else { return }
             _ = try await reloadDocuments(
                 expectedIncrementalRefreshGeneration: generation
             )
         } catch {
             guard !Task.isCancelled,
                   generation == incrementalRefreshGeneration,
-                  sourceID == selectionAtStart
+                  selectionAtStart.map(sourceIDs.contains) ?? false
             else {
                 return
             }
