@@ -244,6 +244,26 @@ struct CatalogServiceTests {
         #expect(await fixture.fingerprinter.callCount == 3)
     }
 
+    @Test func incompleteEnumerationPreservesKnownDocumentsAndLastScan() async throws {
+        let fixture = try await CatalogFixture.make()
+        let candidate = fixture.candidate("known.pdf", byteCount: 4, modifiedAt: 100)
+        fixture.enumerator.setCandidates([candidate])
+        await fixture.fingerprinter.set(candidate, hash: "known-hash")
+        _ = try await fixture.service.scan(source: fixture.source, now: fixture.date(200))
+        fixture.enumerator.setError(IncompleteEnumerationTestError())
+
+        await #expect(throws: IncompleteEnumerationTestError.self) {
+            try await fixture.service.scan(source: fixture.source, now: fixture.date(300))
+        }
+
+        let document = try #require(
+            try await fixture.documents.all(sourceRootID: fixture.source.id).first
+        )
+        let storedSource = try #require(try await fixture.sources.all().first)
+        #expect(document.availability == .available)
+        #expect(storedSource.lastScanAt == fixture.date(200))
+    }
+
     @Test func concurrentScansForSameSourceAreSerialized() async throws {
         let fixture = try await CatalogFixture.make()
         let firstVersion = fixture.candidate("a.pdf", byteCount: 4, modifiedAt: 100)
@@ -392,6 +412,7 @@ struct DocumentRepositoryTests {
 private struct CatalogFixture {
     let root = URL(fileURLWithPath: "/Volumes/Test")
     let source: SourceRootRecord
+    let sources: SourceRootRepository
     let documents: DocumentRepository
     let enumerator: CatalogFileEnumerator
     let fingerprinter: CatalogFingerprinter
@@ -418,6 +439,7 @@ private struct CatalogFixture {
         )
         return CatalogFixture(
             source: source,
+            sources: sources,
             documents: documents,
             enumerator: enumerator,
             fingerprinter: fingerprinter,
@@ -486,6 +508,7 @@ private final class CatalogFileEnumerator: FileEnumerating, @unchecked Sendable 
     private let lock = NSLock()
     private var candidates: [FileCandidate] = []
     private var candidateBatches: [[FileCandidate]] = []
+    private var error: (any Error)?
     private var callCount = 0
 
     var invocationCount: Int {
@@ -498,6 +521,7 @@ private final class CatalogFileEnumerator: FileEnumerating, @unchecked Sendable 
         lock.lock()
         self.candidates = candidates
         candidateBatches = []
+        error = nil
         callCount = 0
         lock.unlock()
     }
@@ -505,7 +529,14 @@ private final class CatalogFileEnumerator: FileEnumerating, @unchecked Sendable 
     func setCandidateBatches(_ batches: [[FileCandidate]]) {
         lock.lock()
         candidateBatches = batches
+        error = nil
         callCount = 0
+        lock.unlock()
+    }
+
+    func setError(_ error: any Error) {
+        lock.lock()
+        self.error = error
         lock.unlock()
     }
 
@@ -513,6 +544,9 @@ private final class CatalogFileEnumerator: FileEnumerating, @unchecked Sendable 
         lock.lock()
         defer { lock.unlock() }
         callCount += 1
+        if let error {
+            throw error
+        }
         if !candidateBatches.isEmpty {
             let index = min(callCount - 1, candidateBatches.count - 1)
             return candidateBatches[index]
@@ -520,6 +554,8 @@ private final class CatalogFileEnumerator: FileEnumerating, @unchecked Sendable 
         return candidates
     }
 }
+
+private struct IncompleteEnumerationTestError: Error {}
 
 private actor CatalogFingerprinter: FileFingerprinting {
     private var fingerprints: [URL: FileFingerprint] = [:]

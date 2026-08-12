@@ -22,20 +22,58 @@ struct FileEnumeratorTests {
         #expect(files.map(\.mediaType) == [.pdf, .jpeg, .png, .heic, .jpeg])
     }
 
-    @Test func skipsFileWhoseMetadataBecomesUnavailable() throws {
+    @Test func throwsWhenSupportedFileMetadataBecomesUnavailable() throws {
         let directory = try TemporaryDirectory()
-        try directory.write("a-unavailable.pdf", bytes: Data("unavailable".utf8))
-        try directory.write("z-available.pdf", bytes: Data("available".utf8))
+        try directory.write("unavailable.pdf", bytes: Data("pdf".utf8))
         let enumerator = DefaultFileEnumerator { url, keys in
-            if url.lastPathComponent == "a-unavailable.pdf" {
+            if url.lastPathComponent == "unavailable.pdf" {
                 throw MetadataProbeError()
             }
             return try url.resourceValues(forKeys: keys)
         }
 
-        let files = try enumerator.files(in: directory.url)
+        #expect(throws: MetadataProbeError.self) {
+            try enumerator.files(in: directory.url)
+        }
+    }
 
-        #expect(files.map(\.relativePath) == ["z-available.pdf"])
+    @Test func unsupportedFileDoesNotRequireMetadata() throws {
+        let directory = try TemporaryDirectory()
+        try directory.write("notes.txt", bytes: Data("ignored".utf8))
+        let enumerator = DefaultFileEnumerator { _, _ in
+            throw MetadataProbeError()
+        }
+
+        #expect(try enumerator.files(in: directory.url).isEmpty)
+    }
+
+    @Test func throwsWhenRootCannotBeEnumerated() {
+        let missingRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+
+        #expect(throws: FileEnumerationError.self) {
+            try DefaultFileEnumerator().files(in: missingRoot)
+        }
+    }
+
+    @Test func throwsWhenTraversalReportsSubtreeError() throws {
+        let directory = try TemporaryDirectory()
+        let error = MetadataProbeError()
+        let enumerator = DefaultFileEnumerator(
+            resourceValues: { url, keys in try url.resourceValues(forKeys: keys) },
+            directoryEnumerator: { root, keys, options, errorHandler in
+                _ = errorHandler(root.appendingPathComponent("offline"), error)
+                return FileManager.default.enumerator(
+                    at: root,
+                    includingPropertiesForKeys: keys,
+                    options: options
+                )
+            }
+        )
+
+        #expect(throws: FileEnumerationError.self) {
+            try enumerator.files(in: directory.url)
+        }
     }
 
     @Test func sortsPathsByLocaleIndependentUTF8Order() throws {
