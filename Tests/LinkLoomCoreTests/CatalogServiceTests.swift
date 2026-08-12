@@ -387,6 +387,58 @@ struct DocumentRepositoryTests {
         #expect(stored.availability == .unavailable)
     }
 
+    @Test func reconciliationCannotOverwriteConcurrentReadyCompletion() async throws {
+        let fixture = try await CatalogFixture.make()
+        var staleCatalogSnapshot = fixture.document("a.pdf", status: .extracting)
+        try await fixture.documents.save(staleCatalogSnapshot)
+        try await fixture.documents.markStatus(
+            id: staleCatalogSnapshot.id,
+            status: .ready,
+            pageCount: 2
+        )
+        staleCatalogSnapshot.lastSeenAt = fixture.date(200)
+
+        _ = try await fixture.documents.reconcile(
+            sourceRootID: fixture.source.id,
+            saving: [staleCatalogSnapshot],
+            excludingDocumentIDs: [staleCatalogSnapshot.id]
+        )
+
+        let stored = try #require(
+            try await fixture.documents.all(sourceRootID: fixture.source.id).first
+        )
+        #expect(stored.status == .ready)
+        #expect(stored.pageCount == 2)
+        #expect(stored.lastSeenAt == fixture.date(200))
+    }
+
+    @Test func reconciliationResetsReadyStateWhenContentHashChanges() async throws {
+        let fixture = try await CatalogFixture.make()
+        var changedSnapshot = fixture.document("a.pdf", status: .extracting)
+        try await fixture.documents.save(changedSnapshot)
+        try await fixture.documents.markStatus(
+            id: changedSnapshot.id,
+            status: .ready,
+            pageCount: 2
+        )
+        changedSnapshot.contentHash = "replacement-hash"
+        changedSnapshot.byteCount = 9
+
+        _ = try await fixture.documents.reconcile(
+            sourceRootID: fixture.source.id,
+            saving: [changedSnapshot],
+            excludingDocumentIDs: [changedSnapshot.id]
+        )
+
+        let stored = try #require(
+            try await fixture.documents.all(sourceRootID: fixture.source.id).first
+        )
+        #expect(stored.status == .discovered)
+        #expect(stored.pageCount == nil)
+        #expect(stored.failureCode == nil)
+        #expect(stored.contentHash == "replacement-hash")
+    }
+
     @Test func reconciliationBatchRollsBackAllWritesOnConflict() async throws {
         let fixture = try await CatalogFixture.make()
         let first = fixture.document("same.pdf")

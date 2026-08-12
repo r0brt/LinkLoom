@@ -106,8 +106,29 @@ public actor DocumentRepository {
         excludingDocumentIDs: Set<UUID>
     ) async throws -> Int {
         try await dbWriter.write { db in
-            for document in documentsToSave {
-                try document.save(db)
+            for incoming in documentsToSave {
+                if var current = try DocumentRecord.fetchOne(db, key: incoming.id) {
+                    let contentChanged = current.contentHash != incoming.contentHash
+                    current.relativePath = incoming.relativePath
+                    current.contentHash = incoming.contentHash
+                    current.byteCount = incoming.byteCount
+                    current.modifiedAt = incoming.modifiedAt
+                    current.mediaType = incoming.mediaType
+                    current.availability = incoming.availability
+                    current.lastSeenAt = incoming.lastSeenAt
+                    if contentChanged {
+                        current.status = .discovered
+                        current.pageCount = nil
+                        current.failureCode = nil
+                    }
+                    try current.update(db)
+                } else {
+                    var inserted = incoming
+                    inserted.status = .discovered
+                    inserted.pageCount = nil
+                    inserted.failureCode = nil
+                    try inserted.insert(db)
+                }
             }
             let documents = try DocumentRecord
                 .filter(Column("sourceRootID") == sourceRootID)
