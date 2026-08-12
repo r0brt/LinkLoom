@@ -3,6 +3,7 @@ import Foundation
 
 public enum ExtractionMethod: String, Codable, Sendable {
     case embeddedPDFText
+    case hybridPDFTextAndOCR
     case visionOCR
 }
 

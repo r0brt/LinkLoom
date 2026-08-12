@@ -110,6 +110,33 @@ enum FixtureFactory {
         return url
     }
 
+    static func makeMixedPDF(
+        embeddedText: String,
+        scannedText: String
+    ) throws -> URL {
+        let embeddedPDF = try makeTextPDF(pages: [embeddedText])
+        let scannedPDF = try makeImageOnlyPDF(text: scannedText)
+        defer {
+            try? FileManager.default.removeItem(at: embeddedPDF)
+            try? FileManager.default.removeItem(at: scannedPDF)
+        }
+        guard let embeddedDocument = PDFDocument(url: embeddedPDF),
+              let scannedDocument = PDFDocument(url: scannedPDF),
+              let embeddedPage = embeddedDocument.page(at: 0),
+              let scannedPage = scannedDocument.page(at: 0)
+        else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        let document = PDFDocument()
+        document.insert(embeddedPage, at: 0)
+        document.insert(scannedPage, at: 1)
+        let url = temporaryPDFURL()
+        guard document.write(to: url) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return url
+    }
+
     private static func temporaryPDFURL() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString)

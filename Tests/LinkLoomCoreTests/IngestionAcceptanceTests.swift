@@ -4,6 +4,22 @@ import Testing
 
 @Suite("Local ingestion acceptance")
 struct IngestionAcceptanceTests {
+    @Test func realMixedPDFPreservesEmbeddedAndRecognizedPages() async throws {
+        let pdf = try FixtureFactory.makeMixedPDF(
+            embeddedText: "Embedded agreement 2026",
+            scannedText: "Scanned invoice CHF 7840"
+        )
+        defer { try? FileManager.default.removeItem(at: pdf) }
+
+        let result = try await CompositeTextExtractor().extract(from: pdf, mediaType: .pdf)
+
+        #expect(result.method == .hybridPDFTextAndOCR)
+        #expect(result.pages[0].text.contains("Embedded agreement"))
+        #expect(result.pages[0].regions.isEmpty)
+        #expect(result.pages[1].text.contains("invoice"))
+        #expect(!result.pages[1].regions.isEmpty)
+    }
+
     @Test func ingestionLeavesEverySourceFileUnchanged() async throws {
         let source = try FixtureFactory.makeAcceptanceSource()
         let before = try await snapshots(in: source.rootURL)

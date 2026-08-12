@@ -51,6 +51,60 @@ struct CompositeTextExtractorTests {
         #expect(await ocr.pageIndices.isEmpty)
     }
 
+    @Test func mixedPDFUsesEmbeddedTextAndOCRByPage() async throws {
+        let image = try makePixelImage()
+        let embedded = FakePDFTextExtractor(result: ExtractedDocument(
+            method: .embeddedPDFText,
+            pages: [
+                ExtractedPage(pageIndex: 0, text: "Embedded contract text", regions: []),
+                ExtractedPage(pageIndex: 1, text: "", regions: []),
+            ]
+        ))
+        let renderer = FakePDFPageRenderer(images: [image, image])
+        let ocr = FakeOCRRecognizer()
+        let extractor = CompositeTextExtractor(
+            pdfText: embedded,
+            pdfRenderer: renderer,
+            ocr: ocr
+        )
+
+        let result = try await extractor.extract(
+            from: URL(fileURLWithPath: "/fixture/mixed.pdf"),
+            mediaType: .pdf
+        )
+
+        #expect(result.method == .hybridPDFTextAndOCR)
+        #expect(result.pages.map(\.pageIndex) == [0, 1])
+        #expect(result.pages.map(\.text) == ["Embedded contract text", "page-1"])
+        #expect(result.pages[0].regions.isEmpty)
+        #expect(!result.pages[1].regions.isEmpty)
+        #expect(await ocr.pageIndices == [1])
+    }
+
+    @Test func mixedPDFPropagatesNonBlankOCRError() async throws {
+        let image = try makePixelImage()
+        let ocr = FakeOCRRecognizer(error: .insufficientEmbeddedText)
+        let extractor = CompositeTextExtractor(
+            pdfText: FakePDFTextExtractor(result: ExtractedDocument(
+                method: .embeddedPDFText,
+                pages: [
+                    ExtractedPage(pageIndex: 0, text: "Embedded contract text", regions: []),
+                    ExtractedPage(pageIndex: 1, text: "", regions: []),
+                ]
+            )),
+            pdfRenderer: FakePDFPageRenderer(images: [image, image]),
+            ocr: ocr
+        )
+
+        await #expect(throws: TextExtractionError.insufficientEmbeddedText) {
+            try await extractor.extract(
+                from: URL(fileURLWithPath: "/fixture/mixed.pdf"),
+                mediaType: .pdf
+            )
+        }
+        #expect(await ocr.pageIndices == [1])
+    }
+
     @Test func imageOnlyPDFRendersEachPageForOCR() async throws {
         let image = try makePixelImage()
         let embedded = FakePDFTextExtractor(error: .insufficientEmbeddedText)
@@ -370,15 +424,18 @@ private final class FakePDFPageRenderer: PDFPageRendering, @unchecked Sendable {
 private actor FakeOCRRecognizer: ImageOCRRecognizing {
     private let cancelAfterFirstPage: Bool
     private let blankPageIndices: Set<Int>
+    private let error: TextExtractionError?
     private(set) var pageIndices: [Int] = []
     private(set) var imageSizes: [CGSize] = []
 
     init(
         cancelAfterFirstPage: Bool = false,
-        blankPageIndices: Set<Int> = []
+        blankPageIndices: Set<Int> = [],
+        error: TextExtractionError? = nil
     ) {
         self.cancelAfterFirstPage = cancelAfterFirstPage
         self.blankPageIndices = blankPageIndices
+        self.error = error
     }
 
     func recognize(cgImage: CGImage, pageIndex: Int) async throws -> ExtractedPage {
@@ -392,7 +449,19 @@ private actor FakeOCRRecognizer: ImageOCRRecognizing {
         if blankPageIndices.contains(pageIndex) {
             throw TextExtractionError.noRecognizedText
         }
-        return ExtractedPage(pageIndex: pageIndex, text: "page-\(pageIndex)", regions: [])
+        if let error {
+            throw error
+        }
+        let text = "page-\(pageIndex)"
+        return ExtractedPage(
+            pageIndex: pageIndex,
+            text: text,
+            regions: [TextRegion(
+                text: text,
+                confidence: 0.99,
+                boundingBox: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.4)
+            )]
+        )
     }
 }
 
