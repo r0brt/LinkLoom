@@ -4,7 +4,7 @@ import Testing
 @testable import LinkLoomAppFeature
 import LinkLoomCore
 
-@Suite("Diagnostic app model")
+@Suite("Diagnostic app model", .serialized)
 struct AppModelTests {
     @Test @MainActor func scanPublishesProgressAndReloadsDocuments() async throws {
         let fixture = try AppModelFixture()
