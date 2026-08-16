@@ -146,6 +146,7 @@ public actor IngestionPipeline {
         let extractor = self.extractor
         let analysisVersion = currentAnalysisVersion
         let pendingDocuments = self.pendingDocuments
+        let runReport = IngestionRunReport()
 
         do {
             return try await sourceAccess.withAccess(to: source.bookmarkData) { rootURL in
@@ -164,6 +165,7 @@ public actor IngestionPipeline {
                     completed += batchResult.report.completed
                     failed += batchResult.report.failed
                     let report = IngestionReport(completed: completed, failed: failed)
+                    await runReport.update(report)
                     if let failureReason = batchResult.failureReason {
                         throw IngestionRunError(
                             reason: failureReason,
@@ -186,9 +188,15 @@ public actor IngestionPipeline {
         } catch let error as IngestionRunError {
             throw error
         } catch is CancellationError {
-            throw IngestionRunError(reason: .cancelled, partialReport: emptyReport)
+            throw IngestionRunError(
+                reason: .cancelled,
+                partialReport: await runReport.value
+            )
         } catch {
-            throw IngestionRunError(reason: .sourceAccess, partialReport: emptyReport)
+            throw IngestionRunError(
+                reason: .sourceAccess,
+                partialReport: await runReport.value
+            )
         }
     }
 
@@ -377,6 +385,16 @@ private enum ProcessingOutcome: Sendable {
 private struct BatchResult: Sendable {
     let report: IngestionReport
     let failureReason: IngestionRunFailureReason?
+}
+
+private actor IngestionRunReport {
+    private var report = IngestionReport(completed: 0, failed: 0)
+
+    var value: IngestionReport { report }
+
+    func update(_ report: IngestionReport) {
+        self.report = report
+    }
 }
 
 private actor IngestionRunCoordinator {
