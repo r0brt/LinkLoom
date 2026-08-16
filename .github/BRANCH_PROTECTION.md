@@ -19,15 +19,10 @@ When more than one active maintainer works on the repository, require at least o
 
 ## Required status checks
 
-Require this check immediately:
+Require all of these checks:
 
 ```text
 Policy / validate
-```
-
-After each of these checks has run reliably on pull requests, make it required:
-
-```text
 Swift / test
 Swift / release-build
 ```
