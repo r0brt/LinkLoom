@@ -183,7 +183,7 @@ struct RescanSchedulerTests {
         await scheduler.stopAll()
     }
 
-    @Test func failedRescanDoesNotPublishCompletion() async throws {
+    @Test func ingestionRunFailureDoesNotPublishCompletion() async throws {
         let watcher = RestartableDirectoryWatcher()
         let rescanner = FailingSourceRescanner()
         let scheduler = RescanScheduler(
@@ -461,7 +461,10 @@ private actor FailingSourceRescanner: SourceRescanning {
 
     func rescan(source: SourceRootRecord) async throws {
         didRun = true
-        throw RescanSchedulerTestError.rescanFailed
+        throw IngestionRunError(
+            reason: .sourceAccess,
+            partialReport: IngestionReport(completed: 0, failed: 0)
+        )
     }
 }
 

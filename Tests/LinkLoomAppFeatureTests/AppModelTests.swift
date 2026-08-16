@@ -53,6 +53,30 @@ struct AppModelTests {
         #expect(model.documents == [existingDocument])
     }
 
+    @Test @MainActor func ingestionFailureAppearsWithoutRemovingExistingDocuments() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let existingDocument = fixture.document(
+            sourceRootID: source.id,
+            path: "existing.pdf"
+        )
+        try await fixture.documents.save(existingDocument)
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FailingPendingIngester()
+        )
+        try await model.reload()
+
+        await model.scanSelectedSource()
+
+        #expect(model.scanState == .idle)
+        #expect(model.lastErrorCode == "scanFailure")
+        #expect(model.documents == [existingDocument])
+    }
+
     @Test @MainActor func addingSourcePersistsAndSelectsIt() async throws {
         let fixture = try AppModelFixture()
         let model = AppModel(
@@ -1090,7 +1114,10 @@ private actor BlockingCatalogScanner: CatalogScanning {
 
 private struct FailingPendingIngester: PendingIngesting {
     func processPending(source: SourceRootRecord) async throws {
-        throw AppModelTestError.ingestionFailed
+        throw IngestionRunError(
+            reason: .sourceAccess,
+            partialReport: IngestionReport(completed: 0, failed: 0)
+        )
     }
 }
 
@@ -1561,7 +1588,6 @@ private struct FakeSourceAccess: SourceAccessing {
 private enum AppModelTestError: Error {
     case scanFailed
     case documentLoadFailed
-    case ingestionFailed
     case unusedSourceResolution
     case timeout
 }

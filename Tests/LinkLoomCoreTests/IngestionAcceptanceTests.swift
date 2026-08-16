@@ -176,7 +176,7 @@ private func runAcceptanceIngestion(
         extractions: ExtractionRepository(dbWriter: database),
         extractor: CompositeTextExtractor()
     )
-    _ = await pipeline.processPending(source: sourceRecord)
+    _ = try await pipeline.processPending(source: sourceRecord)
     return try await documents.all(sourceRootID: sourceRecord.id)
 }
 

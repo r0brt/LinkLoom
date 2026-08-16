@@ -19,15 +19,10 @@ When more than one active maintainer works on the repository, require at least o
 
 ## Required status checks
 
-Require this check immediately:
+Require all of these checks:
 
 ```text
 Policy / validate
-```
-
-After each of these checks has run reliably on pull requests, make it required:
-
-```text
 Swift / test
 Swift / release-build
 ```
@@ -46,7 +41,7 @@ In the repository pull-request settings:
 
 ## Verification after configuration
 
-Open a draft pull request from a conforming branch and confirm that `Policy / validate` appears. Then verify all four controls:
+Open a draft pull request from a conforming branch and confirm that all required checks appear and are enforced: `Policy / validate`, `Swift / test`, and `Swift / release-build`. Then verify all four controls:
 
 1. A non-conforming pull-request title fails the check.
 2. A non-conforming branch name fails the check.
