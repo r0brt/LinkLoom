@@ -109,14 +109,8 @@ public struct CatalogService: Sendable {
 
             var fingerprintedNewPathCandidates: [(FileCandidate, FileFingerprint)] = []
             for candidate in newPathCandidates {
-                do {
-                    let fingerprint = try await fingerprinter.fingerprint(candidate.url)
-                    fingerprintedNewPathCandidates.append((candidate, fingerprint))
-                } catch let error as CancellationError {
-                    throw error
-                } catch {
-                    continue
-                }
+                let fingerprint = try await fingerprinter.fingerprint(candidate.url)
+                fingerprintedNewPathCandidates.append((candidate, fingerprint))
             }
             let newCandidateCountByHash = Dictionary(
                 grouping: fingerprintedNewPathCandidates,

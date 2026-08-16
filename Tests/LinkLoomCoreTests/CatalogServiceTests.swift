@@ -227,20 +227,42 @@ struct CatalogServiceTests {
         #expect(report.missing == 1)
     }
 
-    @Test func fingerprintFailureDoesNotStopOtherDocuments() async throws {
+    @Test func newFingerprintFailureAbortsWithoutReconciliation() async throws {
         let fixture = try await CatalogFixture.make()
-        let first = fixture.candidate("a.pdf", byteCount: 4, modifiedAt: 100)
-        let unreadable = fixture.candidate("b.pdf", byteCount: 5, modifiedAt: 101)
-        let third = fixture.candidate("c.pdf", byteCount: 6, modifiedAt: 102)
+        let knownCandidate = fixture.candidate("known.pdf", byteCount: 4, modifiedAt: 100)
+        fixture.enumerator.setCandidates([knownCandidate])
+        await fixture.fingerprinter.set(knownCandidate, hash: "known-hash")
+        _ = try await fixture.service.scan(source: fixture.source, now: fixture.date(200))
+        let known = try #require(
+            try await fixture.documents.all(sourceRootID: fixture.source.id).first
+        )
+        try await fixture.documents.markStatus(
+            id: known.id,
+            status: .ready,
+            pageCount: 2
+        )
+
+        let first = fixture.candidate("a.pdf", byteCount: 5, modifiedAt: 300)
+        let unreadable = fixture.candidate("b.pdf", byteCount: 6, modifiedAt: 301)
+        let third = fixture.candidate("c.pdf", byteCount: 7, modifiedAt: 302)
         fixture.enumerator.setCandidates([first, unreadable, third])
         await fixture.fingerprinter.set(first, hash: "hash-a")
         await fixture.fingerprinter.set(third, hash: "hash-c")
 
-        let report = try await fixture.service.scan(source: fixture.source, now: fixture.date(200))
-        let documents = try await fixture.documents.all(sourceRootID: fixture.source.id)
+        await #expect(throws: MissingFingerprintError.self) {
+            try await fixture.service.scan(source: fixture.source, now: fixture.date(400))
+        }
 
-        #expect(documents.map(\.relativePath) == ["a.pdf", "c.pdf"])
-        #expect(report.discovered == 2)
+        let documents = try await fixture.documents.all(sourceRootID: fixture.source.id)
+        let storedKnown = try #require(documents.first)
+        let storedSource = try #require(try await fixture.sources.all().first)
+        #expect(documents.count == 1)
+        #expect(storedKnown.id == known.id)
+        #expect(storedKnown.relativePath == "known.pdf")
+        #expect(storedKnown.status == .ready)
+        #expect(storedKnown.pageCount == 2)
+        #expect(storedKnown.availability == .available)
+        #expect(storedSource.lastScanAt == fixture.date(200))
         #expect(await fixture.fingerprinter.callCount == 3)
     }
 
