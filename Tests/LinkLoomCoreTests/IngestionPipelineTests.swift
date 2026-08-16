@@ -99,7 +99,26 @@ struct IngestionPipelineTests {
         } catch {
             Issue.record("Expected IngestionRunError, received \(error)")
         }
-        let report = try await second.value
+        let report = try await withThrowingTaskGroup(of: IngestionReport.self) { group in
+            group.addTask {
+                try await second.value
+            }
+            group.addTask {
+                try await ContinuousClock().sleep(for: .seconds(2))
+                throw IngestionPipelineTestError.timeout
+            }
+            do {
+                let report = try await group.next()!
+                group.cancelAll()
+                return report
+            } catch {
+                if error is IngestionPipelineTestError {
+                    second.cancel()
+                }
+                group.cancelAll()
+                throw error
+            }
+        }
 
         #expect(report == IngestionReport(completed: 1, failed: 0))
         #expect(await fixture.extractor.callCount == 1)
@@ -765,6 +784,10 @@ private actor PendingQuerySequence {
 
 private enum PendingQueryError: Error {
     case failed
+}
+
+private enum IngestionPipelineTestError: Error {
+    case timeout
 }
 
 private actor ConcurrentPipelineStartGate {
