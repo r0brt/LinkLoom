@@ -100,7 +100,7 @@ private struct IncrementalRescanner: SourceRescanning {
 
     func rescan(source: SourceRootRecord) async throws {
         _ = try await catalog.scan(source: source)
-        _ = await ingestion.processPending(source: source)
+        _ = try await ingestion.processPending(source: source)
     }
 }
 
@@ -116,6 +116,6 @@ private struct PendingIngester: PendingIngesting {
     let pipeline: IngestionPipeline
 
     func processPending(source: SourceRootRecord) async throws {
-        _ = await pipeline.processPending(source: source)
+        _ = try await pipeline.processPending(source: source)
     }
 }

@@ -8,7 +8,7 @@ struct IngestionPipelineTests {
     @Test func defaultLimitBoundsConcurrencyWithoutTruncatingPendingWork() async throws {
         let fixture = try await IngestionFixture.make(extractionDelay: .milliseconds(20))
 
-        let report = await fixture.pipeline.processPending(source: fixture.source)
+        let report = try await fixture.pipeline.processPending(source: fixture.source)
 
         #expect(report == IngestionReport(completed: 2, failed: 1))
         #expect(await fixture.extractor.callCount == 3)
@@ -22,17 +22,17 @@ struct IngestionPipelineTests {
         let source = fixture.source
         let first = Task {
             await gate.waitUntilReleased()
-            return await pipeline.processPending(source: source)
+            return try await pipeline.processPending(source: source)
         }
         let second = Task {
             await gate.waitUntilReleased()
-            return await pipeline.processPending(source: source)
+            return try await pipeline.processPending(source: source)
         }
         await gate.waitUntilAllArrived()
 
         await gate.release()
-        _ = await first.value
-        _ = await second.value
+        _ = try await first.value
+        _ = try await second.value
 
         #expect(await fixture.extractor.callCount == 3)
     }
@@ -56,17 +56,17 @@ struct IngestionPipelineTests {
         let gate = ConcurrentPipelineStartGate(expectedArrivals: 2)
         let first = Task {
             await gate.waitUntilReleased()
-            return await firstPipeline.processPending(source: source)
+            return try await firstPipeline.processPending(source: source)
         }
         let second = Task {
             await gate.waitUntilReleased()
-            return await secondPipeline.processPending(source: source)
+            return try await secondPipeline.processPending(source: source)
         }
         await gate.waitUntilAllArrived()
 
         await gate.release()
-        _ = await first.value
-        _ = await second.value
+        _ = try await first.value
+        _ = try await second.value
 
         #expect(await fixture.extractor.callCount == 3)
     }
@@ -79,7 +79,7 @@ struct IngestionPipelineTests {
         let relativePath = "../\(externalDirectory.url.lastPathComponent)/secret.pdf"
         let document = try await fixture.insertDiscoveredDocument(relativePath: relativePath)
 
-        let report = await fixture.pipeline.processPending(source: fixture.source)
+        let report = try await fixture.pipeline.processPending(source: fixture.source)
         let stored = try #require(
             try await fixture.documents.all(sourceRootID: fixture.source.id)
                 .first { $0.id == document.id }
@@ -105,7 +105,7 @@ struct IngestionPipelineTests {
         )
         let document = try await fixture.insertDiscoveredDocument(relativePath: "link.pdf")
 
-        let report = await fixture.pipeline.processPending(source: fixture.source)
+        let report = try await fixture.pipeline.processPending(source: fixture.source)
         let stored = try #require(
             try await fixture.documents.all(sourceRootID: fixture.source.id)
                 .first { $0.id == document.id }
@@ -163,7 +163,7 @@ struct IngestionPipelineTests {
     @Test func isolatesFailureAndPersistsSuccessfulExtractions() async throws {
         let fixture = try await IngestionFixture.make()
 
-        let report = await fixture.pipeline.processPending(
+        let report = try await fixture.pipeline.processPending(
             source: fixture.source,
             limit: 3
         )
@@ -200,10 +200,10 @@ struct IngestionPipelineTests {
 
     @Test func rerunWithSameAnalysisVersionDoesNotReextractReadyDocuments() async throws {
         let fixture = try await IngestionFixture.make()
-        _ = await fixture.pipeline.processPending(source: fixture.source, limit: 3)
+        _ = try await fixture.pipeline.processPending(source: fixture.source, limit: 3)
         let callsAfterFirstRun = await fixture.extractor.callCount
 
-        let report = await fixture.pipeline.processPending(source: fixture.source, limit: 3)
+        let report = try await fixture.pipeline.processPending(source: fixture.source, limit: 3)
 
         #expect(report == IngestionReport(completed: 0, failed: 0))
         #expect(callsAfterFirstRun == 3)
@@ -212,7 +212,7 @@ struct IngestionPipelineTests {
 
     @Test func changedAnalysisVersionReextractsReadyDocuments() async throws {
         let fixture = try await IngestionFixture.make()
-        _ = await fixture.pipeline.processPending(source: fixture.source, limit: 3)
+        _ = try await fixture.pipeline.processPending(source: fixture.source, limit: 3)
         let versionTwoPipeline = IngestionPipeline(
             sourceAccess: TestSourceAccess(rootURL: fixture.temporaryDirectory.url),
             documents: fixture.documents,
@@ -221,7 +221,7 @@ struct IngestionPipelineTests {
             analysisVersion: "text-v2"
         )
 
-        let report = await versionTwoPipeline.processPending(source: fixture.source)
+        let report = try await versionTwoPipeline.processPending(source: fixture.source)
         let first = try #require(
             try await fixture.documents.all(sourceRootID: fixture.source.id)
                 .first { $0.relativePath == "a.pdf" }
@@ -245,7 +245,7 @@ struct IngestionPipelineTests {
 
     @Test func removingSourceDeletesRelationalAndFTSExtractionData() async throws {
         let fixture = try await IngestionFixture.make()
-        _ = await fixture.pipeline.processPending(source: fixture.source, limit: 3)
+        _ = try await fixture.pipeline.processPending(source: fixture.source, limit: 3)
         let sources = SourceRootRepository(dbWriter: fixture.db)
 
         try await sources.remove(id: fixture.source.id)
@@ -268,7 +268,7 @@ struct IngestionPipelineTests {
         #expect(counts.fts == 0)
     }
 
-    @Test func unavailableSourceLeavesDocumentsPendingForRetry() async throws {
+    @Test func unavailableSourceThrowsRunErrorAndLeavesDocumentsPending() async throws {
         let fixture = try await IngestionFixture.make()
         let pipeline = IngestionPipeline(
             sourceAccess: UnavailableSourceAccess(),
@@ -277,10 +277,19 @@ struct IngestionPipelineTests {
             extractor: fixture.extractor
         )
 
-        let report = await pipeline.processPending(source: fixture.source)
+        do {
+            _ = try await pipeline.processPending(source: fixture.source)
+            Issue.record("Expected source access to fail the ingestion run")
+        } catch let error as IngestionRunError {
+            #expect(error == IngestionRunError(
+                reason: .sourceAccess,
+                partialReport: IngestionReport(completed: 0, failed: 0)
+            ))
+        } catch {
+            Issue.record("Expected IngestionRunError, received \(error)")
+        }
         let documents = try await fixture.documents.all(sourceRootID: fixture.source.id)
 
-        #expect(report == IngestionReport(completed: 0, failed: 0))
         #expect(documents.allSatisfy { $0.status == .discovered })
         #expect(documents.allSatisfy { $0.failureCode == nil })
         #expect(await fixture.extractor.callCount == 0)
@@ -386,18 +395,27 @@ struct IngestionPipelineTests {
         )
         let source = fixture.source
         let processing = Task {
-            await pipeline.processPending(source: source)
+            try await pipeline.processPending(source: source)
         }
         await extractor.waitUntilStarted()
 
         processing.cancel()
-        let report = await processing.value
+        do {
+            _ = try await processing.value
+            Issue.record("Expected cancellation to fail the ingestion run")
+        } catch let error as IngestionRunError {
+            #expect(error == IngestionRunError(
+                reason: .cancelled,
+                partialReport: IngestionReport(completed: 0, failed: 0)
+            ))
+        } catch {
+            Issue.record("Expected IngestionRunError, received \(error)")
+        }
         let stored = try #require(
             try await fixture.documents.all(sourceRootID: fixture.source.id)
                 .first { $0.id == document.id }
         )
 
-        #expect(report == IngestionReport(completed: 0, failed: 0))
         #expect(stored.status == .discovered)
         #expect(stored.failureCode == nil)
         #expect(try await fixture.extractions.extraction(documentID: document.id) == nil)
@@ -412,7 +430,7 @@ struct IngestionPipelineTests {
         )
         try await fixture.documents.markStatus(id: document.id, status: .extracting)
 
-        let report = await fixture.pipeline.processPending(source: fixture.source)
+        let report = try await fixture.pipeline.processPending(source: fixture.source)
         let stored = try #require(
             try await fixture.documents.all(sourceRootID: fixture.source.id)
                 .first { $0.id == document.id }
@@ -440,7 +458,7 @@ struct IngestionPipelineTests {
         )
         let source = fixture.source
         let processing = Task {
-            await pipeline.processPending(source: source)
+            try await pipeline.processPending(source: source)
         }
         await extractor.waitUntilStarted()
         var changed = original
@@ -450,16 +468,85 @@ struct IngestionPipelineTests {
         try await fixture.documents.save(changed)
 
         await extractor.release()
-        let report = await processing.value
+        do {
+            _ = try await processing.value
+            Issue.record("Expected stale extraction completion to fail the ingestion run")
+        } catch let error as IngestionRunError {
+            #expect(error == IngestionRunError(
+                reason: .staleDocument,
+                partialReport: IngestionReport(completed: 0, failed: 0)
+            ))
+        } catch {
+            Issue.record("Expected IngestionRunError, received \(error)")
+        }
         let stored = try #require(
             try await fixture.documents.all(sourceRootID: fixture.source.id)
                 .first { $0.id == original.id }
         )
 
-        #expect(report == IngestionReport(completed: 0, failed: 0))
         #expect(stored.status == .discovered)
         #expect(stored.contentHash == "hash-after-catalog-update")
         #expect(try await fixture.extractions.extraction(documentID: original.id) == nil)
+    }
+
+    @Test func initialPendingQueryFailureThrowsZeroPartialReport() async throws {
+        let fixture = try await IngestionFixture.make()
+        let pipeline = IngestionPipeline(
+            sourceAccess: TestSourceAccess(rootURL: fixture.temporaryDirectory.url),
+            documents: fixture.documents,
+            extractions: fixture.extractions,
+            extractor: fixture.extractor,
+            analysisVersion: "text-v1",
+            pendingDocuments: { _, _, _ in
+                throw PendingQueryError.failed
+            }
+        )
+
+        do {
+            _ = try await pipeline.processPending(source: fixture.source)
+            Issue.record("Expected the initial pending query to fail the ingestion run")
+        } catch let error as IngestionRunError {
+            #expect(error == IngestionRunError(
+                reason: .pendingQuery,
+                partialReport: IngestionReport(completed: 0, failed: 0)
+            ))
+        } catch {
+            Issue.record("Expected IngestionRunError, received \(error)")
+        }
+    }
+
+    @Test func failureStatusPersistenceErrorFailsTheRun() async throws {
+        let fixture = try await IngestionFixture.make()
+        try await fixture.markSeedDocumentsReady(excludingRelativePaths: ["b.jpg"])
+        try await fixture.db.write { database in
+            try database.execute(sql: """
+                CREATE TRIGGER reject_failed_status
+                BEFORE UPDATE OF status ON document
+                WHEN NEW.status = 'failed'
+                BEGIN
+                    SELECT RAISE(ABORT, 'blocked failed status');
+                END
+                """)
+        }
+
+        do {
+            _ = try await fixture.pipeline.processPending(source: fixture.source)
+            Issue.record("Expected failed-status persistence to fail the ingestion run")
+        } catch let error as IngestionRunError {
+            #expect(error == IngestionRunError(
+                reason: .persistence,
+                partialReport: IngestionReport(completed: 0, failed: 0)
+            ))
+        } catch {
+            Issue.record("Expected IngestionRunError, received \(error)")
+        }
+
+        let failedDocument = try #require(
+            try await fixture.documents.all(sourceRootID: fixture.source.id)
+                .first { $0.relativePath == "b.jpg" }
+        )
+        #expect(failedDocument.status == .extracting)
+        #expect(failedDocument.failureCode == nil)
     }
 
     @Test func laterPendingQueryFailurePreservesCompletedBatchCount() async throws {
@@ -481,13 +568,22 @@ struct IngestionPipelineTests {
             }
         )
 
-        let report = await pipeline.processPending(source: fixture.source, limit: 1)
+        do {
+            _ = try await pipeline.processPending(source: fixture.source, limit: 1)
+            Issue.record("Expected the later pending query to fail the ingestion run")
+        } catch let error as IngestionRunError {
+            #expect(error == IngestionRunError(
+                reason: .pendingQuery,
+                partialReport: IngestionReport(completed: 1, failed: 0)
+            ))
+        } catch {
+            Issue.record("Expected IngestionRunError, received \(error)")
+        }
         let stored = try #require(
             try await fixture.documents.all(sourceRootID: fixture.source.id)
                 .first { $0.id == document.id }
         )
 
-        #expect(report == IngestionReport(completed: 1, failed: 0))
         #expect(stored.status == .ready)
         #expect(try await fixture.extractions.extraction(documentID: document.id) != nil)
     }
