@@ -384,6 +384,72 @@ struct AppModelTests {
         ])
     }
 
+    @Test @MainActor func overlappingReloadsStartPreparedSourceWatcherOnce() async throws {
+        let fixture = try AppModelFixture()
+        let access = AppStaleBookmarkSourceAccess(blockAccess: true)
+        let sourceURL = fixture.directory.appendingPathComponent(
+            "Archive",
+            isDirectory: true
+        )
+        let source = try await fixture.sources.add(
+            url: sourceURL,
+            sourceAccess: access,
+            now: Date(timeIntervalSince1970: 100)
+        )
+        access.markStale(source.bookmarkData, resolvingTo: sourceURL)
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: access,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler
+        )
+
+        async let firstReload: Void = model.reload()
+        async let secondReload: Void = model.reload()
+        await access.waitUntilAccessCount(2)
+        await access.releaseAccess()
+        _ = try await (firstReload, secondReload)
+
+        #expect(await scheduler.startedSourceRecords.count == 1)
+        #expect(await scheduler.startedSourceRecords.first?.id == source.id)
+    }
+
+    @Test @MainActor func stopWatchingDuringBookmarkRenewalPreventsLateWatcherStart() async throws {
+        let fixture = try AppModelFixture()
+        let access = AppStaleBookmarkSourceAccess(blockAccess: true)
+        let sourceURL = fixture.directory.appendingPathComponent(
+            "Archive",
+            isDirectory: true
+        )
+        let source = try await fixture.sources.add(
+            url: sourceURL,
+            sourceAccess: access,
+            now: Date(timeIntervalSince1970: 100)
+        )
+        access.markStale(source.bookmarkData, resolvingTo: sourceURL)
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: access,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler
+        )
+
+        async let reload: Void = model.reload()
+        await access.waitUntilAccessCount(1)
+        await model.stopWatching()
+        await access.releaseAccess()
+        try await reload
+
+        #expect(await scheduler.startedSourceRecords.isEmpty)
+        #expect(await scheduler.stopAllCount == 1)
+    }
+
     @Test @MainActor func renewalFailureMarksOnlyAffectedSourceUnavailable() async throws {
         let fixture = try AppModelFixture()
         let access = AppStaleBookmarkSourceAccess()
@@ -1689,10 +1755,23 @@ private struct FakeSourceAccess: SourceAccessing {
 
 private final class AppStaleBookmarkSourceAccess: SourceAccessing, @unchecked Sendable {
     private let lock = NSLock()
+    private let accessGate: AppSourceAccessGate?
     private var nextBookmarkID = 0
     private var bookmarkedURLs: [Data: URL] = [:]
     private var staleBookmarks = Set<Data>()
     private var failingBookmarks = Set<Data>()
+
+    init(blockAccess: Bool = false) {
+        accessGate = blockAccess ? AppSourceAccessGate() : nil
+    }
+
+    func waitUntilAccessCount(_ expectedCount: Int) async {
+        await accessGate?.waitUntilAccessCount(expectedCount)
+    }
+
+    func releaseAccess() async {
+        await accessGate?.release()
+    }
 
     func markStale(_ bookmark: Data, resolvingTo url: URL) {
         lock.withLock {
@@ -1733,7 +1812,41 @@ private final class AppStaleBookmarkSourceAccess: SourceAccessing, @unchecked Se
         to bookmark: Data,
         operation: @Sendable (URL) async throws -> T
     ) async throws -> T {
-        try await operation(resolve(bookmark).url)
+        await accessGate?.waitUntilReleased()
+        return try await operation(resolve(bookmark).url)
+    }
+}
+
+private actor AppSourceAccessGate {
+    private var accessCount = 0
+    private var isReleased = false
+    private var accessCountWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func waitUntilAccessCount(_ expectedCount: Int) async {
+        guard accessCount < expectedCount else { return }
+        await withCheckedContinuation { continuation in
+            accessCountWaiters.append((expectedCount, continuation))
+        }
+    }
+
+    func waitUntilReleased() async {
+        accessCount += 1
+        let readyWaiters = accessCountWaiters.filter { $0.0 <= accessCount }
+        accessCountWaiters.removeAll { $0.0 <= accessCount }
+        readyWaiters.forEach { $0.1.resume() }
+
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        isReleased = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 }
 

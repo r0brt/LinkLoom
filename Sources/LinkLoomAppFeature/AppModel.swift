@@ -300,11 +300,17 @@ public final class AppModel: ObservableObject {
         else {
             return
         }
+        let startingGeneration = watchLifecycleGeneration
         do {
             let preparedSource = try await sourceRepository.renewBookmarkIfStale(
                 source,
                 sourceAccess: sourceAccess
             )
+            guard startingGeneration == watchLifecycleGeneration,
+                  !watchedSourceIDs.contains(source.id)
+            else {
+                return
+            }
             if let index = sources.firstIndex(where: { $0.id == preparedSource.id }) {
                 sources[index] = preparedSource
             }
