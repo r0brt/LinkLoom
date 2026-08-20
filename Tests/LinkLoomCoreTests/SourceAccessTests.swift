@@ -21,6 +21,86 @@ struct SourceAccessTests {
         #expect(access.createdBookmarkCount == 1)
     }
 
+    @Test func repositoryReaddingEquivalentRootReusesRecordAndRefreshesGrant() async throws {
+        let db = try TestDatabase.make()
+        let repository = SourceRootRepository(dbWriter: db)
+        let documents = DocumentRepository(dbWriter: db)
+        let access = RotatingBookmarkSourceAccess()
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let selectedRoot = temporaryDirectory
+            .appendingPathComponent("Selected Root", isDirectory: true)
+        let selectedAlias = temporaryDirectory
+            .appendingPathComponent("Selected Alias", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: selectedRoot,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createSymbolicLink(
+            at: selectedAlias,
+            withDestinationURL: selectedRoot
+        )
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+        let createdAt = Date(timeIntervalSince1970: 100)
+        let scannedAt = Date(timeIntervalSince1970: 200)
+        let first = try await repository.add(
+            url: selectedRoot,
+            sourceAccess: access,
+            now: createdAt
+        )
+        let document = DocumentRecord(
+            sourceRootID: first.id,
+            relativePath: "invoice.pdf",
+            contentHash: "sha256:invoice",
+            byteCount: 42,
+            modifiedAt: Date(timeIntervalSince1970: 150),
+            mediaType: .pdf,
+            lastSeenAt: Date(timeIntervalSince1970: 150)
+        )
+        try await documents.save(document)
+        try await repository.updateLastScan(id: first.id, at: scannedAt)
+        access.disableResolution()
+
+        let second = try await repository.add(
+            url: selectedAlias,
+            sourceAccess: access,
+            now: Date(timeIntervalSince1970: 300)
+        )
+
+        let storedSources = try await repository.all()
+        let storedSource = try #require(storedSources.first)
+        #expect(second.id == first.id)
+        #expect(storedSources.count == 1)
+        #expect(storedSource.displayName == "Selected Alias")
+        #expect(storedSource.pathHint == selectedAlias.path)
+        #expect(storedSource.bookmarkData == second.bookmarkData)
+        #expect(storedSource.bookmarkData != first.bookmarkData)
+        #expect(storedSource.createdAt == createdAt)
+        #expect(storedSource.lastScanAt == scannedAt)
+        #expect(try await documents.all(sourceRootID: first.id) == [document])
+    }
+
+    @Test func concurrentEquivalentAddsProduceOneSourceRoot() async throws {
+        let db = try TestDatabase.make()
+        let firstRepository = SourceRootRepository(dbWriter: db)
+        let secondRepository = SourceRootRepository(dbWriter: db)
+        let access = RotatingBookmarkSourceAccess()
+        let selectedRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: selectedRoot,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: selectedRoot) }
+
+        async let first = firstRepository.add(url: selectedRoot, sourceAccess: access)
+        async let second = secondRepository.add(url: selectedRoot, sourceAccess: access)
+        let addedSources = try await [first, second]
+
+        #expect(addedSources[0].id == addedSources[1].id)
+        #expect(try await firstRepository.all().count == 1)
+    }
+
     @Test func repositoryUpdatesLastScan() async throws {
         let db = try TestDatabase.make()
         let repository = SourceRootRepository(dbWriter: db)
@@ -148,6 +228,45 @@ private final class FakeSourceAccess: SourceAccessing, @unchecked Sendable {
         operation: @Sendable (URL) async throws -> T
     ) async throws -> T {
         try await operation(url)
+    }
+}
+
+private final class RotatingBookmarkSourceAccess: SourceAccessing, @unchecked Sendable {
+    private let lock = NSLock()
+    private var nextBookmarkID = 0
+    private var bookmarkedURLs: [Data: URL] = [:]
+    private var resolutionIsEnabled = true
+
+    func disableResolution() {
+        lock.lock()
+        resolutionIsEnabled = false
+        lock.unlock()
+    }
+
+    func createBookmark(for url: URL) throws -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        nextBookmarkID += 1
+        let bookmark = Data("bookmark-\(nextBookmarkID)".utf8)
+        bookmarkedURLs[bookmark] = url
+        return bookmark
+    }
+
+    func resolve(_ bookmark: Data) throws -> ResolvedSource {
+        lock.lock()
+        defer { lock.unlock() }
+        guard resolutionIsEnabled, let url = bookmarkedURLs[bookmark] else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return ResolvedSource(url: url, bookmarkWasStale: false)
+    }
+
+    func withAccess<T: Sendable>(
+        to bookmark: Data,
+        operation: @Sendable (URL) async throws -> T
+    ) async throws -> T {
+        let resolved = try resolve(bookmark)
+        return try await operation(resolved.url)
     }
 }
 

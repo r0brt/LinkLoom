@@ -295,7 +295,11 @@ public final class AppModel: ObservableObject {
     }
 
     private func startWatching(_ source: SourceRootRecord) async {
-        guard let watchScheduler else { return }
+        guard let watchScheduler,
+              !watchedSourceIDs.contains(source.id)
+        else {
+            return
+        }
         do {
             let url = try sourceResolver(source)
             watchedSourceIDs.insert(source.id)
