@@ -99,6 +99,34 @@ struct AppModelTests {
         #expect(model.lastErrorCode == nil)
     }
 
+    @Test @MainActor func addingDuplicateSourceSelectsExistingWithoutRestartingWatcher() async throws {
+        let fixture = try AppModelFixture()
+        let existing = try await fixture.addSource(named: "Archive")
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler,
+            sourceResolver: { source in URL(fileURLWithPath: source.pathHint) }
+        )
+        try await model.reload()
+
+        await model.addSource(
+            fixture.directory.appendingPathComponent("Archive", isDirectory: true)
+        )
+
+        #expect(model.sources.count == 1)
+        #expect(model.selectedSourceID == existing.id)
+        #expect(await scheduler.startedSources == [
+            WatchedSource(sourceID: existing.id, path: existing.pathHint),
+        ])
+        #expect(model.lastErrorCode == nil)
+        await model.stopWatching()
+    }
+
     @Test @MainActor func removingSelectedSourceClearsItsDocuments() async throws {
         let fixture = try AppModelFixture()
         let source = try await fixture.addSource(named: "Archive")

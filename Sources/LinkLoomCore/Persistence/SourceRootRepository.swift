@@ -14,16 +14,30 @@ public actor SourceRootRepository {
         now: Date = .now
     ) async throws -> SourceRootRecord {
         let bookmark = try sourceAccess.createBookmark(for: url)
-        let record = SourceRootRecord(
-            displayName: url.lastPathComponent,
-            pathHint: url.path,
-            bookmarkData: bookmark,
-            createdAt: now
-        )
-        try await dbWriter.write { db in
+        let canonicalPath = Self.canonicalPath(url)
+        return try await dbWriter.write { db in
+            let sources = try SourceRootRecord.fetchAll(db)
+            if var existing = sources.first(where: { source in
+                let existingURL = (try? sourceAccess.resolve(source.bookmarkData).url)
+                    ?? URL(fileURLWithPath: source.pathHint, isDirectory: true)
+                return Self.canonicalPath(existingURL) == canonicalPath
+            }) {
+                existing.displayName = url.lastPathComponent
+                existing.pathHint = url.path
+                existing.bookmarkData = bookmark
+                try existing.update(db)
+                return existing
+            }
+
+            let record = SourceRootRecord(
+                displayName: url.lastPathComponent,
+                pathHint: url.path,
+                bookmarkData: bookmark,
+                createdAt: now
+            )
             try record.insert(db)
+            return record
         }
-        return record
     }
 
     public func all() async throws -> [SourceRootRecord] {
@@ -45,5 +59,9 @@ public actor SourceRootRepository {
         try await dbWriter.write { db in
             _ = try SourceRootRecord.deleteOne(db, key: id)
         }
+    }
+
+    private static func canonicalPath(_ url: URL) -> String {
+        url.standardizedFileURL.resolvingSymlinksInPath().path
     }
 }
