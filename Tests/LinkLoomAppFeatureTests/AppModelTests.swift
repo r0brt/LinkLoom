@@ -2,7 +2,7 @@ import Combine
 import Foundation
 import Testing
 @testable import LinkLoomAppFeature
-import LinkLoomCore
+@testable import LinkLoomCore
 
 @Suite("Diagnostic app model", .serialized)
 struct AppModelTests {
@@ -344,6 +344,141 @@ struct AppModelTests {
             WatchedSource(sourceID: first.id, path: "/resolved/First"),
             WatchedSource(sourceID: second.id, path: "/resolved/Second"),
         ])
+    }
+
+    @Test @MainActor func reloadRenewsStaleBookmarkBeforeStartingWatcher() async throws {
+        let fixture = try AppModelFixture()
+        let access = AppStaleBookmarkSourceAccess()
+        let originalURL = fixture.directory.appendingPathComponent(
+            "Original",
+            isDirectory: true
+        )
+        let relocatedURL = fixture.directory.appendingPathComponent(
+            "Renamed",
+            isDirectory: true
+        )
+        let source = try await fixture.sources.add(
+            url: originalURL,
+            sourceAccess: access,
+            now: Date(timeIntervalSince1970: 100)
+        )
+        access.markStale(source.bookmarkData, resolvingTo: relocatedURL)
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: access,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler
+        )
+
+        try await model.reload()
+
+        let stored = try #require(try await fixture.sources.all().first)
+        #expect(stored.bookmarkData != source.bookmarkData)
+        #expect(model.sources == [stored])
+        #expect(await scheduler.startedSourceRecords == [stored])
+        #expect(await scheduler.startedSources == [
+            WatchedSource(sourceID: source.id, path: relocatedURL.path),
+        ])
+    }
+
+    @Test @MainActor func overlappingReloadsStartPreparedSourceWatcherOnce() async throws {
+        let fixture = try AppModelFixture()
+        let access = AppStaleBookmarkSourceAccess(blockAccess: true)
+        let sourceURL = fixture.directory.appendingPathComponent(
+            "Archive",
+            isDirectory: true
+        )
+        let source = try await fixture.sources.add(
+            url: sourceURL,
+            sourceAccess: access,
+            now: Date(timeIntervalSince1970: 100)
+        )
+        access.markStale(source.bookmarkData, resolvingTo: sourceURL)
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: access,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler
+        )
+
+        async let firstReload: Void = model.reload()
+        async let secondReload: Void = model.reload()
+        await access.waitUntilAccessCount(2)
+        await access.releaseAccess()
+        _ = try await (firstReload, secondReload)
+
+        #expect(await scheduler.startedSourceRecords.count == 1)
+        #expect(await scheduler.startedSourceRecords.first?.id == source.id)
+    }
+
+    @Test @MainActor func stopWatchingDuringBookmarkRenewalPreventsLateWatcherStart() async throws {
+        let fixture = try AppModelFixture()
+        let access = AppStaleBookmarkSourceAccess(blockAccess: true)
+        let sourceURL = fixture.directory.appendingPathComponent(
+            "Archive",
+            isDirectory: true
+        )
+        let source = try await fixture.sources.add(
+            url: sourceURL,
+            sourceAccess: access,
+            now: Date(timeIntervalSince1970: 100)
+        )
+        access.markStale(source.bookmarkData, resolvingTo: sourceURL)
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: access,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler
+        )
+
+        async let reload: Void = model.reload()
+        await access.waitUntilAccessCount(1)
+        await model.stopWatching()
+        await access.releaseAccess()
+        try await reload
+
+        #expect(await scheduler.startedSourceRecords.isEmpty)
+        #expect(await scheduler.stopAllCount == 1)
+    }
+
+    @Test @MainActor func renewalFailureMarksOnlyAffectedSourceUnavailable() async throws {
+        let fixture = try AppModelFixture()
+        let access = AppStaleBookmarkSourceAccess()
+        let unavailable = try await fixture.sources.add(
+            url: fixture.directory.appendingPathComponent("Unavailable", isDirectory: true),
+            sourceAccess: access,
+            now: Date(timeIntervalSince1970: 100)
+        )
+        let available = try await fixture.sources.add(
+            url: fixture.directory.appendingPathComponent("Available", isDirectory: true),
+            sourceAccess: access,
+            now: Date(timeIntervalSince1970: 200)
+        )
+        access.failResolution(of: unavailable.bookmarkData)
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: access,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler
+        )
+
+        try await model.reload()
+
+        #expect(model.unavailableSourceIDs == [unavailable.id])
+        #expect(await scheduler.startedSourceRecords == [available])
+        #expect(try await fixture.sources.all() == [unavailable, available])
     }
 
     @Test @MainActor func rootLifecycleEventsUpdateOnlySourceAvailabilityState() async throws {
@@ -1051,6 +1186,7 @@ private actor FakeSourceWatchScheduler: SourceWatchScheduling {
     nonisolated private let continuation: AsyncStream<DirectoryChange>.Continuation
     nonisolated private let completionContinuation: AsyncStream<UUID>.Continuation
     private(set) var startedSources: [WatchedSource] = []
+    private(set) var startedSourceRecords: [SourceRootRecord] = []
     private(set) var stopAllCount = 0
     private var activeSourceIDs = Set<UUID>()
     private let rootUnavailableDuringStart: Bool
@@ -1068,6 +1204,7 @@ private actor FakeSourceWatchScheduler: SourceWatchScheduling {
 
     func start(source: SourceRootRecord, url: URL) async {
         startedSources.append(WatchedSource(sourceID: source.id, path: url.path))
+        startedSourceRecords.append(source)
         activeSourceIDs.insert(source.id)
         if rootUnavailableDuringStart {
             continuation.yield(DirectoryChange(
@@ -1602,7 +1739,10 @@ private struct FakeSourceAccess: SourceAccessing {
     }
 
     func resolve(_ bookmark: Data) throws -> ResolvedSource {
-        throw AppModelTestError.unusedSourceResolution
+        ResolvedSource(
+            url: URL(fileURLWithPath: String(decoding: bookmark, as: UTF8.self)),
+            bookmarkWasStale: false
+        )
     }
 
     func withAccess<T: Sendable>(
@@ -1610,6 +1750,103 @@ private struct FakeSourceAccess: SourceAccessing {
         operation: @Sendable (URL) async throws -> T
     ) async throws -> T {
         try await operation(URL(fileURLWithPath: String(decoding: bookmark, as: UTF8.self)))
+    }
+}
+
+private final class AppStaleBookmarkSourceAccess: SourceAccessing, @unchecked Sendable {
+    private let lock = NSLock()
+    private let accessGate: AppSourceAccessGate?
+    private var nextBookmarkID = 0
+    private var bookmarkedURLs: [Data: URL] = [:]
+    private var staleBookmarks = Set<Data>()
+    private var failingBookmarks = Set<Data>()
+
+    init(blockAccess: Bool = false) {
+        accessGate = blockAccess ? AppSourceAccessGate() : nil
+    }
+
+    func waitUntilAccessCount(_ expectedCount: Int) async {
+        await accessGate?.waitUntilAccessCount(expectedCount)
+    }
+
+    func releaseAccess() async {
+        await accessGate?.release()
+    }
+
+    func markStale(_ bookmark: Data, resolvingTo url: URL) {
+        lock.withLock {
+            bookmarkedURLs[bookmark] = url
+            staleBookmarks.insert(bookmark)
+        }
+    }
+
+    func failResolution(of bookmark: Data) {
+        _ = lock.withLock { failingBookmarks.insert(bookmark) }
+    }
+
+    func createBookmark(for url: URL) throws -> Data {
+        lock.withLock {
+            nextBookmarkID += 1
+            let bookmark = Data("bookmark-\(nextBookmarkID)".utf8)
+            bookmarkedURLs[bookmark] = url
+            return bookmark
+        }
+    }
+
+    func resolve(_ bookmark: Data) throws -> ResolvedSource {
+        try lock.withLock {
+            if failingBookmarks.contains(bookmark) {
+                throw CocoaError(.fileReadNoPermission)
+            }
+            guard let url = bookmarkedURLs[bookmark] else {
+                throw CocoaError(.fileNoSuchFile)
+            }
+            return ResolvedSource(
+                url: url,
+                bookmarkWasStale: staleBookmarks.contains(bookmark)
+            )
+        }
+    }
+
+    func withAccess<T: Sendable>(
+        to bookmark: Data,
+        operation: @Sendable (URL) async throws -> T
+    ) async throws -> T {
+        await accessGate?.waitUntilReleased()
+        return try await operation(resolve(bookmark).url)
+    }
+}
+
+private actor AppSourceAccessGate {
+    private var accessCount = 0
+    private var isReleased = false
+    private var accessCountWaiters: [(Int, CheckedContinuation<Void, Never>)] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func waitUntilAccessCount(_ expectedCount: Int) async {
+        guard accessCount < expectedCount else { return }
+        await withCheckedContinuation { continuation in
+            accessCountWaiters.append((expectedCount, continuation))
+        }
+    }
+
+    func waitUntilReleased() async {
+        accessCount += 1
+        let readyWaiters = accessCountWaiters.filter { $0.0 <= accessCount }
+        accessCountWaiters.removeAll { $0.0 <= accessCount }
+        readyWaiters.forEach { $0.1.resume() }
+
+        guard !isReleased else { return }
+        await withCheckedContinuation { continuation in
+            releaseWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        isReleased = true
+        let waiters = releaseWaiters
+        releaseWaiters.removeAll()
+        waiters.forEach { $0.resume() }
     }
 }
 

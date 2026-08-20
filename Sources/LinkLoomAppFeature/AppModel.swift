@@ -300,11 +300,24 @@ public final class AppModel: ObservableObject {
         else {
             return
         }
+        let startingGeneration = watchLifecycleGeneration
         do {
-            let url = try sourceResolver(source)
+            let preparedSource = try await sourceRepository.renewBookmarkIfStale(
+                source,
+                sourceAccess: sourceAccess
+            )
+            guard startingGeneration == watchLifecycleGeneration,
+                  !watchedSourceIDs.contains(source.id)
+            else {
+                return
+            }
+            if let index = sources.firstIndex(where: { $0.id == preparedSource.id }) {
+                sources[index] = preparedSource
+            }
+            let url = try sourceResolver(preparedSource)
             watchedSourceIDs.insert(source.id)
             unavailableSourceIDs.remove(source.id)
-            await watchScheduler.start(source: source, url: url)
+            await watchScheduler.start(source: preparedSource, url: url)
             if !(await watchScheduler.isWatching(sourceID: source.id)) {
                 watchedSourceIDs.remove(source.id)
                 unavailableSourceIDs.insert(source.id)
