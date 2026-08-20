@@ -1,62 +1,112 @@
 import AppKit
 import LinkLoomAppFeature
 import LinkLoomCore
+import OSLog
 import SwiftUI
 
 @main
 @MainActor
 struct LinkLoomApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var model: AppModel
+    @StateObject private var startup: AppStartupController
+
+    private static let startupLogger = Logger(
+        subsystem: "LinkLoom",
+        category: "startup"
+    )
 
     init() {
-        do {
-            let sourceAccess = DefaultSourceAccess()
-            let database = try AppDatabase.makeQueue(at: Self.databaseURL())
-            let sources = SourceRootRepository(dbWriter: database)
-            let documents = DocumentRepository(dbWriter: database)
-            let extractions = ExtractionRepository(dbWriter: database)
-            let catalog = CatalogService(
-                sourceAccess: sourceAccess,
-                enumerator: DefaultFileEnumerator(),
-                fingerprinter: SHA256FileFingerprinter(),
-                documents: documents,
-                sources: sources
-            )
-            let ingestion = IngestionPipeline(
-                sourceAccess: sourceAccess,
-                documents: documents,
-                extractions: extractions,
-                extractor: CompositeTextExtractor()
-            )
-            let watchScheduler = RescanScheduler(
-                watcher: FSEventsDirectoryWatcher(),
-                rescanner: IncrementalRescanner(
-                    catalog: catalog,
-                    ingestion: ingestion
+        _startup = StateObject(wrappedValue: AppStartupController(
+            start: {
+                let model = try Self.makeModel()
+                try await model.reload()
+                return model
+            },
+            reportFailure: { error in
+                let nsError = error as NSError
+                Self.startupLogger.error(
+                    "Local catalog startup failed: domain=\(nsError.domain, privacy: .public) code=\(nsError.code)"
                 )
-            )
-            _model = StateObject(wrappedValue: AppModel(
-                sources: sources,
-                documents: documents,
-                sourceAccess: sourceAccess,
-                catalog: CatalogScanner(service: catalog),
-                ingestion: PendingIngester(pipeline: ingestion),
-                watchScheduler: watchScheduler
-            ))
-        } catch {
-            fatalError("LinkLoom database initialization failed")
-        }
+            }
+        ))
     }
 
     var body: some Scene {
         WindowGroup {
-            ContentView(model: model)
+            startupContent
                 .task {
-                    appDelegate.configure(model: model)
-                    try? await model.reload()
+                    await startup.startIfNeeded()
                 }
         }
+    }
+
+    @ViewBuilder
+    private var startupContent: some View {
+        switch startup.phase {
+        case .idle, .starting:
+            ProgressView("LinkLoom wird gestartet …")
+                .frame(minWidth: 520, minHeight: 320)
+        case .ready:
+            if let model = startup.model {
+                ContentView(model: model)
+                    .task {
+                        appDelegate.configure(model: model)
+                    }
+            }
+        case .failed:
+            ContentUnavailableView {
+                Label(
+                    "LinkLoom konnte nicht gestartet werden",
+                    systemImage: "externaldrive.badge.exclamationmark"
+                )
+            } description: {
+                Text(
+                    "Der lokale Katalog konnte nicht geöffnet werden. "
+                        + "Deine Quelldokumente wurden nicht verändert."
+                )
+            } actions: {
+                Button("Erneut versuchen") {
+                    Task { await startup.retry() }
+                }
+            }
+            .frame(minWidth: 520, minHeight: 320)
+        }
+    }
+
+    private static func makeModel() throws -> AppModel {
+        let sourceAccess = DefaultSourceAccess()
+        let database = try AppDatabase.makeQueue(at: databaseURL())
+        let sources = SourceRootRepository(dbWriter: database)
+        let documents = DocumentRepository(dbWriter: database)
+        let extractions = ExtractionRepository(dbWriter: database)
+        let catalog = CatalogService(
+            sourceAccess: sourceAccess,
+            enumerator: DefaultFileEnumerator(),
+            fingerprinter: SHA256FileFingerprinter(),
+            documents: documents,
+            sources: sources
+        )
+        let ingestion = IngestionPipeline(
+            sourceAccess: sourceAccess,
+            documents: documents,
+            extractions: extractions,
+            extractor: CompositeTextExtractor()
+        )
+        let watchScheduler = RescanScheduler(
+            watcher: FSEventsDirectoryWatcher(),
+            rescanner: IncrementalRescanner(
+                catalog: catalog,
+                ingestion: ingestion
+            )
+        )
+        return AppModel(
+            sources: sources,
+            documents: documents,
+            sourceAccess: sourceAccess,
+            catalog: CatalogScanner(service: catalog),
+            ingestion: PendingIngester(pipeline: ingestion),
+            watchScheduler: watchScheduler
+        )
     }
 
     private static func databaseURL() throws -> URL {
