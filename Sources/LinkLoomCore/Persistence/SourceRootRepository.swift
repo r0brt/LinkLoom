@@ -46,6 +46,34 @@ public actor SourceRootRepository {
         }
     }
 
+    public func renewBookmarkIfStale(
+        _ source: SourceRootRecord,
+        sourceAccess: any SourceAccessing
+    ) async throws -> SourceRootRecord {
+        let resolved = try sourceAccess.resolve(source.bookmarkData)
+        guard resolved.bookmarkWasStale else { return source }
+
+        let (url, bookmark) = try await sourceAccess.withAccess(
+            to: source.bookmarkData
+        ) { url in
+            (url, try sourceAccess.createBookmark(for: url))
+        }
+        return try await dbWriter.write { db in
+            guard var stored = try SourceRootRecord.fetchOne(
+                db,
+                key: source.id
+            ) else {
+                throw SourceRootRepositoryError.sourceNotFound
+            }
+            guard stored.bookmarkData == source.bookmarkData else { return stored }
+            stored.displayName = url.lastPathComponent
+            stored.pathHint = url.path
+            stored.bookmarkData = bookmark
+            try stored.update(db)
+            return stored
+        }
+    }
+
     public func updateLastScan(id: UUID, at date: Date) async throws {
         try await dbWriter.write { db in
             try db.execute(
@@ -64,4 +92,8 @@ public actor SourceRootRepository {
     private static func canonicalPath(_ url: URL) -> String {
         url.standardizedFileURL.resolvingSymlinksInPath().path
     }
+}
+
+private enum SourceRootRepositoryError: Error {
+    case sourceNotFound
 }
