@@ -39,8 +39,8 @@ public struct CompositeTextExtractor: DocumentTextExtracting {
                 return embedded
             }
 
-            let pageCount = try pdfPageCount(at: url)
-            guard pageCount == embedded.pages.count else {
+            let pageSource = try pdfPageSource(at: url)
+            guard pageSource.count == embedded.pages.count else {
                 throw TextExtractionError.unreadableDocument
             }
 
@@ -48,13 +48,14 @@ public struct CompositeTextExtractor: DocumentTextExtracting {
             for pagePosition in emptyPagePositions {
                 try Task.checkCancellation()
                 let pageIndex = pages[pagePosition].pageIndex
-                guard pageIndex >= 0, pageIndex < pageCount else {
+                guard pageIndex >= 0, pageIndex < pageSource.count else {
                     throw TextExtractionError.unreadableDocument
                 }
                 do {
                     pages[pagePosition] = try await recognizePDFPage(
                         at: url,
-                        pageIndex: pageIndex
+                        pageIndex: pageIndex,
+                        pageSource: pageSource
                     )
                 } catch TextExtractionError.noRecognizedText {
                     pages[pagePosition] = ExtractedPage(
@@ -77,17 +78,21 @@ public struct CompositeTextExtractor: DocumentTextExtracting {
     }
 
     private func extractImageOnlyPDF(from url: URL) async throws -> ExtractedDocument {
-        let pageCount = try pdfPageCount(at: url)
-        guard pageCount > 0 else {
+        let pageSource = try pdfPageSource(at: url)
+        guard pageSource.count > 0 else {
             throw TextExtractionError.unreadableDocument
         }
         var pages: [ExtractedPage] = []
-        pages.reserveCapacity(pageCount)
+        pages.reserveCapacity(pageSource.count)
         var recognizedAnyText = false
-        for pageIndex in 0..<pageCount {
+        for pageIndex in 0..<pageSource.count {
             try Task.checkCancellation()
             do {
-                pages.append(try await recognizePDFPage(at: url, pageIndex: pageIndex))
+                pages.append(try await recognizePDFPage(
+                    at: url,
+                    pageIndex: pageIndex,
+                    pageSource: pageSource
+                ))
                 recognizedAnyText = true
             } catch TextExtractionError.noRecognizedText {
                 pages.append(ExtractedPage(
@@ -103,9 +108,15 @@ public struct CompositeTextExtractor: DocumentTextExtracting {
         return ExtractedDocument(method: .visionOCR, pages: pages)
     }
 
-    private func pdfPageCount(at url: URL) throws -> Int {
+    private func pdfPageSource(at url: URL) throws -> PDFPageSource {
         do {
-            return try pdfRenderer.pageCount(at: url)
+            if let pageRenderer = pdfRenderer as? any PDFPageAtATimeRendering {
+                return .pageAtATime(
+                    renderer: pageRenderer,
+                    count: try pageRenderer.pageCount(at: url)
+                )
+            }
+            return .rendered(try pdfRenderer.renderPages(at: url))
         } catch let error as CancellationError {
             throw error
         } catch {
@@ -115,11 +126,12 @@ public struct CompositeTextExtractor: DocumentTextExtracting {
 
     private func recognizePDFPage(
         at url: URL,
-        pageIndex: Int
+        pageIndex: Int,
+        pageSource: PDFPageSource
     ) async throws -> ExtractedPage {
         let image: CGImage
         do {
-            image = try pdfRenderer.renderPage(at: url, pageIndex: pageIndex)
+            image = try pageSource.renderPage(at: url, pageIndex: pageIndex)
         } catch let error as CancellationError {
             throw error
         } catch {
@@ -188,5 +200,31 @@ public struct CompositeTextExtractor: DocumentTextExtracting {
             throw TextExtractionError.unreadableDocument
         }
         return Int(boundedDimension)
+    }
+}
+
+private enum PDFPageSource {
+    case pageAtATime(renderer: any PDFPageAtATimeRendering, count: Int)
+    case rendered([CGImage])
+
+    var count: Int {
+        switch self {
+        case let .pageAtATime(_, count):
+            count
+        case let .rendered(images):
+            images.count
+        }
+    }
+
+    func renderPage(at url: URL, pageIndex: Int) throws -> CGImage {
+        switch self {
+        case let .pageAtATime(renderer, _):
+            return try renderer.renderPage(at: url, pageIndex: pageIndex)
+        case let .rendered(images):
+            guard images.indices.contains(pageIndex) else {
+                throw TextExtractionError.unreadableDocument
+            }
+            return images[pageIndex]
+        }
     }
 }

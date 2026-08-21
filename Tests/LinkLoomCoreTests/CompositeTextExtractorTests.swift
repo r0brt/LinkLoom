@@ -129,6 +129,25 @@ struct CompositeTextExtractorTests {
         #expect(await ocr.pageIndices == [0, 1])
     }
 
+    @Test func legacyRendererRemainsUsableForImageOnlyPDF() async throws {
+        let image = try makePixelImage()
+        let renderer = LegacyPDFPageRenderer(images: [image, image])
+        let extractor = CompositeTextExtractor(
+            pdfText: FakePDFTextExtractor(error: .insufficientEmbeddedText),
+            pdfRenderer: renderer,
+            ocr: FakeOCRRecognizer()
+        )
+
+        let result = try await extractor.extract(
+            from: URL(fileURLWithPath: "/fixture/legacy-scan.pdf"),
+            mediaType: .pdf
+        )
+
+        #expect(result.pages.map(\.pageIndex) == [0, 1])
+        #expect(result.pages.map(\.text) == ["page-0", "page-1"])
+        #expect(renderer.callCount == 1)
+    }
+
     @Test func imageOnlyPDFDoesNotRenderSecondPageBeforeFirstOCRCompletes() async throws {
         let image = try makePixelImage()
         let renderer = FakePDFPageRenderer(images: [image, image])
@@ -371,6 +390,16 @@ struct PDFPageRendererTests {
         _ = try renderer.renderPage(at: pdf, pageIndex: 0)
         _ = try renderer.renderPage(at: pdf, pageIndex: 1)
     }
+
+    @Test func documentWideRenderingRemainsAvailableForExistingCallers() throws {
+        let pdf = try FixtureFactory.makeTextPDF(pages: ["First", "Second"])
+        defer { try? FileManager.default.removeItem(at: pdf) }
+        let renderer: any PDFPageRendering = PDFPageRenderer(dpi: 72)
+
+        let images = try renderer.renderPages(at: pdf)
+
+        #expect(images.count == 2)
+    }
 }
 
 private enum FakePDFTextBehavior: Sendable {
@@ -424,7 +453,7 @@ private actor FakePDFTextExtractor: DocumentTextExtracting {
     }
 }
 
-private final class FakePDFPageRenderer: PDFPageRendering, @unchecked Sendable {
+private final class FakePDFPageRenderer: PDFPageAtATimeRendering, @unchecked Sendable {
     private let lock = NSLock()
     private let images: [CGImage]
     private let cancels: Bool
@@ -472,6 +501,29 @@ private final class FakePDFPageRenderer: PDFPageRendering, @unchecked Sendable {
             throw TextExtractionError.unreadableDocument
         }
         return images[pageIndex]
+    }
+}
+
+private final class LegacyPDFPageRenderer: PDFPageRendering, @unchecked Sendable {
+    private let lock = NSLock()
+    private let images: [CGImage]
+    private var storedCallCount = 0
+
+    init(images: [CGImage]) {
+        self.images = images
+    }
+
+    var callCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedCallCount
+    }
+
+    func renderPages(at url: URL) throws -> [CGImage] {
+        lock.lock()
+        storedCallCount += 1
+        lock.unlock()
+        return images
     }
 }
 

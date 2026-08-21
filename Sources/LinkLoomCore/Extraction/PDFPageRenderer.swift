@@ -3,11 +3,28 @@ import Foundation
 import PDFKit
 
 public protocol PDFPageRendering: Sendable {
+    func renderPages(at url: URL) throws -> [CGImage]
+}
+
+public protocol PDFPageAtATimeRendering: PDFPageRendering {
     func pageCount(at url: URL) throws -> Int
     func renderPage(at url: URL, pageIndex: Int) throws -> CGImage
 }
 
-public struct PDFPageRenderer: PDFPageRendering {
+public extension PDFPageAtATimeRendering {
+    func renderPages(at url: URL) throws -> [CGImage] {
+        let pageCount = try pageCount(at: url)
+        var images: [CGImage] = []
+        images.reserveCapacity(pageCount)
+        for pageIndex in 0..<pageCount {
+            try Task.checkCancellation()
+            images.append(try renderPage(at: url, pageIndex: pageIndex))
+        }
+        return images
+    }
+}
+
+public struct PDFPageRenderer: PDFPageAtATimeRendering {
     private static let defaultMaximumPagePixelCount = 100_000_000
 
     public let dpi: CGFloat
