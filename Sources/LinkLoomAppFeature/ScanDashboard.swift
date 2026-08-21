@@ -65,10 +65,10 @@ public struct ScanDashboard: View {
         if model.scanState != .idle {
             ProgressView(scanProgressTitle)
         }
-        if let errorCode = model.lastErrorCode {
-            Text(errorCode)
+        if let errorMessage = model.lastErrorMessage {
+            Text(errorMessage)
                 .foregroundStyle(.red)
-                .accessibilityLabel("Fehlercode: \(errorCode)")
+                .accessibilityLabel("Fehler: \(errorMessage)")
         }
     }
 
