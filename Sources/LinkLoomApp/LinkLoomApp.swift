@@ -30,8 +30,17 @@ struct LinkLoomApp: App {
             try UITestLaunchConfiguration(arguments: ProcessInfo.processInfo.arguments)
         }
         let configuration = try? configurationResult.get()
+        let pickerDiagnosticURL = configuration?.databaseURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("picker-diagnostic.txt")
         folderPicker = FolderPicker(selectFolders: {
-            configuration?.sourceURL.map { [$0] } ?? []
+            let urls = configuration?.sourceURL.map { [$0] } ?? []
+            let message = "picker invoked: count=\(urls.count) "
+                + "path=\(urls.first?.path ?? "none")"
+            if let pickerDiagnosticURL {
+                try? Data(message.utf8).write(to: pickerDiagnosticURL, options: .atomic)
+            }
+            return urls
         })
         let startupFailureGate = UITestStartupFailureGate(
             enabled: configuration?.failsStartupOnce == true

@@ -232,7 +232,15 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 contentsOf: sourceAccessDiagnosticURL,
                 encoding: .utf8
             )) ?? "source-access diagnostic unavailable"
-            diagnostic = databaseEvidence + "\n" + sourceAccessEvidence
+            let pickerDiagnosticURL = fixture.rootURL
+                .appendingPathComponent("picker-diagnostic.txt")
+            let pickerEvidence = (try? String(
+                contentsOf: pickerDiagnosticURL,
+                encoding: .utf8
+            )) ?? "picker diagnostic unavailable"
+            diagnostic = databaseEvidence
+                + "\n" + pickerEvidence
+                + "\n" + sourceAccessEvidence
         } catch {
             diagnostic = "Database evidence unavailable: \(error)"
         }
