@@ -136,6 +136,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
             application.launchArguments.append("--linkloom-ui-test-fail-startup-once")
         }
         application.launch()
+        application.activate()
         app = application
         return application
     }
