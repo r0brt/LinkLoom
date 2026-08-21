@@ -1,231 +1,333 @@
-# LinkLoom Hermetic UI Smoke Test Design
+# LinkLoom Hermetic XCUITest Smoke Test Design
 
 **Date:** 2026-08-21
 
-**Status:** Approved design for an in-process macOS UI smoke test
+**Status:** Approved architecture; revised after the in-process SwiftUI
+accessibility approach was disproved on the SwiftPM test runner
 
 ## 1. Purpose
 
-This design adds a repeatable product-readiness smoke test for the current
-LinkLoom ingestion slice. The test exercises the real SwiftUI presentation,
-application model, catalog, extraction pipeline, and SQLite persistence while
-using only generated temporary documents and a temporary database.
+This design adds a repeatable product-readiness smoke test for LinkLoom's
+current ingestion workflow. The test launches a real macOS application bundle
+in a separate process, drives the production SwiftUI through XCUIAutomation,
+uses only generated temporary documents and a temporary database, and verifies
+startup, source management, scanning, extraction, restart persistence, error
+presentation, source removal, and source-file integrity.
 
-The smoke test closes the visual and interaction evidence gap left by manual
-testing on hosts where global macOS Accessibility permission is unavailable.
-It does not introduce an Xcode project, a signed application bundle, an
-external UI-testing dependency, or a second product workflow.
+The repository remains SwiftPM-first. A thin committed Xcode project exists
+only to provide the application bundle and UI-test runner that SwiftPM cannot
+produce. It compiles the existing LinkLoom composition root and links the local
+package products instead of introducing a second implementation of the app.
 
-## 2. Decision and Constraints
+## 2. Evidence Behind the Revision
 
-The repository remains SwiftPM-only. SwiftPM does not provide the application
-bundle and UI-test runner required for a process-level `XCUITest` target, so
-the smoke test hosts LinkLoom's SwiftUI views in an in-process `NSWindow` and
-drives their exposed accessibility actions.
+The earlier design proposed hosting `NSHostingView` in an in-process
+`NSWindow`. A focused red test proved that this runner exposes the hosting view
+only as a childless `AXGroup`; SwiftUI controls and their identifiers are not
+addressable through `NSAccessibilityProtocol`. Neither unignored-descendant
+APIs nor a real AppKit event cycle produced the virtual control tree.
 
-The following constraints remain binding:
+Starting and stopping `NSApplication.run()` inside the Swift Testing process
+also interfered with the test runner's exit status. The experiment was removed
+without committing its test files. Directly invoking `AppModel` after the UI
+action failed was rejected because it would not be a UI test.
+
+The process-level approach uses XCTest and XCUIAutomation as intended: an
+Xcode UI-test bundle launches, monitors, and terminates a separate application
+process and operates on its accessibility tree.
+
+## 3. Decision and Constraints
+
+The implementation adds a thin Xcode UI-test boundary while preserving these
+constraints:
 
 - macOS 15 or later and Swift 6.2 or later;
-- no network access, telemetry, or external AI;
-- no new package dependencies;
+- Xcode 26.3 is the authoritative UI-test toolchain in CI;
+- SwiftPM remains canonical for package structure, unit tests, integration
+  tests, and release builds;
+- no package generator, third-party UI-test dependency, network call,
+  telemetry, or external AI;
 - no use of the user's real LinkLoom Application Support directory;
 - no use of personal or repository-resident source documents;
 - no rename, move, delete, or intentional modification of selected source
   documents;
-- no production behavior change beyond test seams, stable accessibility
-  metadata, and an equivalent accessibility action for the existing source
-  removal command;
-- no claim that the in-process test verifies packaging, signing, notarization,
-  Launch Services, or inter-process automation.
+- no production behavior change beyond a deterministic folder-picker seam,
+  stable accessibility metadata, and compile-time-isolated UI-test launch
+  configuration;
+- no UI-test launch configuration in SwiftPM or Release builds;
+- no claim that the smoke test verifies distribution signing, notarization,
+  Launch Services installation, or App Store packaging.
 
-## 3. Scope
+## 4. Project Topology
 
-The smoke workflow verifies:
+### 4.1 Swift package
 
-1. startup renders a ready LinkLoom workspace backed by a temporary database;
-2. the add-folder control selects and persists one temporary source;
-3. the analyze control runs the real catalog and extraction pipeline;
-4. supported temporary documents become ready when extraction succeeds;
-5. a corrupt supported document remains visible with a failure status and
-   failure code;
-6. an unsupported temporary document is ignored;
-7. the visible status summary and document table reflect persisted results;
-8. rebuilding the model and view against the same temporary database restores
-   the source and document state;
-9. the source can be removed through the source row's accessibility action;
-10. source paths, SHA-256 hashes, byte counts, modification dates, and POSIX
-    modes match before and after the workflow;
-11. a forced catalog-startup failure renders the existing recoverable startup
-    error and retry control.
+`Package.swift` adds `LinkLoomAppFeature` as a public library product. Its target
+and dependencies do not change. Existing products and test targets remain
+unchanged.
 
-Filesystem watcher behavior, the opt-in 10,000-document boundary, and detailed
-extractor edge cases remain covered by their existing focused tests. The new
-smoke test does not duplicate those suites.
+The package dependency direction stays:
 
-## 4. Architecture
+- `LinkLoomCore` has no app-layer dependency;
+- `LinkLoomAppFeature` depends on `LinkLoomCore`;
+- the executable composition root depends on both library targets.
 
-The change has three boundaries:
+### 4.2 Xcode project
 
-1. **Production UI seams.** Existing views expose stable accessibility
-   identifiers and accept deterministic folder selection during tests. The
-   production path continues to use `NSOpenPanel`.
-2. **Reusable startup presentation.** The startup phase view moves from the
-   executable target into `LinkLoomAppFeature` so the executable and tests
-   render the same implementation.
-3. **Test-only harness.** `LinkLoomAppFeatureTests` creates temporary fixtures,
-   hosts the production views in `NSWindow`, locates accessibility elements,
-   invokes their actions, and waits on observable persisted conditions rather
-   than fixed sleeps.
+The repository adds `LinkLoom.xcodeproj` with:
 
-`LinkLoomCore` remains independent of the app and SwiftUI layers. The test
-target may depend on both existing library targets, but no dependency direction
-changes in production.
+- a macOS application target named `LinkLoomUIHost` whose product is
+  `LinkLoom.app`;
+- a UI-test bundle target named `LinkLoomUITests`;
+- a shared scheme named `LinkLoomUISmoke`;
+- a local Swift-package reference to the repository root;
+- product dependencies on `LinkLoomCore` and `LinkLoomAppFeature`;
+- the existing `Sources/LinkLoomApp/LinkLoomApp.swift` as the app target's
+  source file;
+- `LinkLoomUITests` configured with `LinkLoomUIHost` as its target application.
 
-## 5. Production Components
+The Xcode project does not duplicate Core, feature, or composition-root source.
+It is not a replacement release workflow.
 
-### 5.1 Folder picker seam
+### 4.3 Build configurations
 
-`FolderPicker` stores a `@MainActor () -> [URL]` selection operation.
+The UI-test scheme's Test action uses Debug. Only the Xcode app target's Debug
+configuration defines `LINKLOOM_UI_TESTING`. Release and every SwiftPM build do
+not define it.
 
-- `init()` builds the current `NSOpenPanel` behavior.
-- An explicit initializer accepts a selection operation for tests.
-- `selectFolders()` invokes the stored operation.
+The test host uses a test-only bundle identifier and automatic local signing
+settings suitable for `xcodebuild test` on the GitHub-hosted macOS runner. It
+does not add production entitlements or sandbox exceptions.
 
-The seam does not read environment variables or add a hidden production mode.
+## 5. Test-Only Launch Boundary
 
-### 5.2 Startup presentation
+`Sources/LinkLoomAppFeature/UITestLaunchConfiguration.swift` contains a pure,
+side-effect-free parser exposed only through Swift's `UITesting` SPI. Keeping
+the parser in the feature target lets SwiftPM test malformed and duplicate
+arguments without launching AppKit. Merely compiling the parser does not
+activate a test path.
 
-`AppStartupView` lives in `LinkLoomAppFeature` and receives:
+The parser accepts only these exact launch arguments:
 
-- an observed `AppStartupController`;
-- a `FolderPicker`, defaulting to the production picker;
-- a closure that registers the ready `AppModel` for termination handling.
+| Argument | Value | Effect |
+| --- | --- | --- |
+| `--linkloom-ui-test-database` | absolute file path | use an explicit temporary SQLite URL |
+| `--linkloom-ui-test-source` | absolute directory path | injected folder picker returns this one source |
+| `--linkloom-ui-test-disable-watcher` | none | omit the filesystem watcher for manual deterministic scans |
+| `--linkloom-ui-test-fail-startup-once` | none | first model factory call throws a deterministic local error |
 
-It renders the existing progress, ready content, recoverable startup error,
-and retry button without changing the user-facing German copy. `LinkLoomApp`
-uses this view as its window content and retains responsibility for constructing
-the real model and termination coordinator.
+Missing values, non-absolute paths, or duplicate valued arguments make the
+test configuration invalid and surface through the existing recoverable
+startup failure. Unknown arguments are ignored because Xcode supplies its own
+launch arguments.
 
-### 5.3 Accessibility contract
+Only code enclosed by `#if LINKLOOM_UI_TESTING` in `LinkLoomApp.swift` reads
+process arguments. It parses them once during initialization and applies the
+result to:
+
+- the database URL passed to `AppDatabase.makeQueue(at:)`;
+- the already-approved injected `FolderPicker` selection operation;
+- watcher construction;
+- a process-local startup-failure gate consumed by the first factory call.
+
+Without the compilation condition, no production code reads the UI-test SPI or
+its arguments. The current production database URL, `NSOpenPanel`, watcher,
+startup behavior, and logging remain in effect.
+
+## 6. Accessibility Contract
 
 The production views expose these stable identifiers:
 
 | Identifier | Element |
 | --- | --- |
-| `startup.progress` | startup progress indicator |
+| `startup.progress` | startup progress presentation |
 | `startup.failure` | recoverable startup error container |
 | `startup.retry` | retry button |
 | `source.add` | add-folder button |
 | `source.row.<UUID>` | source row |
 | `scan.start` | analyze button |
-| `scan.error` | runtime error message |
-| `status.discovered` | discovered count |
-| `status.extracting` | extracting count |
-| `status.ready` | ready count |
-| `status.failed` | failed count |
+| `scan.error` | operation-level runtime error message |
+| `status.discovered` | discovered count card |
+| `status.extracting` | extracting count card |
+| `status.ready` | ready count card |
+| `status.failed` | failed count card |
 | `documents.table` | document table |
 
-The source row keeps its existing context menu. Its named custom accessibility
-action, `Quelle entfernen`, calls the same `AppModel.removeSource(_:)`
-operation and is available only under the same idle condition.
+Each status card exposes a deterministic accessibility label in the form
+`<German title>: <integer>`, derived from the same count displayed visually.
 
-## 6. Test Harness and Data Flow
+Source removal continues to use the existing context menu. The XCUITest
+right-clicks the identified source row and invokes the visible `Quelle
+entfernen` menu item. No UI-only removal API is added.
 
-The test target adds a focused `LinkLoomUISmokeTests` suite plus small support
-types for hosting, accessibility lookup, fixtures, snapshots, and
-condition-based waiting.
+## 7. Hermetic Fixture and Integrity Snapshot
 
-The primary workflow is:
+`LinkLoomUITests` creates one unique temporary root per test. The root owns:
 
-1. Create a unique temporary root containing a source directory and SQLite
-   database path.
-2. Generate a selectable-text PDF, an image-only PDF or PNG suitable for local
-   Vision OCR, a corrupt PDF, and an unsupported text file.
-3. Snapshot every source file's relative path, SHA-256, byte count,
-   modification date, and POSIX mode.
-4. Construct real repositories, `CatalogService`, `IngestionPipeline`, and
-   `AppModel` against the temporary database. The manual smoke path omits the
-   filesystem watcher because it explicitly invokes analysis.
-5. Construct `AppStartupController`, host `AppStartupView` in an `NSWindow`,
-   and wait until the ready workspace is accessible.
-6. Invoke `source.add`; the injected `FolderPicker` returns the temporary
-   source directory.
-7. Wait until the source row and selected-source dashboard are accessible.
-8. Invoke `scan.start` and wait until persisted documents reach their terminal
-   ready or failed states and the scan returns to idle.
-9. Assert the status counts, document rows, ready extractions, corrupt-PDF
-   failure code, and absence of the unsupported file.
-10. Tear down the hosted window and stop model watchers.
-11. Construct a fresh model, controller, and hosted view using the same
-    temporary database; assert that source and document state reappear.
-12. Invoke the source row's remove action and assert that source, document,
-    extraction, and full-text rows are removed.
-13. Snapshot the source directory again and require exact equality.
+- a `source` directory;
+- `linkloom.sqlite` and its SQLite sidecars;
+- generated test state and attachments.
 
-The startup-failure workflow constructs a controller whose model factory throws
-a deterministic test error, hosts the same `AppStartupView`, and asserts the
-failure container and retry control are accessible. Retry is tested with a
-second factory result that uses an isolated real model.
+The source contains exactly:
 
-## 7. Synchronization and Failure Handling
+- `selectable.pdf`, a one-page PDF containing `Selectable LinkLoom smoke text`;
+- `scan.png`, a high-contrast image containing `Scanned LinkLoom smoke 2026`;
+- `corrupt.pdf`, invalid PDF bytes beginning with a PDF header;
+- `unsupported.txt`, an unsupported UTF-8 document.
 
-The harness never waits by assuming that a fixed delay is sufficient. It pumps
-the main run loop while polling an observable condition up to an explicit
-deadline. Timeouts report the unmet accessibility identifier or durable model
-state.
+Fixture generation uses only system frameworks: CoreGraphics, CoreText,
+ImageIO, AppKit, and PDFKit. The test never copies repository or user files.
 
-If a SwiftUI control cannot expose or perform the required accessibility action
-inside the hosted window, the focused test must fail with that exact missing or
-unsupported action. The implementation must not replace the failed UI action
-with a direct `AppModel` call while continuing to label the result a UI test.
+Before the app launches and after all UI operations, the test snapshots each
+source file's:
 
-Expected per-document extraction failure is not a failed smoke run. The corrupt
-PDF must be persisted as failed and surfaced by the UI while other supported
-documents complete. Startup, source access, catalog, persistence, or harness
-failures fail the smoke test.
+- relative path;
+- CryptoKit SHA-256;
+- byte count;
+- exact content-modification date;
+- POSIX mode.
 
-## 8. Isolation and Cleanup
+The sorted before and after arrays must be exactly equal.
 
-All documents, databases, windows, and helper state are owned by one temporary
-test fixture. Cleanup closes the hosted window, stops watchers, releases the
-database, and removes the temporary directory.
+## 8. Primary UI Workflow
 
-The test does not set or repurpose `HOME`. It passes explicit temporary URLs to
-the repositories and model factory. Source snapshots are captured before any
-LinkLoom operation and immediately before fixture cleanup.
+The serialized `testProductWorkflowPersistsAndPreservesSourceFiles` performs:
 
-## 9. Verification and CI
+1. Create the fixture and initial source snapshot.
+2. Launch `XCUIApplication` with the temporary database/source arguments and
+   watcher disabled.
+3. Wait for `source.add` and click it.
+4. Wait for one identifier matching `source.row.*` and for `scan.start`.
+5. Click `scan.start` and wait for terminal visible counts:
+   `Entdeckt: 0`, `Extraktion: 0`, `Bereit: 2`, `Fehler: 1`.
+6. Require `documents.table`, `selectable.pdf`, `scan.png`, `corrupt.pdf`,
+   failed status, and `unreadableDocument` to be visible. Require
+   `unsupported.txt` to be absent.
+7. Terminate the app cleanly.
+8. Open the temporary database read-only with SQLite and require:
+   - three document rows;
+   - two ready and one failed status;
+   - two extraction headers and two FTS rows;
+   - selectable extraction text contains `Selectable LinkLoom smoke text`;
+   - OCR extraction text contains `LinkLoom` and `2026`;
+   - the corrupt document has failure code `unreadableDocument`;
+   - no row references `unsupported.txt`.
+9. Relaunch with the same database and source arguments without clicking Add
+   or Scan.
+10. Require the source row, persisted counts, table, paths, and failure code to
+    reappear.
+11. Right-click the source row and click `Quelle entfernen`.
+12. Wait until the source row and selected-source dashboard disappear, then
+    terminate the app.
+13. Require zero rows in `sourceRoot`, `document`, `documentExtraction`,
+    `extractedPage`, and `extractionFTS`.
+14. Capture the final source snapshot and require exact equality with the
+    initial snapshot.
 
-Implementation follows red-green-refactor:
+All database access by the UI-test process is read-only and occurs while the
+app is terminated.
 
-1. add a focused test for each new UI seam and observe the expected failure;
-2. add the minimum production seam or identifier needed to make it pass;
-3. add the full smoke workflow and observe its failure before completing the
-   harness behavior;
-4. run the focused UI smoke suite;
-5. run the complete Swift suite;
-6. run `swift build -c release`;
-7. run `git diff --check`, `git diff --cached --check`, and inspect
-   `git status --short`.
+## 9. Recoverable Startup-Failure Workflow
 
-The existing `Swift / test` job runs the smoke test as part of `swift test`.
-No separate CI job is added unless the in-process test proves it needs distinct
-runner configuration. The existing opt-in 10,000-document acceptance step
-remains unchanged.
+The serialized `testStartupFailureCanRetry` uses a separate temporary root and
+launches with `--linkloom-ui-test-fail-startup-once`.
 
-## 10. Acceptance Criteria
+It requires:
+
+1. `startup.failure` and `startup.retry` appear;
+2. the German recoverable-error copy remains visible;
+3. clicking `startup.retry` consumes the one-shot failure gate;
+4. `source.add` appears, proving the real model opened the temporary database;
+5. the source snapshot remains unchanged.
+
+This test covers startup error presentation. The corrupt PDF in the primary
+workflow covers per-document failure presentation without turning an expected
+document failure into an operation-level test failure.
+
+## 10. Synchronization and Diagnostics
+
+The test uses:
+
+- `XCUIElement.waitForExistence(timeout:)` for elements;
+- XCTest predicate expectations for label and disappearance conditions;
+- read-only SQLite state after app termination for durable persistence checks.
+
+It does not use fixed sleeps. Every timeout names the missing identifier,
+expected label, or SQLite condition.
+
+Each major workflow phase uses `XCTContext.runActivity`. On failure, the test
+attaches an application screenshot and the relevant UI hierarchy description.
+The CI job retains the complete `.xcresult` bundle.
+
+If a required SwiftUI control is not accessible to XCUIAutomation, the test
+fails at that control. It must not substitute a launch argument, database
+mutation, or direct model call for the failed user interaction.
+
+## 11. Isolation and Cleanup
+
+The UI-test fixture owns all documents and database files. `tearDownWithError`
+terminates the application before removing the unique temporary root. Cleanup
+never targets a broad directory, the repository, Application Support, or a
+user-selected path.
+
+The test does not set or repurpose `HOME`. It passes explicit absolute paths
+through compile-time-isolated launch arguments.
+
+## 12. CI and Verification
+
+The existing SwiftPM `test` and `release-build` jobs remain unchanged. A new
+job named `Swift / UI smoke` runs on `macos-15` with:
+
+```yaml
+env:
+  DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+```
+
+Its authoritative command is:
+
+```sh
+xcodebuild test \
+  -project LinkLoom.xcodeproj \
+  -scheme LinkLoomUISmoke \
+  -destination 'platform=macOS' \
+  -derivedDataPath "$RUNNER_TEMP/LinkLoomDerivedData" \
+  -resultBundlePath "$RUNNER_TEMP/LinkLoomUISmoke.xcresult"
+```
+
+An `if: always()` step uploads the result bundle with the immutable
+`actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02`
+pin and seven-day retention.
+
+The local Command Line Tools-only host cannot execute `xcodebuild`. Local
+verification therefore covers:
+
+- focused Swift tests for the SPI launch-argument parser and production seams;
+- the complete Swift suite;
+- `swift build -c release`;
+- Xcode project-file syntax and shared-scheme presence checks;
+- `git diff --check`, `git diff --cached --check`, and repository status.
+
+The authorized branch push and pull request provide the required process-level
+evidence on Xcode 26.3. Completion requires the UI-smoke CI job to pass; local
+structural validation alone is insufficient.
+
+## 13. Acceptance Criteria
 
 The task is complete when:
 
-- the focused smoke suite passes without Accessibility permission;
-- it uses only temporary generated documents and an explicit temporary
-  database;
-- it drives add, scan, retry, and remove through production SwiftUI
-  accessibility actions;
-- it verifies ready, failed, ignored, restarted, and removed states against the
-  real persistence and extraction components;
-- its before/after source snapshots are identical;
-- existing source-integrity acceptance tests remain green;
-- the complete suite and release build pass;
-- no source document is changed and no local database or generated artifact is
-  committed.
+- a committed macOS app target compiles the real LinkLoom composition root;
+- a committed XCTest UI-test target launches and drives it in a separate
+  process;
+- test-only paths are unreachable in SwiftPM and Release builds;
+- all inputs and the SQLite database are temporary and explicit;
+- Add, Scan, Retry, restart, and Remove are exercised through XCUIAutomation;
+- ready, failed, ignored, persisted, and removed states have visible and
+  durable evidence;
+- extracted selectable and OCR text is confirmed read-only in SQLite;
+- all related relational and FTS rows disappear after UI removal;
+- before and after source snapshots are exactly equal;
+- the existing source-integrity acceptance test remains green;
+- the complete Swift suite and release build pass;
+- `Swift / UI smoke` passes on the pull request under Xcode 26.3;
+- no generated fixture, database, DerivedData, `.xcresult`, secret, personal
+  data, or unrelated change is committed.
