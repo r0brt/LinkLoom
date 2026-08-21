@@ -39,17 +39,8 @@ public struct CompositeTextExtractor: DocumentTextExtracting {
                 return embedded
             }
 
-            try Task.checkCancellation()
-            let images: [CGImage]
-            do {
-                images = try pdfRenderer.renderPages(at: url)
-            } catch let error as CancellationError {
-                throw error
-            } catch {
-                throw TextExtractionError.unreadableDocument
-            }
-            try Task.checkCancellation()
-            guard images.count == embedded.pages.count else {
+            let pageCount = try pdfPageCount(at: url)
+            guard pageCount == embedded.pages.count else {
                 throw TextExtractionError.unreadableDocument
             }
 
@@ -57,12 +48,12 @@ public struct CompositeTextExtractor: DocumentTextExtracting {
             for pagePosition in emptyPagePositions {
                 try Task.checkCancellation()
                 let pageIndex = pages[pagePosition].pageIndex
-                guard images.indices.contains(pageIndex) else {
+                guard pageIndex >= 0, pageIndex < pageCount else {
                     throw TextExtractionError.unreadableDocument
                 }
                 do {
-                    pages[pagePosition] = try await ocr.recognize(
-                        cgImage: images[pageIndex],
+                    pages[pagePosition] = try await recognizePDFPage(
+                        at: url,
                         pageIndex: pageIndex
                     )
                 } catch TextExtractionError.noRecognizedText {
@@ -86,28 +77,17 @@ public struct CompositeTextExtractor: DocumentTextExtracting {
     }
 
     private func extractImageOnlyPDF(from url: URL) async throws -> ExtractedDocument {
-        try Task.checkCancellation()
-        let images: [CGImage]
-        do {
-            images = try pdfRenderer.renderPages(at: url)
-        } catch let error as CancellationError {
-            throw error
-        } catch {
-            throw TextExtractionError.unreadableDocument
-        }
-        try Task.checkCancellation()
-        guard !images.isEmpty else {
+        let pageCount = try pdfPageCount(at: url)
+        guard pageCount > 0 else {
             throw TextExtractionError.unreadableDocument
         }
         var pages: [ExtractedPage] = []
+        pages.reserveCapacity(pageCount)
         var recognizedAnyText = false
-        for (pageIndex, image) in images.enumerated() {
+        for pageIndex in 0..<pageCount {
             try Task.checkCancellation()
             do {
-                pages.append(try await ocr.recognize(
-                    cgImage: image,
-                    pageIndex: pageIndex
-                ))
+                pages.append(try await recognizePDFPage(at: url, pageIndex: pageIndex))
                 recognizedAnyText = true
             } catch TextExtractionError.noRecognizedText {
                 pages.append(ExtractedPage(
@@ -121,6 +101,32 @@ public struct CompositeTextExtractor: DocumentTextExtracting {
             throw TextExtractionError.noRecognizedText
         }
         return ExtractedDocument(method: .visionOCR, pages: pages)
+    }
+
+    private func pdfPageCount(at url: URL) throws -> Int {
+        do {
+            return try pdfRenderer.pageCount(at: url)
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            throw TextExtractionError.unreadableDocument
+        }
+    }
+
+    private func recognizePDFPage(
+        at url: URL,
+        pageIndex: Int
+    ) async throws -> ExtractedPage {
+        let image: CGImage
+        do {
+            image = try pdfRenderer.renderPage(at: url, pageIndex: pageIndex)
+        } catch let error as CancellationError {
+            throw error
+        } catch {
+            throw TextExtractionError.unreadableDocument
+        }
+        try Task.checkCancellation()
+        return try await ocr.recognize(cgImage: image, pageIndex: pageIndex)
     }
 
     private static func decodeImage(at url: URL) throws -> CGImage {
