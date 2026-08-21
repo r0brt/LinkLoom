@@ -60,6 +60,10 @@ The benchmark creates its synthetic files in a temporary directory, scans them t
 
 ## Troubleshooting
 
+### Local catalog startup failures
+
+If LinkLoom cannot open its rebuildable local catalog, it shows a startup error instead of terminating. Resolve disk-space or Application Support permission problems and select “Erneut versuchen”. Source documents are not modified by this recovery path.
+
 ### Password-protected PDFs
 
 Password-protected PDFs cannot be extracted without credentials and are reported with a failure status. LinkLoom does not attempt to remove or bypass document protection. Unlock a copy outside LinkLoom if you are authorized to do so, then rescan it.
