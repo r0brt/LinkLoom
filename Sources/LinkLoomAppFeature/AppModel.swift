@@ -25,6 +25,25 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var lastErrorCode: String?
     @Published public private(set) var unavailableSourceIDs = Set<UUID>()
 
+    public var lastErrorMessage: String? {
+        switch lastErrorCode {
+        case "sourceAddFailure":
+            "Die Quelle konnte nicht hinzugefügt werden. Bitte prüfe den Zugriff und versuche es erneut."
+        case "scanFailure":
+            "Die Analyse konnte nicht abgeschlossen werden. Bitte prüfe die Quelle und versuche es erneut."
+        case "sourceRemoveFailure":
+            "Die Quelle konnte nicht entfernt werden. Bitte versuche es erneut."
+        case "documentLoadFailure":
+            "Die Dokumente konnten nicht geladen werden. Bitte versuche es erneut."
+        case "incrementalRefreshFailure":
+            "Die Ansicht konnte nach der Analyse nicht aktualisiert werden. Bitte versuche es erneut."
+        case .some:
+            "Der Vorgang konnte nicht abgeschlossen werden. Bitte versuche es erneut."
+        case nil:
+            nil
+        }
+    }
+
     private let sourceRepository: SourceRootRepository
     private let documentRepository: DocumentRepository
     private let sourceAccess: any SourceAccessing
@@ -34,6 +53,7 @@ public final class AppModel: ObservableObject {
     private let documentLoader: @Sendable (UUID) async throws -> [DocumentRecord]
     private let watchScheduler: (any SourceWatchScheduling)?
     private let sourceResolver: @Sendable (SourceRootRecord) throws -> URL
+    private let reportRuntimeFailure: @MainActor @Sendable (AppRuntimeDiagnostic) -> Void
     private var isExclusiveSourceOperationActive = false
     private var activeReloadCount = 0
     private var watchedSourceIDs = Set<UUID>()
@@ -51,7 +71,8 @@ public final class AppModel: ObservableObject {
         sourceAccess: any SourceAccessing,
         catalog: any CatalogScanning,
         ingestion: any PendingIngesting,
-        watchScheduler: (any SourceWatchScheduling)? = nil
+        watchScheduler: (any SourceWatchScheduling)? = nil,
+        reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
         sourceRepository = sources
         documentRepository = documents
@@ -60,6 +81,7 @@ public final class AppModel: ObservableObject {
         self.ingestion = ingestion
         sourceLoader = { try await sources.all() }
         self.watchScheduler = watchScheduler
+        self.reportRuntimeFailure = reportRuntimeFailure
         sourceResolver = { source in
             try sourceAccess.resolve(source.bookmarkData).url
         }
@@ -74,7 +96,8 @@ public final class AppModel: ObservableObject {
         sourceAccess: any SourceAccessing,
         catalog: any CatalogScanning,
         ingestion: any PendingIngesting,
-        documentLoader: @escaping @Sendable (UUID) async throws -> [DocumentRecord]
+        documentLoader: @escaping @Sendable (UUID) async throws -> [DocumentRecord],
+        reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
         sourceRepository = sources
         documentRepository = documents
@@ -84,6 +107,7 @@ public final class AppModel: ObservableObject {
         sourceLoader = { try await sources.all() }
         self.documentLoader = documentLoader
         watchScheduler = nil
+        self.reportRuntimeFailure = reportRuntimeFailure
         sourceResolver = { source in URL(fileURLWithPath: source.pathHint) }
     }
 
@@ -96,7 +120,8 @@ public final class AppModel: ObservableObject {
         watchScheduler: any SourceWatchScheduling,
         sourceResolver: @escaping @Sendable (SourceRootRecord) throws -> URL,
         sourceLoader: (@Sendable () async throws -> [SourceRootRecord])? = nil,
-        documentLoader: (@Sendable (UUID) async throws -> [DocumentRecord])? = nil
+        documentLoader: (@Sendable (UUID) async throws -> [DocumentRecord])? = nil,
+        reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
         sourceRepository = sources
         documentRepository = documents
@@ -109,6 +134,7 @@ public final class AppModel: ObservableObject {
         }
         self.watchScheduler = watchScheduler
         self.sourceResolver = sourceResolver
+        self.reportRuntimeFailure = reportRuntimeFailure
     }
 
     public func reload() async throws {
@@ -126,6 +152,7 @@ public final class AppModel: ObservableObject {
         } catch {
             activeReloadCount -= 1
             await processPendingRescanCompletions()
+            reportRuntimeFailure(AppRuntimeDiagnostic(category: .reload, error: error))
             throw error
         }
     }
@@ -145,7 +172,11 @@ public final class AppModel: ObservableObject {
             await startWatching(source)
             lastErrorCode = nil
         } catch {
-            lastErrorCode = "sourceAddFailure"
+            publishRuntimeFailure(
+                code: "sourceAddFailure",
+                category: .sourceAdd,
+                error: error
+            )
         }
     }
 
@@ -159,14 +190,21 @@ public final class AppModel: ObservableObject {
         lastErrorCode = nil
         scanState = .scanning
         defer { scanState = .idle }
+        var failureCategory = AppRuntimeFailureCategory.scan
         do {
             try await catalog.scan(source: source)
             scanState = .extracting
+            failureCategory = .ingestion
             try await ingestion.processPending(source: source)
+            failureCategory = .refresh
             sources = try await sourceRepository.all()
             _ = try await reloadDocuments()
         } catch {
-            lastErrorCode = "scanFailure"
+            publishRuntimeFailure(
+                code: "scanFailure",
+                category: failureCategory,
+                error: error
+            )
         }
     }
 
@@ -186,7 +224,11 @@ public final class AppModel: ObservableObject {
             _ = try await reloadDocuments()
             lastErrorCode = nil
         } catch {
-            lastErrorCode = "sourceRemoveFailure"
+            publishRuntimeFailure(
+                code: "sourceRemoveFailure",
+                category: .sourceRemove,
+                error: error
+            )
         }
     }
 
@@ -199,7 +241,11 @@ public final class AppModel: ObservableObject {
                 lastErrorCode = nil
             }
         } catch {
-            lastErrorCode = "documentLoadFailure"
+            publishRuntimeFailure(
+                code: "documentLoadFailure",
+                category: .documentLoad,
+                error: error
+            )
         }
     }
 
@@ -324,6 +370,7 @@ public final class AppModel: ObservableObject {
             }
         } catch {
             unavailableSourceIDs.insert(source.id)
+            reportRuntimeFailure(AppRuntimeDiagnostic(category: .watcherStart, error: error))
         }
     }
 
@@ -407,8 +454,21 @@ public final class AppModel: ObservableObject {
             else {
                 return
             }
-            lastErrorCode = "incrementalRefreshFailure"
+            publishRuntimeFailure(
+                code: "incrementalRefreshFailure",
+                category: .incrementalRefresh,
+                error: error
+            )
         }
+    }
+
+    private func publishRuntimeFailure(
+        code: String,
+        category: AppRuntimeFailureCategory,
+        error: any Error
+    ) {
+        lastErrorCode = code
+        reportRuntimeFailure(AppRuntimeDiagnostic(category: category, error: error))
     }
 
     private func receive(_ change: DirectoryChange) async {
