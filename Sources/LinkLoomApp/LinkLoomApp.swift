@@ -14,6 +14,10 @@ struct LinkLoomApp: App {
         subsystem: "LinkLoom",
         category: "startup"
     )
+    private static let runtimeLogger = Logger(
+        subsystem: "LinkLoom",
+        category: "runtime"
+    )
 
     init() {
         _startup = StateObject(wrappedValue: AppStartupController(
@@ -105,7 +109,12 @@ struct LinkLoomApp: App {
             sourceAccess: sourceAccess,
             catalog: CatalogScanner(service: catalog),
             ingestion: PendingIngester(pipeline: ingestion),
-            watchScheduler: watchScheduler
+            watchScheduler: watchScheduler,
+            reportRuntimeFailure: { diagnostic in
+                Self.runtimeLogger.error(
+                    "Runtime operation failed: category=\(diagnostic.category.rawValue, privacy: .public) reason=\(diagnostic.reason.rawValue, privacy: .public)"
+                )
+            }
         )
     }
 

@@ -34,6 +34,7 @@ struct AppModelTests {
 
     @Test @MainActor func scanFailureAppearsWithoutRemovingExistingDocuments() async throws {
         let fixture = try AppModelFixture()
+        let diagnostics = RuntimeDiagnosticRecorder()
         let source = try await fixture.addSource(named: "Archive")
         let existingDocument = fixture.document(sourceRootID: source.id, path: "existing.pdf")
         try await fixture.documents.save(existingDocument)
@@ -42,7 +43,8 @@ struct AppModelTests {
             documents: fixture.documents,
             sourceAccess: fixture.sourceAccess,
             catalog: FakeCatalogScanner { throw AppModelTestError.scanFailed },
-            ingestion: FakePendingIngester()
+            ingestion: FakePendingIngester(),
+            reportRuntimeFailure: { diagnostics.record($0) }
         )
         try await model.reload()
 
@@ -50,11 +52,18 @@ struct AppModelTests {
 
         #expect(model.scanState == .idle)
         #expect(model.lastErrorCode == "scanFailure")
+        #expect(
+            model.lastErrorMessage
+                == "Die Analyse konnte nicht abgeschlossen werden. Bitte prüfe die Quelle und versuche es erneut."
+        )
         #expect(model.documents == [existingDocument])
+        #expect(diagnostics.values.map(\.category) == [.scan])
+        #expect(diagnostics.values.map(\.reason) == [.unexpected])
     }
 
     @Test @MainActor func ingestionFailureAppearsWithoutRemovingExistingDocuments() async throws {
         let fixture = try AppModelFixture()
+        let diagnostics = RuntimeDiagnosticRecorder()
         let source = try await fixture.addSource(named: "Archive")
         let existingDocument = fixture.document(
             sourceRootID: source.id,
@@ -66,7 +75,8 @@ struct AppModelTests {
             documents: fixture.documents,
             sourceAccess: fixture.sourceAccess,
             catalog: FakeCatalogScanner(),
-            ingestion: FailingPendingIngester()
+            ingestion: FailingPendingIngester(),
+            reportRuntimeFailure: { diagnostics.record($0) }
         )
         try await model.reload()
 
@@ -75,6 +85,8 @@ struct AppModelTests {
         #expect(model.scanState == .idle)
         #expect(model.lastErrorCode == "scanFailure")
         #expect(model.documents == [existingDocument])
+        #expect(diagnostics.values.map(\.category) == [.ingestion])
+        #expect(diagnostics.values.map(\.reason) == [.sourceAccess])
     }
 
     @Test @MainActor func addingSourcePersistsAndSelectsIt() async throws {
@@ -905,6 +917,7 @@ struct AppModelTests {
 
     @Test @MainActor func currentIncrementalRefreshFailurePreservesVisibleDocuments() async throws {
         let fixture = try AppModelFixture()
+        let diagnostics = RuntimeDiagnosticRecorder()
         let source = try await fixture.addSource(named: "Archive")
         let visible = fixture.document(sourceRootID: source.id, path: "visible.pdf")
         let loader = FailingSecondDocumentLoader(documentsBySource: [
@@ -919,7 +932,8 @@ struct AppModelTests {
             ingestion: FakePendingIngester(),
             watchScheduler: scheduler,
             sourceResolver: { _ in fixture.directory },
-            documentLoader: { sourceID in try await loader.load(sourceID: sourceID) }
+            documentLoader: { sourceID in try await loader.load(sourceID: sourceID) },
+            reportRuntimeFailure: { diagnostics.record($0) }
         )
         try await model.reload()
 
@@ -927,6 +941,12 @@ struct AppModelTests {
         await waitUntil { model.lastErrorCode == "incrementalRefreshFailure" }
 
         #expect(model.documents == [visible])
+        #expect(
+            model.lastErrorMessage
+                == "Die Ansicht konnte nach der Analyse nicht aktualisiert werden. Bitte versuche es erneut."
+        )
+        #expect(diagnostics.values.map(\.category) == [.incrementalRefresh])
+        #expect(diagnostics.values.map(\.reason) == [.unexpected])
     }
 
     @Test @MainActor func fallbackDocumentFailurePublishesIncrementalRefreshError() async throws {
@@ -1315,6 +1335,15 @@ private struct FailingPendingIngester: PendingIngesting {
             reason: .sourceAccess,
             partialReport: IngestionReport(completed: 0, failed: 0)
         )
+    }
+}
+
+@MainActor
+private final class RuntimeDiagnosticRecorder {
+    private(set) var values: [AppRuntimeDiagnostic] = []
+
+    func record(_ diagnostic: AppRuntimeDiagnostic) {
+        values.append(diagnostic)
     }
 }
 
