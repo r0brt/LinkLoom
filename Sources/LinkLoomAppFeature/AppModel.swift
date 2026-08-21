@@ -415,11 +415,18 @@ public final class AppModel: ObservableObject {
         guard watchedSourceIDs.contains(change.sourceRootID) else { return }
         switch change.kind {
         case .rootUnavailable:
-            unavailableSourceIDs.insert(change.sourceRootID)
-            if let watchScheduler,
-               !(await watchScheduler.isWatching(sourceID: change.sourceRootID)) {
+            let isStillWatching = await watchScheduler?.isWatching(
+                sourceID: change.sourceRootID
+            )
+            guard !Task.isCancelled,
+                  watchedSourceIDs.contains(change.sourceRootID)
+            else {
+                return
+            }
+            if isStillWatching == false {
                 watchedSourceIDs.remove(change.sourceRootID)
             }
+            unavailableSourceIDs.insert(change.sourceRootID)
         case .rootAvailable:
             unavailableSourceIDs.remove(change.sourceRootID)
         case .contentChanged:
