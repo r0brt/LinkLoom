@@ -44,9 +44,6 @@ final class LinkLoomUISmokeTests: XCTestCase {
             let addButton = element("source.add", in: app)
             requireExists(addButton, timeout: 20, description: "source.add")
             addButton.click()
-            if !sourceRow(in: app).waitForExistence(timeout: 3) {
-                addButton.typeKey(.space, modifierFlags: [])
-            }
             requireExists(sourceRow(in: app), timeout: 20, description: "source.row.<UUID>")
             requireExists(element("scan.start", in: app), timeout: 20, description: "scan.start")
         }
@@ -142,6 +139,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
             application.launchArguments.append("--linkloom-ui-test-fail-startup-once")
         }
         application.launch()
+        application.activate()
         app = application
         return application
     }
