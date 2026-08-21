@@ -1,0 +1,385 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		000000000000000000000001 /* LinkLoomApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000011 /* LinkLoomApp.swift */; };
+		000000000000000000000002 /* LinkLoomCore in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000071 /* LinkLoomCore */; };
+		000000000000000000000003 /* LinkLoomAppFeature in Frameworks */ = {isa = PBXBuildFile; productRef = 000000000000000000000072 /* LinkLoomAppFeature */; };
+		000000000000000000000004 /* LinkLoomUISmokeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000012 /* LinkLoomUISmokeTests.swift */; };
+		000000000000000000000005 /* SmokeFixture.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000013 /* SmokeFixture.swift */; };
+		000000000000000000000006 /* SQLiteProbe.swift in Sources */ = {isa = PBXBuildFile; fileRef = 000000000000000000000014 /* SQLiteProbe.swift */; };
+		000000000000000000000007 /* libsqlite3.tbd in Frameworks */ = {isa = PBXBuildFile; fileRef = 000000000000000000000015 /* libsqlite3.tbd */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		000000000000000000000020 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000060 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 000000000000000000000050;
+			remoteInfo = LinkLoomUIHost;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		000000000000000000000010 /* LinkLoom.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = LinkLoom.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		000000000000000000000011 /* LinkLoomApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sources/LinkLoomApp/LinkLoomApp.swift; sourceTree = SOURCE_ROOT; };
+		000000000000000000000012 /* LinkLoomUISmokeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LinkLoomUISmokeTests.swift; sourceTree = "<group>"; };
+		000000000000000000000013 /* SmokeFixture.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeFixture.swift; sourceTree = "<group>"; };
+		000000000000000000000014 /* SQLiteProbe.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SQLiteProbe.swift; sourceTree = "<group>"; };
+		000000000000000000000015 /* libsqlite3.tbd */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.text-based-dylib-definition; name = libsqlite3.tbd; path = usr/lib/libsqlite3.tbd; sourceTree = SDKROOT; };
+		000000000000000000000016 /* LinkLoomUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = LinkLoomUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		000000000000000000000030 /* App Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				000000000000000000000002 /* LinkLoomCore in Frameworks */,
+				000000000000000000000003 /* LinkLoomAppFeature in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		000000000000000000000031 /* UI Tests Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				000000000000000000000007 /* libsqlite3.tbd in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		000000000000000000000040 = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000041 /* App Sources */,
+				000000000000000000000042 /* LinkLoomUITests */,
+				000000000000000000000044 /* Frameworks */,
+				000000000000000000000045 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		000000000000000000000041 /* App Sources */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000011 /* LinkLoomApp.swift */,
+			);
+			name = "App Sources";
+			sourceTree = "<group>";
+		};
+		000000000000000000000042 /* LinkLoomUITests */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000012 /* LinkLoomUISmokeTests.swift */,
+				000000000000000000000043 /* Support */,
+			);
+			path = LinkLoomUITests;
+			sourceTree = "<group>";
+		};
+		000000000000000000000043 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000013 /* SmokeFixture.swift */,
+				000000000000000000000014 /* SQLiteProbe.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		000000000000000000000044 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000015 /* libsqlite3.tbd */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		000000000000000000000045 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				000000000000000000000010 /* LinkLoom.app */,
+				000000000000000000000016 /* LinkLoomUITests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		000000000000000000000050 /* LinkLoomUIHost */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000000000080 /* Build configuration list for PBXNativeTarget "LinkLoomUIHost" */;
+			buildPhases = (
+				000000000000000000000032 /* App Sources */,
+				000000000000000000000030 /* App Frameworks */,
+				000000000000000000000034 /* App Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = LinkLoomUIHost;
+			packageProductDependencies = (
+				000000000000000000000071 /* LinkLoomCore */,
+				000000000000000000000072 /* LinkLoomAppFeature */,
+			);
+			productName = LinkLoom;
+			productReference = 000000000000000000000010 /* LinkLoom.app */;
+			productType = "com.apple.product-type.application";
+		};
+		000000000000000000000051 /* LinkLoomUITests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 000000000000000000000081 /* Build configuration list for PBXNativeTarget "LinkLoomUITests" */;
+			buildPhases = (
+				000000000000000000000033 /* UI Test Sources */,
+				000000000000000000000031 /* UI Tests Frameworks */,
+				000000000000000000000035 /* UI Test Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				000000000000000000000021 /* PBXTargetDependency */,
+			);
+			name = LinkLoomUITests;
+			packageProductDependencies = (
+			);
+			productName = LinkLoomUITests;
+			productReference = 000000000000000000000016 /* LinkLoomUITests.xctest */;
+			productType = "com.apple.product-type.bundle.ui-testing";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		000000000000000000000060 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 2630;
+				LastUpgradeCheck = 2630;
+				TargetAttributes = {
+					000000000000000000000050 = {
+						CreatedOnToolsVersion = 26.3;
+					};
+					000000000000000000000051 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = 000000000000000000000050;
+					};
+				};
+			};
+			buildConfigurationList = 000000000000000000000082 /* Build configuration list for PBXProject "LinkLoom" */;
+			compatibilityVersion = "Xcode 16.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 000000000000000000000040;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				000000000000000000000070 /* XCLocalSwiftPackageReference "." */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 000000000000000000000045 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				000000000000000000000050 /* LinkLoomUIHost */,
+				000000000000000000000051 /* LinkLoomUITests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		000000000000000000000034 /* App Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		000000000000000000000035 /* UI Test Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		000000000000000000000032 /* App Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				000000000000000000000001 /* LinkLoomApp.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		000000000000000000000033 /* UI Test Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				000000000000000000000004 /* LinkLoomUISmokeTests.swift in Sources */,
+				000000000000000000000005 /* SmokeFixture.swift in Sources */,
+				000000000000000000000006 /* SQLiteProbe.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		000000000000000000000021 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 000000000000000000000050 /* LinkLoomUIHost */;
+			targetProxy = 000000000000000000000020 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		000000000000000000000090 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = LinkLoom;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = local.linkloom.uitesthost;
+				PRODUCT_NAME = LinkLoom;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG LINKLOOM_UI_TESTING";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		000000000000000000000091 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = LinkLoom;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = local.linkloom.uitesthost;
+				PRODUCT_NAME = LinkLoom;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		000000000000000000000092 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @loader_path/Frameworks @executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = local.linkloom.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = LinkLoomUIHost;
+			};
+			name = Debug;
+		};
+		000000000000000000000093 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @loader_path/Frameworks @executable_path/../Frameworks";
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = local.linkloom.uitests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_TARGET_NAME = LinkLoomUIHost;
+			};
+			name = Release;
+		};
+		000000000000000000000094 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		000000000000000000000095 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CLANG_ENABLE_MODULES = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				SDKROOT = macosx;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		000000000000000000000080 /* Build configuration list for PBXNativeTarget "LinkLoomUIHost" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000000000090 /* Debug */,
+				000000000000000000000091 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		000000000000000000000081 /* Build configuration list for PBXNativeTarget "LinkLoomUITests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000000000092 /* Debug */,
+				000000000000000000000093 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		000000000000000000000082 /* Build configuration list for PBXProject "LinkLoom" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				000000000000000000000094 /* Debug */,
+				000000000000000000000095 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		000000000000000000000070 /* XCLocalSwiftPackageReference "." */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = .;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		000000000000000000000071 /* LinkLoomCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 000000000000000000000070 /* XCLocalSwiftPackageReference "." */;
+			productName = LinkLoomCore;
+		};
+		000000000000000000000072 /* LinkLoomAppFeature */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 000000000000000000000070 /* XCLocalSwiftPackageReference "." */;
+			productName = LinkLoomAppFeature;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 000000000000000000000060 /* Project object */;
+}
