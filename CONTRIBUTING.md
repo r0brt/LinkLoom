@@ -139,6 +139,12 @@ Urgency does not bypass review or CI. Create a `hotfix/<issue>-<description>` br
 
 ## Required checks
 
-The repository CI checks are `Policy / validate`, `Swift / test`, and `Swift / release-build`. `Policy / validate` enforces pull-request title and branch naming. The Swift checks must first run reliably on pull requests before administrators make them required in the `main` ruleset. As application tooling is introduced, its build, test, lint, type-check, and security jobs must be added to CI and then made required in the `main` ruleset.
+The repository CI checks are `Policy / validate`, `Swift / test`,
+`Swift / release-build`, and `Swift / UI smoke`. `Policy / validate` enforces
+pull-request title and branch naming. The Swift checks must first run reliably
+on pull requests before administrators make them required in the `main`
+ruleset. As application tooling is introduced, its build, test, lint,
+type-check, and security jobs must be added to CI and then made required in the
+`main` ruleset.
 
 The administrator setup is documented in [`.github/BRANCH_PROTECTION.md`](.github/BRANCH_PROTECTION.md).

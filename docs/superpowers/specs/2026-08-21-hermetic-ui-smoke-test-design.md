@@ -252,6 +252,11 @@ The test uses:
 - XCTest predicate expectations for label and disappearance conditions;
 - read-only SQLite state after app termination for durable persistence checks.
 
+After launch, the test activates the application and moves its window upward
+through an XCUI title-bar drag. This keeps the sidebar action above the
+screen-edge and Dock activation region on the 1024×768 CI desktop without
+changing product layout or bypassing the UI.
+
 It does not use fixed sleeps. Every timeout names the missing identifier,
 expected label, or SQLite condition.
 
