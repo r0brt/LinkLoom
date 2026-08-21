@@ -51,7 +51,7 @@ struct CompositeTextExtractorTests {
         #expect(await ocr.pageIndices.isEmpty)
     }
 
-    @Test func mixedPDFUsesEmbeddedTextAndOCRByPage() async throws {
+    @Test func mixedPDFRendersOnlyBlankPages() async throws {
         let image = try makePixelImage()
         let embedded = FakePDFTextExtractor(result: ExtractedDocument(
             method: .embeddedPDFText,
@@ -78,6 +78,7 @@ struct CompositeTextExtractorTests {
         #expect(result.pages.map(\.text) == ["Embedded contract text", "page-1"])
         #expect(result.pages[0].regions.isEmpty)
         #expect(!result.pages[1].regions.isEmpty)
+        #expect(renderer.renderedPageIndices == [1])
         #expect(await ocr.pageIndices == [1])
     }
 
@@ -124,8 +125,52 @@ struct CompositeTextExtractorTests {
         #expect(result.method == .visionOCR)
         #expect(result.pages.map(\.pageIndex) == [0, 1])
         #expect(result.pages.map(\.text) == ["page-0", "page-1"])
-        #expect(renderer.callCount == 1)
+        #expect(renderer.callCount == 2)
         #expect(await ocr.pageIndices == [0, 1])
+    }
+
+    @Test func legacyRendererRemainsUsableForImageOnlyPDF() async throws {
+        let image = try makePixelImage()
+        let renderer = LegacyPDFPageRenderer(images: [image, image])
+        let extractor = CompositeTextExtractor(
+            pdfText: FakePDFTextExtractor(error: .insufficientEmbeddedText),
+            pdfRenderer: renderer,
+            ocr: FakeOCRRecognizer()
+        )
+
+        let result = try await extractor.extract(
+            from: URL(fileURLWithPath: "/fixture/legacy-scan.pdf"),
+            mediaType: .pdf
+        )
+
+        #expect(result.pages.map(\.pageIndex) == [0, 1])
+        #expect(result.pages.map(\.text) == ["page-0", "page-1"])
+        #expect(renderer.callCount == 1)
+    }
+
+    @Test func imageOnlyPDFDoesNotRenderSecondPageBeforeFirstOCRCompletes() async throws {
+        let image = try makePixelImage()
+        let renderer = FakePDFPageRenderer(images: [image, image])
+        let firstOCRGate = FirstOCRGate()
+        let extractor = CompositeTextExtractor(
+            pdfText: FakePDFTextExtractor(error: .insufficientEmbeddedText),
+            pdfRenderer: renderer,
+            ocr: FakeOCRRecognizer(firstOCRGate: firstOCRGate)
+        )
+        let extraction = Task {
+            try await extractor.extract(
+                from: URL(fileURLWithPath: "/fixture/scan.pdf"),
+                mediaType: .pdf
+            )
+        }
+
+        await firstOCRGate.waitUntilPaused()
+        #expect(renderer.renderedPageIndices == [0])
+        await firstOCRGate.release()
+
+        let result = try await extraction.value
+        #expect(result.pages.map(\.pageIndex) == [0, 1])
+        #expect(renderer.renderedPageIndices == [0, 1])
     }
 
     @Test func rendererCancellationPropagates() async throws {
@@ -317,10 +362,10 @@ struct PDFPageRendererTests {
             let pdf = try makeRotatedCroppedPDF(rotation: rotation)
             defer { try? FileManager.default.removeItem(at: pdf) }
 
-            let images = try PDFPageRenderer(dpi: 72).renderPages(at: pdf)
-            let image = try #require(images.first)
+            let renderer = PDFPageRenderer(dpi: 72)
+            let image = try renderer.renderPage(at: pdf, pageIndex: 0)
 
-            #expect(images.count == 1)
+            #expect(try renderer.pageCount(at: pdf) == 1)
             #expect(image.width == 40)
             #expect(image.height == 80)
         }
@@ -329,11 +374,31 @@ struct PDFPageRendererTests {
     @Test func rejectsDocumentWhoseRenderedPixelsExceedBudget() throws {
         let pdf = try makeRotatedCroppedPDF(rotation: 0)
         defer { try? FileManager.default.removeItem(at: pdf) }
-        let renderer = PDFPageRenderer(dpi: 72, maximumTotalPixelCount: 1_000)
+        let renderer = PDFPageRenderer(dpi: 72, maximumPagePixelCount: 1_000)
 
         #expect(throws: TextExtractionError.unreadableDocument) {
-            try renderer.renderPages(at: pdf)
+            try renderer.renderPage(at: pdf, pageIndex: 0)
         }
+    }
+
+    @Test func appliesPixelBudgetToEachPageIndependently() throws {
+        let pdf = try FixtureFactory.makeTextPDF(pages: ["First", "Second"])
+        defer { try? FileManager.default.removeItem(at: pdf) }
+        let renderer = PDFPageRenderer(dpi: 72, maximumPagePixelCount: 500_000)
+
+        #expect(try renderer.pageCount(at: pdf) == 2)
+        _ = try renderer.renderPage(at: pdf, pageIndex: 0)
+        _ = try renderer.renderPage(at: pdf, pageIndex: 1)
+    }
+
+    @Test func documentWideRenderingRemainsAvailableForExistingCallers() throws {
+        let pdf = try FixtureFactory.makeTextPDF(pages: ["First", "Second"])
+        defer { try? FileManager.default.removeItem(at: pdf) }
+        let renderer: any PDFPageRendering = PDFPageRenderer(dpi: 72)
+
+        let images = try renderer.renderPages(at: pdf)
+
+        #expect(images.count == 2)
     }
 }
 
@@ -388,11 +453,12 @@ private actor FakePDFTextExtractor: DocumentTextExtracting {
     }
 }
 
-private final class FakePDFPageRenderer: PDFPageRendering, @unchecked Sendable {
+private final class FakePDFPageRenderer: PDFPageAtATimeRendering, @unchecked Sendable {
     private let lock = NSLock()
     private let images: [CGImage]
     private let cancels: Bool
     private var storedCallCount = 0
+    private var storedRenderedPageIndices: [Int] = []
 
     init(images: [CGImage]) {
         self.images = images
@@ -410,13 +476,53 @@ private final class FakePDFPageRenderer: PDFPageRendering, @unchecked Sendable {
         return storedCallCount
     }
 
-    func renderPages(at url: URL) throws -> [CGImage] {
+    var renderedPageIndices: [Int] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedRenderedPageIndices
+    }
+
+    func pageCount(at url: URL) throws -> Int {
+        if cancels {
+            throw CancellationError()
+        }
+        return images.count
+    }
+
+    func renderPage(at url: URL, pageIndex: Int) throws -> CGImage {
         lock.lock()
         storedCallCount += 1
+        storedRenderedPageIndices.append(pageIndex)
         lock.unlock()
         if cancels {
             throw CancellationError()
         }
+        guard images.indices.contains(pageIndex) else {
+            throw TextExtractionError.unreadableDocument
+        }
+        return images[pageIndex]
+    }
+}
+
+private final class LegacyPDFPageRenderer: PDFPageRendering, @unchecked Sendable {
+    private let lock = NSLock()
+    private let images: [CGImage]
+    private var storedCallCount = 0
+
+    init(images: [CGImage]) {
+        self.images = images
+    }
+
+    var callCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedCallCount
+    }
+
+    func renderPages(at url: URL) throws -> [CGImage] {
+        lock.lock()
+        storedCallCount += 1
+        lock.unlock()
         return images
     }
 }
@@ -425,22 +531,28 @@ private actor FakeOCRRecognizer: ImageOCRRecognizing {
     private let cancelAfterFirstPage: Bool
     private let blankPageIndices: Set<Int>
     private let error: TextExtractionError?
+    private let firstOCRGate: FirstOCRGate?
     private(set) var pageIndices: [Int] = []
     private(set) var imageSizes: [CGSize] = []
 
     init(
         cancelAfterFirstPage: Bool = false,
         blankPageIndices: Set<Int> = [],
-        error: TextExtractionError? = nil
+        error: TextExtractionError? = nil,
+        firstOCRGate: FirstOCRGate? = nil
     ) {
         self.cancelAfterFirstPage = cancelAfterFirstPage
         self.blankPageIndices = blankPageIndices
         self.error = error
+        self.firstOCRGate = firstOCRGate
     }
 
     func recognize(cgImage: CGImage, pageIndex: Int) async throws -> ExtractedPage {
         pageIndices.append(pageIndex)
         imageSizes.append(CGSize(width: cgImage.width, height: cgImage.height))
+        if pageIndices.count == 1 {
+            await firstOCRGate?.pause()
+        }
         if cancelAfterFirstPage && pageIndices.count == 1 {
             withUnsafeCurrentTask { task in
                 task?.cancel()
@@ -462,6 +574,35 @@ private actor FakeOCRRecognizer: ImageOCRRecognizing {
                 boundingBox: CGRect(x: 0.1, y: 0.2, width: 0.3, height: 0.4)
             )]
         )
+    }
+}
+
+private actor FirstOCRGate {
+    private var isPaused = false
+    private var pauseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func pause() async {
+        isPaused = true
+        for waiter in pauseWaiters {
+            waiter.resume()
+        }
+        pauseWaiters.removeAll()
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+    }
+
+    func waitUntilPaused() async {
+        if isPaused { return }
+        await withCheckedContinuation { continuation in
+            pauseWaiters.append(continuation)
+        }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
     }
 }
 
