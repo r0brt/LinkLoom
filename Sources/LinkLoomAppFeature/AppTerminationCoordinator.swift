@@ -6,7 +6,7 @@ public final class AppTerminationCoordinator {
         case terminateLater
     }
 
-    private let stopWatching: @MainActor @Sendable () async -> Void
+    private var stopWatching: @MainActor @Sendable () async -> Void
     private var terminationTask: Task<Void, Never>?
 
     public init(
@@ -15,11 +15,18 @@ public final class AppTerminationCoordinator {
         self.stopWatching = stopWatching
     }
 
+    public func updateStopWatching(
+        _ stopWatching: @escaping @MainActor @Sendable () async -> Void
+    ) {
+        self.stopWatching = stopWatching
+    }
+
     public func requestTermination(
         reply: @escaping @MainActor @Sendable (Bool) async -> Void
     ) -> Decision {
         guard terminationTask == nil else { return .terminateLater }
-        terminationTask = Task { [stopWatching] in
+        let stopWatching = self.stopWatching
+        terminationTask = Task {
             await stopWatching()
             await reply(true)
         }

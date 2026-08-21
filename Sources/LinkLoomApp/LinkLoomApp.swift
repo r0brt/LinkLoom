@@ -17,11 +17,8 @@ struct LinkLoomApp: App {
 
     init() {
         _startup = StateObject(wrappedValue: AppStartupController(
-            start: {
-                let model = try Self.makeModel()
-                try await model.reload()
-                return model
-            },
+            makeModel: { try Self.makeModel() },
+            prepareModel: { model in try await model.reload() },
             reportFailure: { error in
                 let nsError = error as NSError
                 Self.startupLogger.error(
@@ -35,7 +32,9 @@ struct LinkLoomApp: App {
         WindowGroup {
             startupContent
                 .task {
-                    await startup.startIfNeeded()
+                    await startup.startIfNeeded { model in
+                        appDelegate.configure(model: model)
+                    }
                 }
         }
     }
@@ -49,9 +48,6 @@ struct LinkLoomApp: App {
         case .ready:
             if let model = startup.model {
                 ContentView(model: model)
-                    .task {
-                        appDelegate.configure(model: model)
-                    }
             }
         case .failed:
             ContentUnavailableView {
@@ -66,7 +62,11 @@ struct LinkLoomApp: App {
                 )
             } actions: {
                 Button("Erneut versuchen") {
-                    Task { await startup.retry() }
+                    Task {
+                        await startup.retry { model in
+                            appDelegate.configure(model: model)
+                        }
+                    }
                 }
             }
             .frame(minWidth: 520, minHeight: 320)
@@ -127,9 +127,15 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     private var terminationCoordinator: AppTerminationCoordinator?
 
     func configure(model: AppModel) {
-        guard terminationCoordinator == nil else { return }
-        terminationCoordinator = AppTerminationCoordinator { [weak model] in
+        let stopWatching: @MainActor @Sendable () async -> Void = { [weak model] in
             await model?.stopWatching()
+        }
+        if let terminationCoordinator {
+            terminationCoordinator.updateStopWatching(stopWatching)
+        } else {
+            terminationCoordinator = AppTerminationCoordinator(
+                stopWatching: stopWatching
+            )
         }
     }
 

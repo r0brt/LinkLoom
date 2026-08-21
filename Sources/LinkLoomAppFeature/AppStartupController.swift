@@ -16,31 +16,43 @@ public final class AppStartupController: ObservableObject {
     @Published public private(set) var phase: AppStartupPhase = .idle
     public private(set) var model: AppModel?
 
-    private let start: @MainActor () async throws -> AppModel
+    private let makeModel: @MainActor () throws -> AppModel
+    private let prepareModel: @MainActor (AppModel) async throws -> Void
     private let reportFailure: @MainActor (Error) -> Void
 
     public init(
-        start: @escaping @MainActor () async throws -> AppModel,
+        makeModel: @escaping @MainActor () throws -> AppModel,
+        prepareModel: @escaping @MainActor (AppModel) async throws -> Void,
         reportFailure: @escaping @MainActor (Error) -> Void = { _ in }
     ) {
-        self.start = start
+        self.makeModel = makeModel
+        self.prepareModel = prepareModel
         self.reportFailure = reportFailure
     }
 
-    public func startIfNeeded() async {
+    public func startIfNeeded(
+        registerModel: @MainActor (AppModel) -> Void = { _ in }
+    ) async {
         guard phase == .idle else { return }
-        await attemptStart()
+        await attemptStart(registerModel: registerModel)
     }
 
-    public func retry() async {
+    public func retry(
+        registerModel: @MainActor (AppModel) -> Void = { _ in }
+    ) async {
         guard case .failed = phase else { return }
-        await attemptStart()
+        await attemptStart(registerModel: registerModel)
     }
 
-    private func attemptStart() async {
+    private func attemptStart(
+        registerModel: @MainActor (AppModel) -> Void
+    ) async {
         phase = .starting
         do {
-            model = try await start()
+            let model = try makeModel()
+            self.model = model
+            registerModel(model)
+            try await prepareModel(model)
             phase = .ready
         } catch {
             model = nil

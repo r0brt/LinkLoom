@@ -8,7 +8,8 @@ struct AppStartupControllerTests {
     @Test @MainActor func startupFailurePublishesRecoverableStateAndReportsDiagnostic() async {
         var reportedError: StartupTestError?
         let controller = AppStartupController(
-            start: { throw StartupTestError.catalogUnavailable },
+            makeModel: { throw StartupTestError.catalogUnavailable },
+            prepareModel: { _ in },
             reportFailure: { error in
                 reportedError = error as? StartupTestError
             }
@@ -24,13 +25,17 @@ struct AppStartupControllerTests {
     @Test @MainActor func retryAfterFailurePublishesReadyModel() async throws {
         let fixture = try StartupTestModelFixture()
         var attemptCount = 0
-        let controller = AppStartupController {
-            attemptCount += 1
-            if attemptCount == 1 {
-                throw StartupTestError.catalogUnavailable
-            }
-            return fixture.model
-        }
+        let controller = AppStartupController(
+            makeModel: {
+                attemptCount += 1
+                if attemptCount == 1 {
+                    throw StartupTestError.catalogUnavailable
+                }
+                return fixture.model
+            },
+            prepareModel: { _ in }
+        )
+
         await controller.startIfNeeded()
 
         await controller.retry()
@@ -40,15 +45,87 @@ struct AppStartupControllerTests {
         #expect(attemptCount == 2)
     }
 
+    @Test @MainActor func terminationDuringBlockedStartupWaitsForRegisteredModelShutdown() async throws {
+        let fixture = try StartupTestModelFixture()
+        let preparation = StartupGate()
+        let shutdown = BlockingStartupShutdown()
+        let replies = StartupTerminationReplyRecorder()
+        let coordinator = AppTerminationCoordinator {}
+        let controller = AppStartupController(
+            makeModel: { fixture.model },
+            prepareModel: { _ in await preparation.waitUntilReleased() }
+        )
+        let start = Task { @MainActor in
+            await controller.startIfNeeded { _ in
+                coordinator.updateStopWatching {
+                    await shutdown.run()
+                }
+            }
+        }
+        await preparation.waitUntilStarted()
+
+        _ = coordinator.requestTermination { allowed in
+            await replies.record(allowed)
+        }
+        await shutdown.waitUntilStarted()
+
+        #expect(await replies.value == nil)
+        #expect(controller.phase == .starting)
+        await shutdown.release()
+        await replies.waitUntilRecorded()
+        #expect(await replies.value == true)
+
+        await preparation.release()
+        await start.value
+    }
+
+    @Test @MainActor func retryRegistersReplacementModelForTermination() async throws {
+        let firstFixture = try StartupTestModelFixture()
+        let secondFixture = try StartupTestModelFixture()
+        let stoppedModels = StoppedModelRecorder()
+        let replies = StartupTerminationReplyRecorder()
+        let coordinator = AppTerminationCoordinator {}
+        var attemptCount = 0
+        let controller = AppStartupController(
+            makeModel: {
+                attemptCount += 1
+                return attemptCount == 1 ? firstFixture.model : secondFixture.model
+            },
+            prepareModel: { model in
+                if model === firstFixture.model {
+                    throw StartupTestError.catalogUnavailable
+                }
+            }
+        )
+        let registerModel: @MainActor (AppModel) -> Void = { model in
+            let modelID = ObjectIdentifier(model)
+            coordinator.updateStopWatching {
+                await stoppedModels.record(modelID)
+            }
+        }
+
+        await controller.startIfNeeded(registerModel: registerModel)
+        await controller.retry(registerModel: registerModel)
+        _ = coordinator.requestTermination { allowed in
+            await replies.record(allowed)
+        }
+        await replies.waitUntilRecorded()
+
+        #expect(await stoppedModels.modelID == ObjectIdentifier(secondFixture.model))
+        #expect(await replies.value == true)
+    }
+
     @Test @MainActor func overlappingStartRequestsInvokeFactoryOnce() async throws {
         let fixture = try StartupTestModelFixture()
         let gate = StartupGate()
         var attemptCount = 0
-        let controller = AppStartupController {
-            attemptCount += 1
-            await gate.waitUntilReleased()
-            return fixture.model
-        }
+        let controller = AppStartupController(
+            makeModel: {
+                attemptCount += 1
+                return fixture.model
+            },
+            prepareModel: { _ in await gate.waitUntilReleased() }
+        )
 
         let firstStart = Task { @MainActor in
             await controller.startIfNeeded()
@@ -69,10 +146,13 @@ struct AppStartupControllerTests {
     @Test @MainActor func startAfterReadyDoesNotReloadModel() async throws {
         let fixture = try StartupTestModelFixture()
         var attemptCount = 0
-        let controller = AppStartupController {
-            attemptCount += 1
-            return fixture.model
-        }
+        let controller = AppStartupController(
+            makeModel: {
+                attemptCount += 1
+                return fixture.model
+            },
+            prepareModel: { _ in }
+        )
 
         await controller.startIfNeeded()
         await controller.startIfNeeded()
@@ -163,6 +243,53 @@ private actor StartupGate {
         isReleased = true
         releaseWaiters.forEach { $0.resume() }
         releaseWaiters.removeAll()
+    }
+}
+
+private actor BlockingStartupShutdown {
+    private var didStart = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func run() async {
+        didStart = true
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        await withCheckedContinuation { releaseContinuation = $0 }
+    }
+
+    func waitUntilStarted() async {
+        guard !didStart else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func release() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
+}
+
+private actor StartupTerminationReplyRecorder {
+    private(set) var value: Bool?
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func record(_ value: Bool) {
+        self.value = value
+        waiters.forEach { $0.resume() }
+        waiters.removeAll()
+    }
+
+    func waitUntilRecorded() async {
+        guard value == nil else { return }
+        await withCheckedContinuation { waiters.append($0) }
+    }
+}
+
+private actor StoppedModelRecorder {
+    private(set) var modelID: ObjectIdentifier?
+
+    func record(_ modelID: ObjectIdentifier) {
+        self.modelID = modelID
     }
 }
 
