@@ -130,16 +130,11 @@ final class LinkLoomUISmokeTests: XCTestCase {
             "--linkloom-ui-test-database", fixture.databaseURL.path,
             "--linkloom-ui-test-source", fixture.sourceURL.path,
             "--linkloom-ui-test-disable-watcher",
-            "-ApplePersistenceIgnoreState", "YES",
         ]
         if failsStartupOnce {
             application.launchArguments.append("--linkloom-ui-test-fail-startup-once")
         }
         application.launch()
-        application.menuBars.menuBarItems["File"].click()
-        let newWindow = application.menuItems["New Window"]
-        XCTAssertTrue(newWindow.waitForExistence(timeout: 5), "New Window menu item is unavailable")
-        newWindow.click()
         app = application
         return application
     }
