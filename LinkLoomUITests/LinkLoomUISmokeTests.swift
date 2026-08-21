@@ -28,6 +28,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
         super.tearDown()
     }
 
+    @MainActor
     func testProductWorkflowPersistsAndPreservesSourceFiles() throws {
         let fixture = try SmokeFixture()
         self.fixture = fixture
@@ -35,7 +36,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
 
         let app = launch(fixture: fixture)
 
-        try XCTContext.runActivity(named: "Add temporary source through the UI") { _ in
+        XCTContext.runActivity(named: "Add temporary source through the UI") { _ in
             let addButton = element("source.add", in: app)
             requireExists(addButton, timeout: 20, description: "source.add")
             addButton.click()
@@ -43,7 +44,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireExists(element("scan.start", in: app), timeout: 20, description: "scan.start")
         }
 
-        try XCTContext.runActivity(named: "Scan and extract generated documents") { _ in
+        XCTContext.runActivity(named: "Scan and extract generated documents") { _ in
             element("scan.start", in: app).click()
             requireLabel("Entdeckt: 0", for: element("status.discovered", in: app), timeout: 90)
             requireLabel("Extraktion: 0", for: element("status.extracting", in: app), timeout: 90)
@@ -65,7 +66,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
 
         let relaunchedApp = launch(fixture: fixture)
 
-        try XCTContext.runActivity(named: "Verify persistence after process restart") { _ in
+        XCTContext.runActivity(named: "Verify persistence after process restart") { _ in
             requireExists(sourceRow(in: relaunchedApp), timeout: 20, description: "persisted source row")
             requireLabel("Entdeckt: 0", for: element("status.discovered", in: relaunchedApp))
             requireLabel("Extraktion: 0", for: element("status.extracting", in: relaunchedApp))
@@ -77,7 +78,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
             }
         }
 
-        try XCTContext.runActivity(named: "Remove source through its context menu") { _ in
+        XCTContext.runActivity(named: "Remove source through its context menu") { _ in
             let row = sourceRow(in: relaunchedApp)
             row.rightClick()
             let removeItem = relaunchedApp.menuItems["Quelle entfernen"]
@@ -100,6 +101,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
         }
     }
 
+    @MainActor
     func testStartupFailureCanRetry() throws {
         let fixture = try SmokeFixture()
         self.fixture = fixture
