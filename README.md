@@ -18,6 +18,17 @@ swift test
 swift run LinkLoomApp
 ```
 
+If a Command Line Tools-only environment reports `no such module 'Testing'`,
+run the complete suite with the Testing framework paths supplied explicitly:
+
+```sh
+swift test --disable-sandbox --enable-swift-testing \
+  -Xswiftc -I -Xswiftc /Library/Developer/CommandLineTools/Library/Developer/Frameworks \
+  -Xswiftc -F -Xswiftc /Library/Developer/CommandLineTools/Library/Developer/Frameworks \
+  -Xlinker -rpath -Xlinker /Library/Developer/CommandLineTools/Library/Developer/Frameworks \
+  -Xlinker -rpath -Xlinker /Library/Developer/CommandLineTools/Library/Developer/usr/lib
+```
+
 The app stores its local SQLite database at:
 
 ```text
