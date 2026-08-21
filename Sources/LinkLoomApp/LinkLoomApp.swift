@@ -117,13 +117,21 @@ struct LinkLoomApp: App {
         databaseURL: URL? = nil,
         disablesWatcher: Bool = false
     ) throws -> AppModel {
-        let sourceAccess = DefaultSourceAccess()
         let resolvedDatabaseURL: URL
         if let databaseURL {
             resolvedDatabaseURL = databaseURL
         } else {
             resolvedDatabaseURL = try Self.databaseURL()
         }
+#if LINKLOOM_UI_TESTING
+        let sourceAccess: any SourceAccessing = UITestDiagnosticSourceAccess(
+            diagnosticURL: resolvedDatabaseURL
+                .deletingLastPathComponent()
+                .appendingPathComponent("source-access-diagnostic.txt")
+        )
+#else
+        let sourceAccess: any SourceAccessing = DefaultSourceAccess()
+#endif
         let database = try AppDatabase.makeQueue(at: resolvedDatabaseURL)
         let sources = SourceRootRepository(dbWriter: database)
         let documents = DocumentRepository(dbWriter: database)
@@ -184,6 +192,45 @@ struct LinkLoomApp: App {
 #if LINKLOOM_UI_TESTING
 private enum UITestStartupError: Error {
     case deterministicFailure
+}
+
+private struct UITestDiagnosticSourceAccess: SourceAccessing {
+    private let base = DefaultSourceAccess()
+    private let diagnosticURL: URL
+
+    init(diagnosticURL: URL) {
+        self.diagnosticURL = diagnosticURL
+    }
+
+    func createBookmark(for url: URL) throws -> Data {
+        do {
+            let bookmark = try base.createBookmark(for: url)
+            record("createBookmark succeeded: bytes=\(bookmark.count)")
+            return bookmark
+        } catch {
+            let nsError = error as NSError
+            record(
+                "createBookmark failed: domain=\(nsError.domain) "
+                    + "code=\(nsError.code) description=\(nsError.localizedDescription)"
+            )
+            throw error
+        }
+    }
+
+    func resolve(_ bookmark: Data) throws -> ResolvedSource {
+        try base.resolve(bookmark)
+    }
+
+    func withAccess<T: Sendable>(
+        to bookmark: Data,
+        operation: @Sendable (URL) async throws -> T
+    ) async throws -> T {
+        try await base.withAccess(to: bookmark, operation: operation)
+    }
+
+    private func record(_ message: String) {
+        try? Data(message.utf8).write(to: diagnosticURL, options: .atomic)
+    }
 }
 #endif
 
