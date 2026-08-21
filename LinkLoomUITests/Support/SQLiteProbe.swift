@@ -1,7 +1,7 @@
 import Foundation
 import SQLite3
 
-struct SmokeDatabaseEvidence {
+struct SmokeDatabaseEvidence: CustomStringConvertible {
     let sourceCount: Int
     let documentCount: Int
     let readyCount: Int
@@ -34,6 +34,14 @@ struct SmokeDatabaseEvidence {
             && extractionCount == 0
             && extractedPageCount == 0
             && ftsCount == 0
+    }
+
+    var description: String {
+        "source=\(sourceCount), document=\(documentCount), ready=\(readyCount), "
+            + "failed=\(failedCount), extraction=\(extractionCount), "
+            + "page=\(extractedPageCount), fts=\(ftsCount), "
+            + "unsupported=\(unsupportedCount), selectableText=\(selectableTextMatchCount), "
+            + "ocrText=\(ocrTextMatchCount), corruptFailure=\(corruptFailureMatchCount)"
     }
 }
 

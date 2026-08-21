@@ -10,11 +10,15 @@ final class LinkLoomUISmokeTests: XCTestCase {
     }
 
     override func tearDown() {
-        if testRun?.failureCount ?? 0 > 0 {
+        let failed = testRun?.failureCount ?? 0 > 0
+        if failed {
             attachFailureDiagnostics()
         }
         if let app, app.state != .notRunning {
             app.terminate()
+        }
+        if failed, let fixture {
+            attachDatabaseDiagnostics(fixture: fixture)
         }
         if let fixture {
             do {
@@ -214,5 +218,25 @@ final class LinkLoomUISmokeTests: XCTestCase {
         hierarchy.name = "LinkLoom accessibility hierarchy"
         hierarchy.lifetime = .keepAlways
         add(hierarchy)
+    }
+
+    private func attachDatabaseDiagnostics(fixture: SmokeFixture) {
+        let diagnostic: String
+        do {
+            diagnostic = try SQLiteProbe(databaseURL: fixture.databaseURL)
+                .collectEvidence()
+                .description
+        } catch {
+            diagnostic = "Database evidence unavailable: \(error)"
+        }
+        print("LinkLoom UI smoke failure database evidence: \(diagnostic)")
+
+        let attachment = XCTAttachment(
+            data: Data(diagnostic.utf8),
+            uniformTypeIdentifier: "public.plain-text"
+        )
+        attachment.name = "LinkLoom database evidence"
+        attachment.lifetime = .keepAlways
+        add(attachment)
     }
 }

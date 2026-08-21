@@ -108,6 +108,7 @@ struct LinkLoomApp: App {
                 .accessibilityIdentifier("startup.retry")
             }
             .frame(minWidth: 520, minHeight: 320)
+            .accessibilityElement(children: .contain)
             .accessibilityIdentifier("startup.failure")
         }
     }
