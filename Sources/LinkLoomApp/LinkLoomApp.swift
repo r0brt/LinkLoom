@@ -81,6 +81,7 @@ struct LinkLoomApp: App {
         case .idle, .starting:
             ProgressView("LinkLoom wird gestartet …")
                 .frame(minWidth: 520, minHeight: 320)
+                .accessibilityIdentifier("startup.progress")
         case .ready:
             if let model = startup.model {
                 ContentView(model: model, folderPicker: folderPicker)
@@ -104,8 +105,10 @@ struct LinkLoomApp: App {
                         }
                     }
                 }
+                .accessibilityIdentifier("startup.retry")
             }
             .frame(minWidth: 520, minHeight: 320)
+            .accessibilityIdentifier("startup.failure")
         }
     }
 

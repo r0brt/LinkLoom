@@ -19,6 +19,7 @@ public struct SourceSidebar: View {
                         : "folder"
                 )
                     .tag(source.id)
+                    .accessibilityIdentifier("source.row.\(source.id.uuidString)")
                     .contextMenu {
                         Button("Quelle entfernen", role: .destructive) {
                             Task { await model.removeSource(source) }
@@ -41,6 +42,7 @@ public struct SourceSidebar: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(model.scanState != .idle)
+            .accessibilityIdentifier("source.add")
             .padding()
         }
     }
