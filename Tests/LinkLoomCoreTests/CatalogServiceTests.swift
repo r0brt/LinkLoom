@@ -46,6 +46,123 @@ struct CatalogServiceTests {
         #expect(report.changed == 0)
     }
 
+    @Test func metadataIdenticalContentChangeIsDetectedWhenVerificationIsDue() async throws {
+        let fixture = try await CatalogFixture.make()
+        let candidate = fixture.candidate("a.pdf", byteCount: 4, modifiedAt: 100)
+        fixture.enumerator.setCandidates([candidate])
+        await fixture.fingerprinter.setSequence(
+            for: candidate.url,
+            fingerprints: [
+                FileFingerprint(sha256: "hash-a", byteCount: 4),
+                FileFingerprint(sha256: "hash-b", byteCount: 4),
+            ]
+        )
+        _ = try await fixture.service.scan(source: fixture.source, now: fixture.date(200))
+        let initial = try #require(
+            try await fixture.documents.all(sourceRootID: fixture.source.id).first
+        )
+        try await fixture.documents.markStatus(id: initial.id, status: .ready, pageCount: 2)
+
+        let verificationDate = fixture.date(200 + CatalogService.fingerprintVerificationInterval + 1)
+        let report = try await fixture.service.scan(source: fixture.source, now: verificationDate)
+        let document = try #require(
+            try await fixture.documents.all(sourceRootID: fixture.source.id).first
+        )
+
+        #expect(await fixture.fingerprinter.callCount == 2)
+        #expect(document.contentHash == "hash-b")
+        #expect(document.status == .discovered)
+        #expect(document.pageCount == nil)
+        #expect(document.lastFingerprintAt == verificationDate)
+        #expect(report.changed == 1)
+    }
+
+    @Test func dueVerificationWithSameHashPreservesReadyExtraction() async throws {
+        let fixture = try await CatalogFixture.make()
+        let candidate = fixture.candidate("a.pdf", byteCount: 4, modifiedAt: 100)
+        fixture.enumerator.setCandidates([candidate])
+        await fixture.fingerprinter.setSequence(
+            for: candidate.url,
+            fingerprints: [
+                FileFingerprint(sha256: "hash-a", byteCount: 4),
+                FileFingerprint(sha256: "hash-a", byteCount: 4),
+            ]
+        )
+        _ = try await fixture.service.scan(source: fixture.source, now: fixture.date(200))
+        let initial = try #require(
+            try await fixture.documents.all(sourceRootID: fixture.source.id).first
+        )
+        try await fixture.documents.markStatus(id: initial.id, status: .ready, pageCount: 2)
+
+        let verificationDate = fixture.date(200 + CatalogService.fingerprintVerificationInterval)
+        let report = try await fixture.service.scan(source: fixture.source, now: verificationDate)
+        let document = try #require(
+            try await fixture.documents.all(sourceRootID: fixture.source.id).first
+        )
+
+        #expect(await fixture.fingerprinter.callCount == 2)
+        #expect(document.status == .ready)
+        #expect(document.pageCount == 2)
+        #expect(document.lastFingerprintAt == verificationDate)
+        #expect(report.unchanged == 1)
+    }
+
+    @Test func dueVerificationFailureAbortsWithoutPersistingScanState() async throws {
+        let fixture = try await CatalogFixture.make()
+        let candidate = fixture.candidate("a.pdf", byteCount: 4, modifiedAt: 100)
+        fixture.enumerator.setCandidates([candidate])
+        await fixture.fingerprinter.setSequence(
+            for: candidate.url,
+            fingerprints: [FileFingerprint(sha256: "hash-a", byteCount: 4)]
+        )
+        _ = try await fixture.service.scan(source: fixture.source, now: fixture.date(200))
+        let initial = try #require(
+            try await fixture.documents.all(sourceRootID: fixture.source.id).first
+        )
+        try await fixture.documents.markStatus(id: initial.id, status: .ready, pageCount: 2)
+
+        await #expect(throws: MissingFingerprintError.self) {
+            try await fixture.service.scan(
+                source: fixture.source,
+                now: fixture.date(200 + CatalogService.fingerprintVerificationInterval)
+            )
+        }
+
+        let document = try #require(
+            try await fixture.documents.all(sourceRootID: fixture.source.id).first
+        )
+        let source = try #require(try await fixture.sources.all().first)
+        #expect(document.status == .ready)
+        #expect(document.pageCount == 2)
+        #expect(document.lastSeenAt == fixture.date(200))
+        #expect(document.lastFingerprintAt == fixture.date(200))
+        #expect(source.lastScanAt == fixture.date(200))
+    }
+
+    @Test func dueVerificationCancellationAbortsWithoutPersistingScanState() async throws {
+        let fixture = try await CatalogFixture.make()
+        let candidate = fixture.candidate("a.pdf", byteCount: 4, modifiedAt: 100)
+        fixture.enumerator.setCandidates([candidate])
+        await fixture.fingerprinter.set(candidate, hash: "hash-a")
+        _ = try await fixture.service.scan(source: fixture.source, now: fixture.date(200))
+        await fixture.fingerprinter.cancel(onCall: 2)
+
+        await #expect(throws: CancellationError.self) {
+            try await fixture.service.scan(
+                source: fixture.source,
+                now: fixture.date(200 + CatalogService.fingerprintVerificationInterval)
+            )
+        }
+
+        let document = try #require(
+            try await fixture.documents.all(sourceRootID: fixture.source.id).first
+        )
+        let source = try #require(try await fixture.sources.all().first)
+        #expect(document.lastSeenAt == fixture.date(200))
+        #expect(document.lastFingerprintAt == fixture.date(200))
+        #expect(source.lastScanAt == fixture.date(200))
+    }
+
     @Test func changedFileKeepsIdentityAndReturnsToDiscovered() async throws {
         let fixture = try await CatalogFixture.make()
         let original = fixture.candidate("a.pdf", byteCount: 4, modifiedAt: 100)
@@ -638,6 +755,7 @@ private actor CatalogFingerprinter: FileFingerprinting {
     private var firstCallStarted = false
     private var firstCallWaiters: [CheckedContinuation<Void, Never>] = []
     private var firstCallRelease: CheckedContinuation<Void, Never>?
+    private var cancellationCall: Int?
     private(set) var callCount = 0
 
     func set(_ candidate: FileCandidate, hash: String, byteCount: Int64? = nil) {
@@ -655,6 +773,10 @@ private actor CatalogFingerprinter: FileFingerprinting {
         shouldBlockFirstCall = true
     }
 
+    func cancel(onCall call: Int) {
+        cancellationCall = call
+    }
+
     func waitUntilFirstCallStarts() async {
         if firstCallStarted { return }
         await withCheckedContinuation { continuation in
@@ -669,6 +791,9 @@ private actor CatalogFingerprinter: FileFingerprinting {
 
     func fingerprint(_ url: URL) async throws -> FileFingerprint {
         callCount += 1
+        if cancellationCall == callCount {
+            throw CancellationError()
+        }
         let callIndex = callCount - 1
         if shouldBlockFirstCall && callCount == 1 {
             firstCallStarted = true
