@@ -236,24 +236,9 @@ final class LinkLoomUISmokeTests: XCTestCase {
     private func attachDatabaseDiagnostics(fixture: SmokeFixture) {
         let diagnostic: String
         do {
-            let databaseEvidence = try SQLiteProbe(databaseURL: fixture.databaseURL)
+            diagnostic = try SQLiteProbe(databaseURL: fixture.databaseURL)
                 .collectEvidence()
                 .description
-            let sourceAccessDiagnosticURL = fixture.rootURL
-                .appendingPathComponent("source-access-diagnostic.txt")
-            let sourceAccessEvidence = (try? String(
-                contentsOf: sourceAccessDiagnosticURL,
-                encoding: .utf8
-            )) ?? "source-access diagnostic unavailable"
-            let pickerDiagnosticURL = fixture.rootURL
-                .appendingPathComponent("picker-diagnostic.txt")
-            let pickerEvidence = (try? String(
-                contentsOf: pickerDiagnosticURL,
-                encoding: .utf8
-            )) ?? "picker diagnostic unavailable"
-            diagnostic = databaseEvidence
-                + "\n" + pickerEvidence
-                + "\n" + sourceAccessEvidence
         } catch {
             diagnostic = "Database evidence unavailable: \(error)"
         }

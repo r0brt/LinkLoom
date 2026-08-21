@@ -30,17 +30,8 @@ struct LinkLoomApp: App {
             try UITestLaunchConfiguration(arguments: ProcessInfo.processInfo.arguments)
         }
         let configuration = try? configurationResult.get()
-        let pickerDiagnosticURL = configuration?.databaseURL?
-            .deletingLastPathComponent()
-            .appendingPathComponent("picker-diagnostic.txt")
         folderPicker = FolderPicker(selectFolders: {
-            let urls = configuration?.sourceURL.map { [$0] } ?? []
-            let message = "picker invoked: count=\(urls.count) "
-                + "path=\(urls.first?.path ?? "none")"
-            if let pickerDiagnosticURL {
-                try? Data(message.utf8).write(to: pickerDiagnosticURL, options: .atomic)
-            }
-            return urls
+            configuration?.sourceURL.map { [$0] } ?? []
         })
         let startupFailureGate = UITestStartupFailureGate(
             enabled: configuration?.failsStartupOnce == true
@@ -132,15 +123,7 @@ struct LinkLoomApp: App {
         } else {
             resolvedDatabaseURL = try Self.databaseURL()
         }
-#if LINKLOOM_UI_TESTING
-        let sourceAccess: any SourceAccessing = UITestDiagnosticSourceAccess(
-            diagnosticURL: resolvedDatabaseURL
-                .deletingLastPathComponent()
-                .appendingPathComponent("source-access-diagnostic.txt")
-        )
-#else
         let sourceAccess: any SourceAccessing = DefaultSourceAccess()
-#endif
         let database = try AppDatabase.makeQueue(at: resolvedDatabaseURL)
         let sources = SourceRootRepository(dbWriter: database)
         let documents = DocumentRepository(dbWriter: database)
@@ -201,45 +184,6 @@ struct LinkLoomApp: App {
 #if LINKLOOM_UI_TESTING
 private enum UITestStartupError: Error {
     case deterministicFailure
-}
-
-private struct UITestDiagnosticSourceAccess: SourceAccessing {
-    private let base = DefaultSourceAccess()
-    private let diagnosticURL: URL
-
-    init(diagnosticURL: URL) {
-        self.diagnosticURL = diagnosticURL
-    }
-
-    func createBookmark(for url: URL) throws -> Data {
-        do {
-            let bookmark = try base.createBookmark(for: url)
-            record("createBookmark succeeded: bytes=\(bookmark.count)")
-            return bookmark
-        } catch {
-            let nsError = error as NSError
-            record(
-                "createBookmark failed: domain=\(nsError.domain) "
-                    + "code=\(nsError.code) description=\(nsError.localizedDescription)"
-            )
-            throw error
-        }
-    }
-
-    func resolve(_ bookmark: Data) throws -> ResolvedSource {
-        try base.resolve(bookmark)
-    }
-
-    func withAccess<T: Sendable>(
-        to bookmark: Data,
-        operation: @Sendable (URL) async throws -> T
-    ) async throws -> T {
-        try await base.withAccess(to: bookmark, operation: operation)
-    }
-
-    private func record(_ message: String) {
-        try? Data(message.utf8).write(to: diagnosticURL, options: .atomic)
-    }
 }
 #endif
 
