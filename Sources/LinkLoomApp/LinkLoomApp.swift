@@ -30,7 +30,7 @@ struct LinkLoomApp: App {
             try UITestLaunchConfiguration(arguments: ProcessInfo.processInfo.arguments)
         }
         let configuration = try? configurationResult.get()
-        let pickerDiagnosticURL = configuration?.databaseURL
+        let pickerDiagnosticURL = configuration?.databaseURL?
             .deletingLastPathComponent()
             .appendingPathComponent("picker-diagnostic.txt")
         folderPicker = FolderPicker(selectFolders: {
