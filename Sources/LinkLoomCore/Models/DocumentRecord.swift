@@ -54,6 +54,7 @@ public struct DocumentRecord: Codable, FetchableRecord, PersistableRecord, Ident
     public var pageCount: Int?
     public var failureCode: String?
     public var lastSeenAt: Date
+    public var lastFingerprintAt: Date?
 
     public init(
         id: UUID = UUID(),
@@ -67,7 +68,8 @@ public struct DocumentRecord: Codable, FetchableRecord, PersistableRecord, Ident
         availability: DocumentAvailability = .available,
         pageCount: Int? = nil,
         failureCode: String? = nil,
-        lastSeenAt: Date = .now
+        lastSeenAt: Date = .now,
+        lastFingerprintAt: Date? = nil
     ) {
         self.id = id
         self.sourceRootID = sourceRootID
@@ -81,5 +83,6 @@ public struct DocumentRecord: Codable, FetchableRecord, PersistableRecord, Ident
         self.pageCount = pageCount
         self.failureCode = failureCode
         self.lastSeenAt = lastSeenAt
+        self.lastFingerprintAt = lastFingerprintAt
     }
 }

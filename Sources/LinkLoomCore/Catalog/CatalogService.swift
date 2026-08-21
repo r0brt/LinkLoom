@@ -9,6 +9,8 @@ public struct ScanReport: Sendable, Equatable {
 }
 
 public struct CatalogService: Sendable {
+    static let fingerprintVerificationInterval: TimeInterval = 30 * 24 * 60 * 60
+
     private let sourceAccess: any SourceAccessing
     private let enumerator: any FileEnumerating
     private let fingerprinter: any FileFingerprinting
@@ -71,29 +73,37 @@ public struct CatalogService: Sendable {
                 previous.lastSeenAt = now
                 previous.availability = .available
 
-                if previous.byteCount == candidate.byteCount,
-                   previous.modifiedAt == candidate.modifiedAt
-                {
+                let metadataMatches = previous.byteCount == candidate.byteCount
+                    && previous.modifiedAt == candidate.modifiedAt
+                let verificationDue = previous.lastFingerprintAt.map {
+                    now.timeIntervalSince($0) >= Self.fingerprintVerificationInterval
+                } ?? true
+                if metadataMatches, !verificationDue {
                     documentsToSave.append(previous)
                     unchanged += 1
                     continue
                 }
 
                 let fingerprint: FileFingerprint
-                do {
+                if metadataMatches {
                     fingerprint = try await fingerprinter.fingerprint(candidate.url)
-                } catch let error as CancellationError {
-                    throw error
-                } catch {
-                    previous.availability = .unavailable
-                    documentsToSave.append(previous)
-                    continue
+                } else {
+                    do {
+                        fingerprint = try await fingerprinter.fingerprint(candidate.url)
+                    } catch let error as CancellationError {
+                        throw error
+                    } catch {
+                        previous.availability = .unavailable
+                        documentsToSave.append(previous)
+                        continue
+                    }
                 }
                 let contentChanged = previous.contentHash != fingerprint.sha256
                 previous.contentHash = fingerprint.sha256
                 previous.byteCount = fingerprint.byteCount
                 previous.modifiedAt = candidate.modifiedAt
                 previous.mediaType = candidate.mediaType
+                previous.lastFingerprintAt = now
                 if contentChanged {
                     previous.status = .discovered
                     previous.pageCount = nil
@@ -134,7 +144,8 @@ public struct CatalogService: Sendable {
                     byteCount: fingerprint.byteCount,
                     modifiedAt: candidate.modifiedAt,
                     mediaType: candidate.mediaType,
-                    lastSeenAt: now
+                    lastSeenAt: now,
+                    lastFingerprintAt: now
                 )
                 record.relativePath = candidate.relativePath
                 record.contentHash = fingerprint.sha256
@@ -143,6 +154,7 @@ public struct CatalogService: Sendable {
                 record.mediaType = candidate.mediaType
                 record.availability = .available
                 record.lastSeenAt = now
+                record.lastFingerprintAt = now
                 documentsToSave.append(record)
                 matchedExistingIDs.insert(record.id)
                 if relocated == nil {

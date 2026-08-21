@@ -116,6 +116,7 @@ public actor DocumentRepository {
                     current.mediaType = incoming.mediaType
                     current.availability = incoming.availability
                     current.lastSeenAt = incoming.lastSeenAt
+                    current.lastFingerprintAt = incoming.lastFingerprintAt
                     if contentChanged {
                         current.status = .discovered
                         current.pageCount = nil
