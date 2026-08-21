@@ -504,7 +504,7 @@ struct AppModelTests {
         #expect(model.documents.isEmpty)
     }
 
-    @Test @MainActor func reloadRestartsWatcherAfterUnexpectedFailure() async throws {
+    @Test @MainActor func unavailableStateWaitsForWatcherBookkeepingBeforeReload() async throws {
         let fixture = try AppModelFixture()
         let source = try await fixture.addSource(named: "Archive")
         let scheduler = FakeSourceWatchScheduler()
@@ -519,7 +519,12 @@ struct AppModelTests {
         )
         try await model.reload()
 
+        await scheduler.blockNextAvailabilityProbe()
         await scheduler.fail(sourceID: source.id)
+        await scheduler.waitUntilAvailabilityProbeStarts()
+
+        #expect(model.unavailableSourceIDs.isEmpty)
+        await scheduler.releaseAvailabilityProbe()
         await waitUntil { model.unavailableSourceIDs == [source.id] }
         try await model.reload()
 
@@ -1191,6 +1196,9 @@ private actor FakeSourceWatchScheduler: SourceWatchScheduling {
     private var activeSourceIDs = Set<UUID>()
     private let rootUnavailableDuringStart: Bool
     private var availabilityProbeCount = 0
+    private var shouldBlockNextAvailabilityProbe = false
+    private var blockedAvailabilityProbeContinuation: CheckedContinuation<Void, Never>?
+    private var availabilityProbeStartWaiters: [CheckedContinuation<Void, Never>] = []
 
     init(rootUnavailableDuringStart: Bool = false) {
         let pair = AsyncStream<DirectoryChange>.makeStream()
@@ -1217,9 +1225,33 @@ private actor FakeSourceWatchScheduler: SourceWatchScheduling {
         }
     }
 
-    func isWatching(sourceID: UUID) -> Bool {
+    func isWatching(sourceID: UUID) async -> Bool {
         availabilityProbeCount += 1
+        if shouldBlockNextAvailabilityProbe {
+            shouldBlockNextAvailabilityProbe = false
+            await withCheckedContinuation { continuation in
+                blockedAvailabilityProbeContinuation = continuation
+                availabilityProbeStartWaiters.forEach { $0.resume() }
+                availabilityProbeStartWaiters.removeAll()
+            }
+        }
         return activeSourceIDs.contains(sourceID)
+    }
+
+    func blockNextAvailabilityProbe() {
+        shouldBlockNextAvailabilityProbe = true
+    }
+
+    func waitUntilAvailabilityProbeStarts() async {
+        guard blockedAvailabilityProbeContinuation == nil else { return }
+        await withCheckedContinuation { continuation in
+            availabilityProbeStartWaiters.append(continuation)
+        }
+    }
+
+    func releaseAvailabilityProbe() {
+        blockedAvailabilityProbeContinuation?.resume()
+        blockedAvailabilityProbeContinuation = nil
     }
 
     func stop(sourceID: UUID) {
