@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS(.v15)],
     products: [
         .library(name: "LinkLoomCore", targets: ["LinkLoomCore"]),
+        .library(name: "LinkLoomAppFeature", targets: ["LinkLoomAppFeature"]),
         .executable(name: "LinkLoomApp", targets: ["LinkLoomApp"]),
     ],
     dependencies: [
