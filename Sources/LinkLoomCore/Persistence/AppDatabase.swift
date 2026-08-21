@@ -13,6 +13,10 @@ public enum AppDatabase {
     }
 
     public static func migrate(_ writer: any DatabaseWriter) throws {
+        try makeMigrator().migrate(writer)
+    }
+
+    static func makeMigrator() -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
         migrator.registerMigration("v1_catalog") { db in
             try db.create(table: "sourceRoot") { table in
@@ -78,6 +82,12 @@ public enum AppDatabase {
                 END
                 """)
         }
-        try migrator.migrate(writer)
+        migrator.registerMigration("v3_last_fingerprint_at") { db in
+            try db.alter(table: "document") { table in
+                table.add(column: "lastFingerprintAt", .datetime)
+            }
+            try db.execute(sql: "UPDATE document SET lastFingerprintAt = lastSeenAt")
+        }
+        return migrator
     }
 }
