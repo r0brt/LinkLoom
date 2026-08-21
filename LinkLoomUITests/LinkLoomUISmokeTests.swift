@@ -1,3 +1,4 @@
+import CoreGraphics
 import XCTest
 
 final class LinkLoomUISmokeTests: XCTestCase {
@@ -140,8 +141,19 @@ final class LinkLoomUISmokeTests: XCTestCase {
         }
         application.launch()
         application.activate()
+        positionWindowForAutomation(in: application)
         app = application
         return application
+    }
+
+    private func positionWindowForAutomation(in application: XCUIApplication) {
+        let window = application.windows.firstMatch
+        XCTAssertTrue(window.waitForExistence(timeout: 10), "LinkLoom window is unavailable")
+        let titleBar = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.04))
+        titleBar.press(
+            forDuration: 0.1,
+            thenDragTo: titleBar.withOffset(CGVector(dx: 0, dy: -100))
+        )
     }
 
     private func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
