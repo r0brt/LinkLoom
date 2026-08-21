@@ -88,6 +88,9 @@ public enum AppDatabase {
             }
             try db.execute(sql: "UPDATE document SET lastFingerprintAt = lastSeenAt")
         }
+        migrator.registerMigration("v4_remove_redundant_document_index") { db in
+            try db.execute(sql: "DROP INDEX IF EXISTS document_source_relative_unique")
+        }
         return migrator
     }
 }

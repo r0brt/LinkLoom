@@ -10,12 +10,49 @@ struct AppDatabaseTests {
         try db.read { connection in
             let sourceRootExists = try connection.tableExists("sourceRoot")
             let documentExists = try connection.tableExists("document")
-            let hasSourceRelativeIndex = try connection.indexes(on: "document")
-                .contains { $0.name == "document_source_relative_unique" }
+            let sourceRelativeIndexes = try connection.indexes(on: "document")
+                .filter {
+                    $0.isUnique
+                        && $0.columns == ["sourceRootID", "relativePath"]
+                }
 
             #expect(sourceRootExists)
             #expect(documentExists)
-            #expect(hasSourceRelativeIndex)
+            #expect(sourceRelativeIndexes.count == 1)
+            #expect(sourceRelativeIndexes.first?.origin == .uniqueConstraint)
+        }
+    }
+
+    @Test func catalogMigrationRemovesRedundantSourceRelativeIndex() throws {
+        let db = try DatabaseQueue()
+        let migrator = AppDatabase.makeMigrator()
+        try migrator.migrate(db, upTo: "v3_last_fingerprint_at")
+
+        try db.read { connection in
+            let sourceRelativeIndexes = try connection.indexes(on: "document")
+                .filter {
+                    $0.isUnique
+                        && $0.columns == ["sourceRootID", "relativePath"]
+                }
+            #expect(sourceRelativeIndexes.count == 2)
+            #expect(
+                sourceRelativeIndexes.contains {
+                    $0.name == "document_source_relative_unique"
+                        && $0.origin == .createIndex
+                }
+            )
+        }
+
+        try AppDatabase.migrate(db)
+
+        try db.read { connection in
+            let sourceRelativeIndexes = try connection.indexes(on: "document")
+                .filter {
+                    $0.isUnique
+                        && $0.columns == ["sourceRootID", "relativePath"]
+                }
+            #expect(sourceRelativeIndexes.count == 1)
+            #expect(sourceRelativeIndexes.first?.origin == .uniqueConstraint)
         }
     }
 
