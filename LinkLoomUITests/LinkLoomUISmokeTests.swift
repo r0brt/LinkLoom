@@ -136,7 +136,10 @@ final class LinkLoomUISmokeTests: XCTestCase {
             application.launchArguments.append("--linkloom-ui-test-fail-startup-once")
         }
         application.launch()
-        application.activate()
+        application.menuBars.menuBarItems["File"].click()
+        let newWindow = application.menuItems["New Window"]
+        XCTAssertTrue(newWindow.waitForExistence(timeout: 5), "New Window menu item is unavailable")
+        newWindow.click()
         app = application
         return application
     }
