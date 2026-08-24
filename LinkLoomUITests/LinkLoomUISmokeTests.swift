@@ -132,12 +132,23 @@ final class LinkLoomUISmokeTests: XCTestCase {
         XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
     }
 
-    func testIntegritySnapshotIncludesHiddenAndNonRegularEntries() throws {
+    func testIntegritySnapshotIncludesHiddenFile() throws {
         let fixture = try SmokeFixture()
         self.fixture = fixture
 
         let hiddenFile = fixture.sourceURL.appendingPathComponent(".hidden-evidence")
         try Data("hidden".utf8).write(to: hiddenFile)
+
+        let entries = Dictionary(
+            uniqueKeysWithValues: try fixture.snapshot().map { ($0.relativePath, $0) }
+        )
+        XCTAssertEqual(entries[".hidden-evidence"]?.kind, .regularFile)
+    }
+
+    func testIntegritySnapshotIncludesDirectory() throws {
+        let fixture = try SmokeFixture()
+        self.fixture = fixture
+
         let nestedDirectory = fixture.sourceURL.appendingPathComponent(
             "nested",
             isDirectory: true
@@ -146,19 +157,29 @@ final class LinkLoomUISmokeTests: XCTestCase {
             at: nestedDirectory,
             withIntermediateDirectories: false
         )
-        let symbolicLink = fixture.sourceURL.appendingPathComponent("hidden-link")
+
+        let entries = Dictionary(
+            uniqueKeysWithValues: try fixture.snapshot().map { ($0.relativePath, $0) }
+        )
+        XCTAssertEqual(entries["nested"]?.kind, .directory)
+    }
+
+    func testIntegritySnapshotIncludesSymbolicLink() throws {
+        let fixture = try SmokeFixture()
+        self.fixture = fixture
+
+        let destination = fixture.sourceURL.appendingPathComponent("selectable.pdf")
+        let symbolicLink = fixture.sourceURL.appendingPathComponent("selectable-link")
         try FileManager.default.createSymbolicLink(
             at: symbolicLink,
-            withDestinationURL: hiddenFile
+            withDestinationURL: destination
         )
 
         let entries = Dictionary(
             uniqueKeysWithValues: try fixture.snapshot().map { ($0.relativePath, $0) }
         )
-        XCTAssertEqual(entries[".hidden-evidence"]?.kind, .regularFile)
-        XCTAssertEqual(entries["nested"]?.kind, .directory)
-        XCTAssertEqual(entries["hidden-link"]?.kind, .symbolicLink)
-        XCTAssertEqual(entries["hidden-link"]?.symbolicLinkDestination, hiddenFile.path)
+        XCTAssertEqual(entries["selectable-link"]?.kind, .symbolicLink)
+        XCTAssertEqual(entries["selectable-link"]?.symbolicLinkDestination, destination.path)
     }
 
     func testFailedFixtureConstructionRemovesTemporaryRoot() {
