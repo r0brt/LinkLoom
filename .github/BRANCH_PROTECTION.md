@@ -25,6 +25,7 @@ Require all of these checks:
 Policy / validate
 Swift / test
 Swift / release-build
+Swift / UI smoke
 ```
 
 The workflows in [`workflows/pr-policy.yml`](workflows/pr-policy.yml) and [`workflows/swift.yml`](workflows/swift.yml) supply these checks. When application tooling is added, also require its build, automated test, lint, type-check, and security checks. A new check should first run reliably on pull requests before administrators make it required.
@@ -41,7 +42,7 @@ In the repository pull-request settings:
 
 ## Verification after configuration
 
-Open a draft pull request from a conforming branch and confirm that all required checks appear and are enforced: `Policy / validate`, `Swift / test`, and `Swift / release-build`. Then verify all four controls:
+Open a draft pull request from a conforming branch and confirm that all required checks appear and are enforced: `Policy / validate`, `Swift / test`, `Swift / release-build`, and `Swift / UI smoke`. Then verify all four controls:
 
 1. A non-conforming pull-request title fails the check.
 2. A non-conforming branch name fails the check.

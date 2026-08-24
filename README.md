@@ -69,6 +69,24 @@ LINKLOOM_PERF_TEST=1 swift test --filter catalogHandlesTenThousandDocumentsIdemp
 
 The benchmark creates its synthetic files in a temporary directory, scans them twice, verifies 10,000 catalog records after both passes, and requires zero fingerprint work on the second pass. No hard duration threshold is enforced until a stable baseline has been established across supported hardware.
 
+## Process-level UI smoke test
+
+The hermetic macOS UI smoke requires full Xcode 26.3. It launches the real
+SwiftUI app in a separate process and uses only generated temporary source
+documents and a temporary SQLite database:
+
+```sh
+xcodebuild test \
+  -project LinkLoom.xcodeproj \
+  -scheme LinkLoomUISmoke \
+  -destination 'platform=macOS' \
+  -derivedDataPath /tmp/LinkLoomDerivedData \
+  -resultBundlePath /tmp/LinkLoomUISmoke.xcresult
+```
+
+The `Swift / UI smoke` pull-request job is authoritative when the local host
+has only the Xcode Command Line Tools.
+
 ## Troubleshooting
 
 ### Local catalog startup failures

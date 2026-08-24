@@ -1,5 +1,9 @@
 import AppKit
+#if LINKLOOM_UI_TESTING
+@_spi(UITesting) import LinkLoomAppFeature
+#else
 import LinkLoomAppFeature
+#endif
 import LinkLoomCore
 import OSLog
 import SwiftUI
@@ -9,6 +13,7 @@ import SwiftUI
 struct LinkLoomApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var startup: AppStartupController
+    private let folderPicker: FolderPicker
 
     private static let startupLogger = Logger(
         subsystem: "LinkLoom",
@@ -20,8 +25,35 @@ struct LinkLoomApp: App {
     )
 
     init() {
+#if LINKLOOM_UI_TESTING
+        let configurationResult: Result<UITestLaunchConfiguration, Error> = Result {
+            try UITestLaunchConfiguration(arguments: ProcessInfo.processInfo.arguments)
+        }
+        let configuration = try? configurationResult.get()
+        folderPicker = FolderPicker(selectFolders: {
+            configuration?.sourceURL.map { [$0] } ?? []
+        })
+        let startupFailureGate = UITestStartupFailureGate(
+            enabled: configuration?.failsStartupOnce == true
+        )
+        let makeModel: @MainActor () throws -> AppModel = {
+            let configuration = try configurationResult.get()
+            if startupFailureGate.consumeFailure() {
+                throw UITestStartupError.deterministicFailure
+            }
+            return try Self.makeModel(
+                databaseURL: configuration.databaseURL,
+                disablesWatcher: configuration.disablesWatcher
+            )
+        }
+#else
+        folderPicker = FolderPicker()
+        let makeModel: @MainActor () throws -> AppModel = {
+            try Self.makeModel()
+        }
+#endif
         _startup = StateObject(wrappedValue: AppStartupController(
-            makeModel: { try Self.makeModel() },
+            makeModel: makeModel,
             prepareModel: { model in try await model.reload() },
             reportFailure: { error in
                 let nsError = error as NSError
@@ -49,9 +81,10 @@ struct LinkLoomApp: App {
         case .idle, .starting:
             ProgressView("LinkLoom wird gestartet …")
                 .frame(minWidth: 520, minHeight: 320)
+                .accessibilityIdentifier("startup.progress")
         case .ready:
             if let model = startup.model {
-                ContentView(model: model)
+                ContentView(model: model, folderPicker: folderPicker)
             }
         case .failed:
             ContentUnavailableView {
@@ -72,14 +105,26 @@ struct LinkLoomApp: App {
                         }
                     }
                 }
+                .accessibilityIdentifier("startup.retry")
             }
             .frame(minWidth: 520, minHeight: 320)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("startup.failure")
         }
     }
 
-    private static func makeModel() throws -> AppModel {
-        let sourceAccess = DefaultSourceAccess()
-        let database = try AppDatabase.makeQueue(at: databaseURL())
+    private static func makeModel(
+        databaseURL: URL? = nil,
+        disablesWatcher: Bool = false
+    ) throws -> AppModel {
+        let resolvedDatabaseURL: URL
+        if let databaseURL {
+            resolvedDatabaseURL = databaseURL
+        } else {
+            resolvedDatabaseURL = try Self.databaseURL()
+        }
+        let sourceAccess: any SourceAccessing = DefaultSourceAccess()
+        let database = try AppDatabase.makeQueue(at: resolvedDatabaseURL)
         let sources = SourceRootRepository(dbWriter: database)
         let documents = DocumentRepository(dbWriter: database)
         let extractions = ExtractionRepository(dbWriter: database)
@@ -96,13 +141,18 @@ struct LinkLoomApp: App {
             extractions: extractions,
             extractor: CompositeTextExtractor()
         )
-        let watchScheduler = RescanScheduler(
-            watcher: FSEventsDirectoryWatcher(),
-            rescanner: IncrementalRescanner(
-                catalog: catalog,
-                ingestion: ingestion
+        let watchScheduler: (any SourceWatchScheduling)?
+        if disablesWatcher {
+            watchScheduler = nil
+        } else {
+            watchScheduler = RescanScheduler(
+                watcher: FSEventsDirectoryWatcher(),
+                rescanner: IncrementalRescanner(
+                    catalog: catalog,
+                    ingestion: ingestion
+                )
             )
-        )
+        }
         return AppModel(
             sources: sources,
             documents: documents,
@@ -130,6 +180,12 @@ struct LinkLoomApp: App {
             .appendingPathComponent("linkloom.sqlite", isDirectory: false)
     }
 }
+
+#if LINKLOOM_UI_TESTING
+private enum UITestStartupError: Error {
+    case deterministicFailure
+}
+#endif
 
 @MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {

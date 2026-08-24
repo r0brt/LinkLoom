@@ -57,6 +57,7 @@ public struct ScanDashboard: View {
             Button("Jetzt analysieren") {
                 Task { await model.scanSelectedSource() }
             }
+            .accessibilityIdentifier("scan.start")
             .disabled(
                 model.scanState != .idle
                     || model.unavailableSourceIDs.contains(source.id)
@@ -69,27 +70,36 @@ public struct ScanDashboard: View {
             Text(errorMessage)
                 .foregroundStyle(.red)
                 .accessibilityLabel("Fehler: \(errorMessage)")
+                .accessibilityIdentifier("scan.error")
         }
     }
 
     private var statusSummary: some View {
         HStack(spacing: 12) {
-            statusCard("Entdeckt", status: .discovered)
-            statusCard("Extraktion", status: .extracting)
-            statusCard("Bereit", status: .ready)
-            statusCard("Fehler", status: .failed)
+            statusCard("Entdeckt", status: .discovered, identifier: "status.discovered")
+            statusCard("Extraktion", status: .extracting, identifier: "status.extracting")
+            statusCard("Bereit", status: .ready, identifier: "status.ready")
+            statusCard("Fehler", status: .failed, identifier: "status.failed")
         }
     }
 
-    private func statusCard(_ title: String, status: DocumentStatus) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+    private func statusCard(
+        _ title: String,
+        status: DocumentStatus,
+        identifier: String
+    ) -> some View {
+        let count = model.documents.filter { $0.status == status }.count
+        return VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.caption).foregroundStyle(.secondary)
-            Text(model.documents.filter { $0.status == status }.count.formatted())
+            Text(count.formatted())
                 .font(.title3.monospacedDigit())
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(12)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(title): \(count)")
+        .accessibilityIdentifier(identifier)
     }
 
     private var documentTable: some View {
@@ -108,6 +118,7 @@ public struct ScanDashboard: View {
                 Text(document.status == .failed ? document.failureCode ?? "ingestionFailure" : "—")
             }
         }
+        .accessibilityIdentifier("documents.table")
     }
 
     private var scanProgressTitle: String {
