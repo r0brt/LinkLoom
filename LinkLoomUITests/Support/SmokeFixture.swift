@@ -37,13 +37,19 @@ struct SmokeFixture {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LinkLoomUISmoke-\(UUID().uuidString)", isDirectory: true)
         let source = root.appendingPathComponent("source", isDirectory: true)
-        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
 
         rootURL = root
         sourceURL = source
         databaseURL = root.appendingPathComponent("linkloom.sqlite", isDirectory: false)
 
-        try prepareSource(source)
+        do {
+            try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+            try prepareSource(source)
+        } catch {
+            let constructionError = error
+            try Self.removeTemporaryRoot(root)
+            throw constructionError
+        }
     }
 
     private static func prepareDefaultSource(_ source: URL) throws {
@@ -69,12 +75,14 @@ struct SmokeFixture {
         let keys: Set<URLResourceKey> = [
             .contentModificationDateKey,
             .fileSizeKey,
+            .isDirectoryKey,
             .isRegularFileKey,
+            .isSymbolicLinkKey,
         ]
         guard let enumerator = FileManager.default.enumerator(
             at: sourceURL,
             includingPropertiesForKeys: Array(keys),
-            options: [.skipsHiddenFiles]
+            options: []
         ) else {
             throw CocoaError(.fileReadUnknown)
         }
@@ -82,33 +90,46 @@ struct SmokeFixture {
         var snapshots: [SourceFileSnapshot] = []
         while let fileURL = enumerator.nextObject() as? URL {
             let values = try fileURL.resourceValues(forKeys: keys)
-            guard values.isRegularFile == true,
-                  let modificationDate = values.contentModificationDate
-            else {
-                continue
+            let kind: SourceEntryKind
+            if values.isSymbolicLink == true {
+                kind = .symbolicLink
+            } else if values.isDirectory == true {
+                kind = .directory
+            } else if values.isRegularFile == true {
+                kind = .regularFile
+            } else {
+                kind = .other
             }
             let path = fileURL.standardizedFileURL.path
             let prefix = sourceURL.standardizedFileURL.path + "/"
             guard path.hasPrefix(prefix) else {
                 throw CocoaError(.fileReadNoPermission)
             }
-            let data = try Data(contentsOf: fileURL)
+            let data = kind == .regularFile ? try Data(contentsOf: fileURL) : nil
             let attributes = try FileManager.default.attributesOfItem(atPath: path)
             let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
             snapshots.append(SourceFileSnapshot(
                 relativePath: String(path.dropFirst(prefix.count)),
-                kind: .regularFile,
-                sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
-                byteCount: Int64(values.fileSize ?? data.count),
-                modificationDate: modificationDate,
+                kind: kind,
+                sha256: data.map {
+                    SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined()
+                },
+                byteCount: data.map { Int64(values.fileSize ?? $0.count) },
+                modificationDate: values.contentModificationDate,
                 posixMode: mode,
-                symbolicLinkDestination: nil
+                symbolicLinkDestination: kind == .symbolicLink
+                    ? try FileManager.default.destinationOfSymbolicLink(atPath: path)
+                    : nil
             ))
         }
         return snapshots.sorted { $0.relativePath < $1.relativePath }
     }
 
     func remove() throws {
+        try Self.removeTemporaryRoot(rootURL)
+    }
+
+    private static func removeTemporaryRoot(_ rootURL: URL) throws {
         let root = rootURL.standardizedFileURL
         let temporaryDirectory = FileManager.default.temporaryDirectory.standardizedFileURL
         guard root.deletingLastPathComponent() == temporaryDirectory,
