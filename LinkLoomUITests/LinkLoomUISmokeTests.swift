@@ -2,6 +2,10 @@ import CoreGraphics
 import XCTest
 
 final class LinkLoomUISmokeTests: XCTestCase {
+    private enum ExpectedFixtureError: Error {
+        case constructionFailed
+    }
+
     private var app: XCUIApplication?
     private var fixture: SmokeFixture?
 
@@ -126,6 +130,58 @@ final class LinkLoomUISmokeTests: XCTestCase {
         }
 
         XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
+    }
+
+    func testIntegritySnapshotIncludesHiddenAndNonRegularEntries() throws {
+        let fixture = try SmokeFixture()
+        self.fixture = fixture
+
+        let hiddenFile = fixture.sourceURL.appendingPathComponent(".hidden-evidence")
+        try Data("hidden".utf8).write(to: hiddenFile)
+        let nestedDirectory = fixture.sourceURL.appendingPathComponent(
+            "nested",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: nestedDirectory,
+            withIntermediateDirectories: false
+        )
+        let symbolicLink = fixture.sourceURL.appendingPathComponent("hidden-link")
+        try FileManager.default.createSymbolicLink(
+            at: symbolicLink,
+            withDestinationURL: hiddenFile
+        )
+
+        let entries = Dictionary(
+            uniqueKeysWithValues: try fixture.snapshot().map { ($0.relativePath, $0) }
+        )
+        XCTAssertEqual(entries[".hidden-evidence"]?.kind, .regularFile)
+        XCTAssertEqual(entries["nested"]?.kind, .directory)
+        XCTAssertEqual(entries["hidden-link"]?.kind, .symbolicLink)
+        XCTAssertEqual(entries["hidden-link"]?.symbolicLinkDestination, hiddenFile.path)
+    }
+
+    func testFailedFixtureConstructionRemovesTemporaryRoot() {
+        var temporaryRoot: URL?
+        defer {
+            if let temporaryRoot,
+               FileManager.default.fileExists(atPath: temporaryRoot.path)
+            {
+                try? FileManager.default.removeItem(at: temporaryRoot)
+            }
+        }
+
+        XCTAssertThrowsError(try SmokeFixture(prepareSource: { sourceURL in
+            temporaryRoot = sourceURL.deletingLastPathComponent()
+            throw ExpectedFixtureError.constructionFailed
+        })) { error in
+            XCTAssertTrue(error is ExpectedFixtureError)
+        }
+        XCTAssertNotNil(temporaryRoot)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: temporaryRoot?.path ?? ""),
+            "A failed fixture construction left its temporary root behind"
+        )
     }
 
     @discardableResult

@@ -7,12 +7,21 @@ import ImageIO
 import PDFKit
 import UniformTypeIdentifiers
 
+enum SourceEntryKind: Equatable {
+    case regularFile
+    case directory
+    case symbolicLink
+    case other
+}
+
 struct SourceFileSnapshot: Equatable {
     let relativePath: String
-    let sha256: String
-    let byteCount: Int64
-    let modificationDate: Date
+    let kind: SourceEntryKind
+    let sha256: String?
+    let byteCount: Int64?
+    let modificationDate: Date?
     let posixMode: Int
+    let symbolicLinkDestination: String?
 }
 
 struct SmokeFixture {
@@ -21,6 +30,10 @@ struct SmokeFixture {
     let databaseURL: URL
 
     init() throws {
+        try self.init(prepareSource: Self.prepareDefaultSource)
+    }
+
+    init(prepareSource: (URL) throws -> Void) throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LinkLoomUISmoke-\(UUID().uuidString)", isDirectory: true)
         let source = root.appendingPathComponent("source", isDirectory: true)
@@ -30,6 +43,10 @@ struct SmokeFixture {
         sourceURL = source
         databaseURL = root.appendingPathComponent("linkloom.sqlite", isDirectory: false)
 
+        try prepareSource(source)
+    }
+
+    private static func prepareDefaultSource(_ source: URL) throws {
         let selectablePDF = source.appendingPathComponent("selectable.pdf", isDirectory: false)
         try Self.writeTextPDF("Selectable LinkLoom smoke text", to: selectablePDF)
 
@@ -80,10 +97,12 @@ struct SmokeFixture {
             let mode = (attributes[.posixPermissions] as? NSNumber)?.intValue ?? -1
             snapshots.append(SourceFileSnapshot(
                 relativePath: String(path.dropFirst(prefix.count)),
+                kind: .regularFile,
                 sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
                 byteCount: Int64(values.fileSize ?? data.count),
                 modificationDate: modificationDate,
-                posixMode: mode
+                posixMode: mode,
+                symbolicLinkDestination: nil
             ))
         }
         return snapshots.sorted { $0.relativePath < $1.relativePath }
