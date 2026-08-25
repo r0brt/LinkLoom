@@ -204,6 +204,11 @@ let dnaEvidenceCount: Int
 
 Collect them using read-only SQL. Require two snapshots, two matching ready states, two document-type findings, and two `local-rules` v1 snapshot headers in `matchesCompletedWorkflow`. The fixture text intentionally produces `unknown` classification, so require zero DNA evidence rows. In `matchesRemovedWorkflow`, require all four DNA tables to contain zero rows after source removal.
 
+Also require a joined coherence count over `document`, `documentExtraction`,
+`documentDNA`, and `documentDNAAnalysisState`. Both successfully extracted
+documents must match on document identity, content hash, extraction version,
+local-rules target, and ready state; removal must reduce that count to zero.
+
 - [x] **Step 2: Record the local full-Xcode verification boundary**
 
 The executable composition already followed a behavior-test RED/GREEN cycle in Task 1. The process-level smoke assertion is additional acceptance coverage and requires full Xcode, which is unavailable on the local Command-Line-Tools host. Run the authoritative command to capture that environment limitation without weakening the assertion:
@@ -242,15 +247,15 @@ git commit -m "test(ui): verify local document DNA persistence"
 - Consumes: Tasks 1-2 and repository definition-of-done commands.
 - Produces: fresh verification evidence and an independent merge-readiness verdict without pushing or merging.
 
-- [ ] **Step 1: Run focused composition tests**
+- [x] **Step 1: Run focused composition tests**
 
 Run the fallback test command with `--filter AppCompositionTests` and require zero failures.
 
-- [ ] **Step 2: Run the complete non-opt-in suite**
+- [x] **Step 2: Run the complete non-opt-in suite**
 
 Run the documented fallback `swift test` command and require every non-opt-in test to pass. Do not run the 10,000-document benchmark because catalog, fingerprinting, and scale behavior are unchanged.
 
-- [ ] **Step 3: Run the production release build**
+- [x] **Step 3: Run the production release build**
 
 ```sh
 swift build -c release
@@ -258,7 +263,7 @@ swift build -c release
 
 Require exit status 0.
 
-- [ ] **Step 4: Verify diff hygiene and scope**
+- [x] **Step 4: Verify diff hygiene and scope**
 
 ```sh
 git diff --check origin/main...HEAD
@@ -277,3 +282,20 @@ Dispatch a fresh reviewer with `BASE_SHA=$(git rev-parse origin/main)` and `HEAD
 - [ ] **Step 6: Report handoff without push or merge**
 
 Report branch, commits, exact verification, the local full-Xcode limitation, review verdict, and remaining GitHub CI requirement. Do not push, open/merge a pull request, change GitHub settings, or delete any branch without explicit authorization.
+
+## Verification Record
+
+- Focused behavior tests: 7 tests in `AppCompositionTests`, all passed.
+- Complete suite: 270 tests in 24 suites passed; the opt-in 10,000-document
+  acceptance test was skipped because catalog, fingerprinting, and scale behavior
+  are unchanged.
+- Production build: `swift build -c release --disable-sandbox` passed.
+- UI-smoke support: `SQLiteProbe.swift` passed standalone type-checking, including
+  the joined DNA coherence assertion.
+- Full UI smoke: not runnable locally because the active developer directory is
+  Command Line Tools rather than full Xcode; the unchanged authoritative CI job
+  remains required before merge.
+- Independent review initially reported two Important test-evidence gaps. The
+  watcher cancellation test was mutation-checked to fail without the catalog-to-
+  processing cancellation checkpoint, and the smoke probe now checks joined DNA
+  coherence rather than independent global counts.
