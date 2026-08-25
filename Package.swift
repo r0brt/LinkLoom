@@ -31,5 +31,9 @@ let package = Package(
             name: "LinkLoomAppFeatureTests",
             dependencies: ["LinkLoomAppFeature", "LinkLoomCore"]
         ),
+        .testTarget(
+            name: "LinkLoomAppTests",
+            dependencies: ["LinkLoomApp", "LinkLoomCore"]
+        ),
     ]
 )
