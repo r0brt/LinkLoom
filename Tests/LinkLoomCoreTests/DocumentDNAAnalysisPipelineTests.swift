@@ -909,7 +909,7 @@ struct DocumentDNAAnalysisPipelineTests {
     }
 
     @Test func contentChangeDuringAnalysisRejectsStaleSnapshot() async throws {
-        let suspension = AnalyzerSuspensionGate()
+        let suspension = AsyncSuspensionGate()
         let fixture = try await DocumentDNAAnalysisPipelineFixture.make(
             documentCount: 1,
             seedPriorSnapshots: true,
@@ -930,7 +930,7 @@ struct DocumentDNAAnalysisPipelineTests {
                 arguments: ["hash-after-analysis-began", documentID]
             )
         }
-        suspension.release()
+        await suspension.release()
 
         await expectRunError(
             DocumentDNAAnalysisRunError(
@@ -951,7 +951,7 @@ struct DocumentDNAAnalysisPipelineTests {
     }
 
     @Test func extractionVersionChangeDuringAnalysisRejectsStaleSnapshot() async throws {
-        let suspension = AnalyzerSuspensionGate()
+        let suspension = AsyncSuspensionGate()
         let fixture = try await DocumentDNAAnalysisPipelineFixture.make(
             documentCount: 1,
             seedPriorSnapshots: true,
@@ -979,7 +979,7 @@ struct DocumentDNAAnalysisPipelineTests {
             ),
             at: DocumentDNAAnalysisPipelineFixture.date.addingTimeInterval(1)
         )
-        suspension.release()
+        await suspension.release()
 
         await expectRunError(
             DocumentDNAAnalysisRunError(
@@ -1000,7 +1000,7 @@ struct DocumentDNAAnalysisPipelineTests {
     }
 
     @Test func cancellationDuringAnalysisRestoresAttemptAndPreservesPriorSnapshot() async throws {
-        let suspension = AnalyzerSuspensionGate()
+        let suspension = AsyncSuspensionGate()
         let fixture = try await DocumentDNAAnalysisPipelineFixture.make(
             documentCount: 1,
             seedPriorSnapshots: true,
@@ -1017,7 +1017,7 @@ struct DocumentDNAAnalysisPipelineTests {
         #expect(try await fixture.analysisStatus(documentID: documentID) == "analyzing")
 
         processing.cancel()
-        suspension.release()
+        await suspension.release()
 
         await expectRunError(
             DocumentDNAAnalysisRunError(
@@ -1035,7 +1035,7 @@ struct DocumentDNAAnalysisPipelineTests {
     }
 
     @Test func cancellationRestorationFailureMapsToPersistence() async throws {
-        let suspension = AnalyzerSuspensionGate()
+        let suspension = AsyncSuspensionGate()
         let fixture = try await DocumentDNAAnalysisPipelineFixture.make(
             documentCount: 1,
             seedPriorSnapshots: true,
@@ -1053,7 +1053,7 @@ struct DocumentDNAAnalysisPipelineTests {
         await suspension.waitUntilStarted()
 
         processing.cancel()
-        suspension.release()
+        await suspension.release()
 
         await expectRunError(
             DocumentDNAAnalysisRunError(
@@ -1202,7 +1202,7 @@ private struct DocumentDNAAnalysisPipelineFixture {
         analysisDelay: Duration = .zero,
         analyzerOutcomes: [SyntheticAnalyzerOutcome]? = nil,
         seedPriorSnapshots: Bool = false,
-        analyzerSuspension: AnalyzerSuspensionGate? = nil,
+        analyzerSuspension: AsyncSuspensionGate? = nil,
         analyzerStartsBlocked: Bool = false
     ) async throws -> Self {
         let db = try TestDatabase.make()
@@ -1277,14 +1277,43 @@ private struct DocumentDNAAnalysisPipelineFixture {
             delay: analysisDelay,
             outcomesByDocumentID: outcomesByDocumentID,
             suspension: analyzerSuspension ?? (analyzerStartsBlocked
-                ? AnalyzerSuspensionGate()
+                ? AsyncSuspensionGate()
                 : nil)
         )
         let pipeline = DocumentDNAAnalysisPipeline(
-            repository: repository,
             analyzer: analyzer,
             target: target,
-            now: { date }
+            now: { date },
+            pendingAnalysis: { sourceRootID, target, limit in
+                try await repository.pendingAnalysis(
+                    sourceRootID: sourceRootID,
+                    target: target,
+                    limit: limit
+                )
+            },
+            recoverInterruptedAnalysis: { sourceRootID in
+                try await repository.recoverInterruptedAnalysis(sourceRootID: sourceRootID)
+            },
+            beginAnalysis: { candidate, target, date in
+                try await repository.beginAnalysis(candidate, target: target, at: date)
+            },
+            markAnalysisFailed: { candidate, target, code, date in
+                try await repository.markAnalysisFailed(
+                    candidate,
+                    target: target,
+                    failureCode: code,
+                    at: date
+                )
+            },
+            restoreAnalysisAfterInterruption: { candidate, target in
+                try await repository.restoreAnalysisAfterInterruption(candidate, target: target)
+            },
+            replace: { snapshot in
+                try await repository.replace(snapshot)
+            },
+            postAnalysis: { snapshot in
+                await analyzer.suspendAfterAnalysis(documentID: snapshot.documentID)
+            }
         )
         return Self(
             db: db,
@@ -1327,6 +1356,7 @@ private struct DocumentDNAAnalysisPipelineFixture {
         coordinationEvent: @escaping CoordinationEventClosure = { _ in }
     ) -> DocumentDNAAnalysisPipeline {
         let repository = repository
+        let recordingAnalyzer = self.analyzer
         return DocumentDNAAnalysisPipeline(
             analyzer: analyzer ?? self.analyzer,
             target: target,
@@ -1361,6 +1391,9 @@ private struct DocumentDNAAnalysisPipelineFixture {
                 },
             replace: replace ?? { snapshot in
                 try await repository.replace(snapshot)
+            },
+            postAnalysis: { snapshot in
+                await recordingAnalyzer.suspendAfterAnalysis(documentID: snapshot.documentID)
             },
             coordinationEvent: coordinationEvent
         )
@@ -1467,14 +1500,14 @@ private actor RecordingDocumentDNAAnalyzer: DocumentDNAAnalyzing {
     private let target: DocumentDNAAnalysisTarget
     private let delay: Duration
     private let outcomesByDocumentID: [UUID: SyntheticAnalyzerOutcome]
-    private let suspension: AnalyzerSuspensionGate?
+    private let suspension: AsyncSuspensionGate?
     private let state = RecordingDocumentDNAAnalyzerState()
 
     init(
         target: DocumentDNAAnalysisTarget,
         delay: Duration = .zero,
         outcomesByDocumentID: [UUID: SyntheticAnalyzerOutcome] = [:],
-        suspension: AnalyzerSuspensionGate? = nil
+        suspension: AsyncSuspensionGate? = nil
     ) {
         self.target = target
         self.delay = delay
@@ -1490,7 +1523,6 @@ private actor RecordingDocumentDNAAnalyzer: DocumentDNAAnalyzing {
     ) throws -> DocumentDNA {
         state.recordCall(documentID: documentID)
         defer { state.finishCall(documentID: documentID) }
-        suspension?.suspendAnalysis()
         if delay > .zero {
             let components = delay.components
             Thread.sleep(forTimeInterval: Double(components.seconds)
@@ -1531,6 +1563,13 @@ private actor RecordingDocumentDNAAnalyzer: DocumentDNAAnalyzing {
 
     var duplicateDocumentCalls: Int { state.duplicateDocumentCalls }
 
+    nonisolated func suspendAfterAnalysis(documentID: UUID) async {
+        guard let suspension else { return }
+        state.startSuspension(documentID: documentID)
+        defer { state.finishCall(documentID: documentID) }
+        await suspension.suspend()
+    }
+
     func waitUntilFirstCallStarts() async {
         await suspension?.waitUntilStarted()
     }
@@ -1540,7 +1579,7 @@ private actor RecordingDocumentDNAAnalyzer: DocumentDNAAnalyzing {
     }
 
     func releaseAll() async {
-        suspension?.release()
+        await suspension?.release()
     }
 }
 
@@ -1685,58 +1724,6 @@ private actor PendingAnalysisSequence {
             return subsequentResult
         }
         throw SyntheticPersistenceError.failed
-    }
-}
-
-private final class AnalyzerSuspensionGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private let releaseSemaphore = DispatchSemaphore(value: 0)
-    private var started = false
-    private var released = false
-    private var waitingCount = 0
-    private var startWaiter: CheckedContinuation<Void, Never>?
-
-    func suspendAnalysis() {
-        let state = lock.withLock { () -> (CheckedContinuation<Void, Never>?, Bool) in
-            started = true
-            let waiter = startWaiter
-            startWaiter = nil
-            guard !released else { return (waiter, false) }
-            waitingCount += 1
-            return (waiter, true)
-        }
-        state.0?.resume()
-        if state.1 {
-            releaseSemaphore.wait()
-        }
-    }
-
-    func waitUntilStarted() async {
-        await withCheckedContinuation { continuation in
-            let shouldResume = lock.withLock {
-                if started {
-                    return true
-                }
-                startWaiter = continuation
-                return false
-            }
-            if shouldResume {
-                continuation.resume()
-            }
-        }
-    }
-
-    func release() {
-        let signalCount = lock.withLock {
-            guard !released else { return 0 }
-            released = true
-            let count = waitingCount
-            waitingCount = 0
-            return count
-        }
-        for _ in 0..<signalCount {
-            releaseSemaphore.signal()
-        }
     }
 }
 
@@ -1965,6 +1952,16 @@ private final class RecordingDocumentDNAAnalyzerState: @unchecked Sendable {
         }
         for waiter in readyWaiters {
             waiter.continuation.resume()
+        }
+    }
+
+    func startSuspension(documentID: UUID) {
+        lock.withLock {
+            activeCalls += 1
+            peakCalls = max(peakCalls, activeCalls)
+            if !activeDocumentIDs.insert(documentID).inserted {
+                duplicateCalls += 1
+            }
         }
     }
 

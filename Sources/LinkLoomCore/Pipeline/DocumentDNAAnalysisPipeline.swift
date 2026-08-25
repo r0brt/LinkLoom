@@ -59,6 +59,8 @@ public actor DocumentDNAAnalysisPipeline {
         DocumentDNAAnalysisTarget
     ) async throws -> Void
     private let replace: @Sendable (DocumentDNA) async throws -> Void
+    // Internal test checkpoint; the public initializer installs a no-op.
+    private let postAnalysis: @Sendable (DocumentDNA) async -> Void
 
     public init(
         repository: DocumentDNARepository,
@@ -97,6 +99,7 @@ public actor DocumentDNAAnalysisPipeline {
         replace = { snapshot in
             try await repository.replace(snapshot)
         }
+        postAnalysis = { _ in }
     }
 
     init(
@@ -125,6 +128,7 @@ public actor DocumentDNAAnalysisPipeline {
             DocumentDNAAnalysisTarget
         ) async throws -> Void,
         replace: @escaping @Sendable (DocumentDNA) async throws -> Void,
+        postAnalysis: @escaping @Sendable (DocumentDNA) async -> Void = { _ in },
         coordinationEvent: @escaping @Sendable (
             DocumentDNAAnalysisCoordinationEvent
         ) -> Void = { _ in }
@@ -139,6 +143,7 @@ public actor DocumentDNAAnalysisPipeline {
         self.markAnalysisFailed = markAnalysisFailed
         self.restoreAnalysisAfterInterruption = restoreAnalysisAfterInterruption
         self.replace = replace
+        self.postAnalysis = postAnalysis
     }
 
     public func processPending(
@@ -202,7 +207,8 @@ public actor DocumentDNAAnalysisPipeline {
                 beginAnalysis: beginAnalysis,
                 markAnalysisFailed: markAnalysisFailed,
                 restoreAnalysisAfterInterruption: restoreAnalysisAfterInterruption,
-                replace: replace
+                replace: replace,
+                postAnalysis: postAnalysis
             )
             completed += batchResult.report.completed
             failed += batchResult.report.failed
@@ -255,7 +261,8 @@ public actor DocumentDNAAnalysisPipeline {
             PendingDocumentDNAAnalysis,
             DocumentDNAAnalysisTarget
         ) async throws -> Void,
-        replace: @escaping @Sendable (DocumentDNA) async throws -> Void
+        replace: @escaping @Sendable (DocumentDNA) async throws -> Void,
+        postAnalysis: @escaping @Sendable (DocumentDNA) async -> Void
     ) async -> DocumentDNABatchResult {
         await withTaskGroup(of: DocumentDNAProcessingOutcome.self) { group in
             for candidate in batch {
@@ -287,6 +294,7 @@ public actor DocumentDNAAnalysisPipeline {
                                     restoreAnalysisAfterInterruption
                             )
                         }
+                        await postAnalysis(snapshot)
                         try Task.checkCancellation()
                         guard matchesExpectedIdentity(
                             snapshot,
