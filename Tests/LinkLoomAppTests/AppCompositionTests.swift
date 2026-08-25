@@ -89,6 +89,29 @@ struct AppCompositionTests {
         #expect(await events.snapshot() == ["catalog", "ingest", "dna"])
     }
 
+    @Test func incrementalRescanHonorsCancellationAfterCatalog() async {
+        let documentProcessingCalls = CallCounter()
+        let rescanner = IncrementalRescanner(
+            scanCatalog: { _ in
+                withUnsafeCurrentTask { task in
+                    task?.cancel()
+                }
+            },
+            processDocuments: { _ in
+                await documentProcessingCalls.increment()
+            }
+        )
+
+        let rescanning = Task {
+            try await rescanner.rescan(source: sourceRecord())
+        }
+
+        await #expect(throws: CancellationError.self) {
+            try await rescanning.value
+        }
+        #expect(await documentProcessingCalls.count == 0)
+    }
+
     @Test func incrementalRescanPropagatesDNAFailure() async {
         let events = EventRecorder()
         let processor = LocalDocumentProcessor(

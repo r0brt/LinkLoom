@@ -20,6 +20,7 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
     let dnaReadyStateCount: Int
     let dnaClassificationCount: Int
     let localRulesSnapshotCount: Int
+    let coherentDNADocumentCount: Int
 
     var matchesCompletedWorkflow: Bool {
         sourceCount == 1
@@ -40,6 +41,7 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
             && dnaReadyStateCount == 2
             && dnaClassificationCount == 2
             && localRulesSnapshotCount == 2
+            && coherentDNADocumentCount == 2
     }
 
     var matchesRemovedWorkflow: Bool {
@@ -52,6 +54,7 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
             && dnaFindingCount == 0
             && dnaEvidenceCount == 0
             && dnaAnalysisStateCount == 0
+            && coherentDNADocumentCount == 0
     }
 
     var description: String {
@@ -64,7 +67,8 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
             + "dnaEvidence=\(dnaEvidenceCount), dnaState=\(dnaAnalysisStateCount), "
             + "dnaReady=\(dnaReadyStateCount), "
             + "dnaClassification=\(dnaClassificationCount), "
-            + "localRulesSnapshot=\(localRulesSnapshotCount)"
+            + "localRulesSnapshot=\(localRulesSnapshotCount), "
+            + "coherentDNADocument=\(coherentDNADocumentCount)"
     }
 }
 
@@ -152,6 +156,36 @@ final class SQLiteProbe {
                 WHERE schemaVersion = 1
                   AND analyzerIdentifier = 'local-rules'
                   AND analyzerVersion = '1'
+                """),
+            coherentDNADocumentCount: try scalar("""
+                SELECT COUNT(DISTINCT document.id)
+                FROM document
+                JOIN documentExtraction
+                  ON documentExtraction.documentID = document.id
+                JOIN documentDNA
+                  ON documentDNA.documentID = document.id
+                JOIN documentDNAAnalysisState
+                  ON documentDNAAnalysisState.documentID = document.id
+                WHERE document.status = 'ready'
+                  AND document.availability = 'available'
+                  AND documentDNA.schemaVersion = 1
+                  AND documentDNA.analyzerIdentifier = 'local-rules'
+                  AND documentDNA.analyzerVersion = '1'
+                  AND documentDNA.inputContentHash = document.contentHash
+                  AND documentDNA.inputExtractionVersion =
+                    documentExtraction.analysisVersion
+                  AND documentDNAAnalysisState.targetSchemaVersion =
+                    documentDNA.schemaVersion
+                  AND documentDNAAnalysisState.targetAnalyzerIdentifier =
+                    documentDNA.analyzerIdentifier
+                  AND documentDNAAnalysisState.targetAnalyzerVersion =
+                    documentDNA.analyzerVersion
+                  AND documentDNAAnalysisState.inputContentHash =
+                    documentDNA.inputContentHash
+                  AND documentDNAAnalysisState.inputExtractionVersion =
+                    documentDNA.inputExtractionVersion
+                  AND documentDNAAnalysisState.status = 'ready'
+                  AND documentDNAAnalysisState.failureCode IS NULL
                 """)
         )
     }
