@@ -380,6 +380,31 @@ struct DocumentDNARepositoryTests {
         #expect(try await terminal.analysisState(documentID: terminalCandidate.document.id) == terminalState)
     }
 
+    @Test func failedTransitionRejectsCandidateAfterSourceRootChanges() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.make()
+        let prior = try await fixture.snapshot(analyzerVersion: "0")
+        try await fixture.repository.replace(prior)
+        let candidate = try #require(try await fixture.repository.pendingAnalysis(
+            sourceRootID: fixture.source.id,
+            target: fixture.target,
+            limit: 1
+        ).first)
+        try await fixture.repository.beginAnalysis(candidate, target: fixture.target, at: .now)
+        let priorState = try await fixture.analysisState(documentID: candidate.document.id)
+        try await fixture.changeDocumentSourceRootID(to: fixture.otherSource.id)
+
+        await #expect(throws: DocumentDNARepositoryError.staleInput) {
+            try await fixture.repository.markAnalysisFailed(
+                candidate,
+                target: fixture.target,
+                failureCode: .analysisFailure,
+                at: .now
+            )
+        }
+        #expect(try await fixture.analysisState(documentID: candidate.document.id) == priorState)
+        #expect(try await fixture.repository.storedSnapshot(documentID: candidate.document.id) == prior)
+    }
+
     @Test func replaceRoundTripsCompleteSnapshotAndMarksMatchingStateReady() async throws {
         let fixture = try await DocumentDNARepositoryFixture.make()
         let snapshot = try await fixture.snapshot()
@@ -1113,6 +1138,16 @@ private struct DocumentDNARepositoryFixture {
             try database.execute(
                 sql: "UPDATE document SET availability = ? WHERE id = ?",
                 arguments: [availability, document.id]
+            )
+        }
+    }
+
+    func changeDocumentSourceRootID(to sourceRootID: UUID) async throws {
+        let document = try await readyDocument()
+        try await db.write { database in
+            try database.execute(
+                sql: "UPDATE document SET sourceRootID = ? WHERE id = ?",
+                arguments: [sourceRootID, document.id]
             )
         }
     }

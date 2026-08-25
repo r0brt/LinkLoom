@@ -191,6 +191,7 @@ public actor DocumentDNARepository {
                             JOIN documentExtraction
                                 ON documentExtraction.documentID = document.id
                             WHERE document.id = documentDNAAnalysisState.documentID
+                                AND document.sourceRootID = ?
                                 AND document.status = 'ready'
                                 AND document.availability = 'available'
                                 AND document.contentHash =
@@ -208,6 +209,7 @@ public actor DocumentDNARepository {
                     target.analyzerVersion,
                     candidate.document.contentHash,
                     candidate.extraction.analysisVersion,
+                    candidate.document.sourceRootID,
                 ]
             )
             guard db.changesCount == 1 else {
