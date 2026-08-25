@@ -85,51 +85,58 @@ public actor ExtractionRepository {
 
     public func extraction(documentID: UUID) async throws -> StoredExtraction? {
         try await dbWriter.read { db in
-            guard let header = try Row.fetchOne(
-                db,
-                sql: """
-                    SELECT documentID, analysisVersion, method, updatedAt
-                    FROM documentExtraction
-                    WHERE documentID = ?
-                    """,
-                arguments: [documentID]
-            ) else {
-                return nil
-            }
-            let storedDocumentID: UUID = header["documentID"]
-            let analysisVersion: String = header["analysisVersion"]
-            let methodRawValue: String = header["method"]
-            let updatedAt: Date = header["updatedAt"]
-            guard let method = ExtractionMethod(rawValue: methodRawValue) else {
-                throw StoredExtractionError.invalidMethod(methodRawValue)
-            }
-            let pageRows = try Row.fetchAll(
-                db,
-                sql: """
-                    SELECT pageIndex, text, regionsJSON
-                    FROM extractedPage
-                    WHERE documentID = ?
-                    ORDER BY pageIndex
-                    """,
-                arguments: [documentID]
-            )
-            let pages = try pageRows.map { row in
-                let pageIndex: Int = row["pageIndex"]
-                let text: String = row["text"]
-                let regionsJSON: Data = row["regionsJSON"]
-                return ExtractedPage(
-                    pageIndex: pageIndex,
-                    text: text,
-                    regions: try JSONDecoder().decode([TextRegion].self, from: regionsJSON)
-                )
-            }
-            return StoredExtraction(
-                documentID: storedDocumentID,
-                analysisVersion: analysisVersion,
-                extraction: ExtractedDocument(method: method, pages: pages),
-                updatedAt: updatedAt
+            try Self.extraction(in: db, documentID: documentID)
+        }
+    }
+
+    static func extraction(
+        in db: Database,
+        documentID: UUID
+    ) throws -> StoredExtraction? {
+        guard let header = try Row.fetchOne(
+            db,
+            sql: """
+                SELECT documentID, analysisVersion, method, updatedAt
+                FROM documentExtraction
+                WHERE documentID = ?
+                """,
+            arguments: [documentID]
+        ) else {
+            return nil
+        }
+        let storedDocumentID: UUID = header["documentID"]
+        let analysisVersion: String = header["analysisVersion"]
+        let methodRawValue: String = header["method"]
+        let updatedAt: Date = header["updatedAt"]
+        guard let method = ExtractionMethod(rawValue: methodRawValue) else {
+            throw StoredExtractionError.invalidMethod(methodRawValue)
+        }
+        let pageRows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT pageIndex, text, regionsJSON
+                FROM extractedPage
+                WHERE documentID = ?
+                ORDER BY pageIndex
+                """,
+            arguments: [documentID]
+        )
+        let pages = try pageRows.map { row in
+            let pageIndex: Int = row["pageIndex"]
+            let text: String = row["text"]
+            let regionsJSON: Data = row["regionsJSON"]
+            return ExtractedPage(
+                pageIndex: pageIndex,
+                text: text,
+                regions: try JSONDecoder().decode([TextRegion].self, from: regionsJSON)
             )
         }
+        return StoredExtraction(
+            documentID: storedDocumentID,
+            analysisVersion: analysisVersion,
+            extraction: ExtractedDocument(method: method, pages: pages),
+            updatedAt: updatedAt
+        )
     }
 
     private static func encodedPages(_ pages: [ExtractedPage]) throws -> [EncodedPage] {
