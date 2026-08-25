@@ -251,7 +251,7 @@
 
   Run the Step 2 command. Expected: all eight complete snapshot comparisons and all expected evidence re-slices pass.
 
-- [ ] **Step 5: Commit the golden corpus**
+- [x] **Step 5: Commit the golden corpus**
 
   ```sh
   git add Package.swift Tests/LinkLoomCoreTests/DocumentDNAGoldenTests.swift \
@@ -272,7 +272,7 @@
 - Consumes: all Task 1-3 deliverables.
 - Produces: a clean, reviewable branch with exact verification evidence.
 
-- [ ] **Step 1: Run focused tests**
+- [x] **Step 1: Run focused tests**
 
   Run the fallback suite filtered separately to `DocumentDNADomainTests`, `LocalRulesDocumentDNAAnalyzerTests`, and `DocumentDNAGoldenTests`.
 

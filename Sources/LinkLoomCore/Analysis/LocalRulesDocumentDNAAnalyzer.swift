@@ -72,7 +72,7 @@ public struct LocalRulesDocumentDNAAnalyzer: DocumentDNAAnalyzing {
         var evidence = [DocumentType: DocumentDNAEvidence]()
         for rule in rules {
             for page in pages {
-                guard let match = matches(rule.pattern, in: page.text).first else {
+                guard let match = matches("(?i)" + rule.pattern, in: page.text).first else {
                     continue
                 }
                 scores[rule.type, default: 0] += rule.score

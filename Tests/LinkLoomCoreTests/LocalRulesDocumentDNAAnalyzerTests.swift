@@ -14,6 +14,7 @@ struct LocalRulesDocumentDNAAnalyzerTests {
             ("Pflegedokumentation", .medicalOrCareDocument),
             ("Vollmacht", .powerOfAttorney),
             ("Korrespondenz", .correspondence),
+            ("RECHNUNG", .invoice),
             ("Notiz zum Vorgang", .unknown),
         ]
 

@@ -199,6 +199,17 @@ struct DocumentDNADomainTests {
         }
         #expect(throws: DocumentDNAValidationError.invalidFinding) {
             try DocumentDNAFinding(
+                kind: .monetaryAmount,
+                qualifier: "ZZZ",
+                displayValue: "ZZZ 1.00",
+                normalizedValue: "1",
+                secondaryNormalizedValue: nil,
+                confidence: 1,
+                evidence: [evidence]
+            )
+        }
+        #expect(throws: DocumentDNAValidationError.invalidFinding) {
+            try DocumentDNAFinding(
                 kind: .referenceNumber,
                 qualifier: nil,
                 displayValue: "INV-2026-0042",
