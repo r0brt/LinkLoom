@@ -10,9 +10,15 @@ struct DocumentDNAAnalysisPipelineTests {
             documentCount: 2,
             analyzerStartsBlocked: true
         )
-        let secondPipeline = fixture.makePipeline()
+        let checkpoints = CoordinationCheckpointRecorder()
+        let ownerPipeline = fixture.makeInjectedPipeline(
+            coordinationEvent: checkpoints.handler(label: .owner)
+        )
+        let secondPipeline = fixture.makeInjectedPipeline(
+            coordinationEvent: checkpoints.handler(label: .nextLive)
+        )
         let first = Task {
-            try await fixture.pipeline.processPending(
+            try await ownerPipeline.processPending(
                 sourceRootID: fixture.source.id,
                 limit: 1
             )
@@ -24,8 +30,10 @@ struct DocumentDNAAnalysisPipelineTests {
                 limit: 1
             )
         }
+        await checkpoints.waitFor(label: .nextLive, event: .waiterRegistered)
 
-        #expect(await fixture.analyzer.observesCallCount(2, within: .milliseconds(100)) == false)
+        #expect(await fixture.analyzer.callCount == 1)
+        #expect(checkpoints.acquiredLabels == [.owner])
         await fixture.analyzer.releaseAll()
 
         let reports = try await [first.value, second.value]
@@ -43,9 +51,15 @@ struct DocumentDNAAnalysisPipelineTests {
             analyzerStartsBlocked: true
         )
         let secondSource = try await fixture.insertAdditionalSourceWithDocument()
-        let secondPipeline = fixture.makePipeline()
+        let checkpoints = CoordinationCheckpointRecorder()
+        let firstPipeline = fixture.makeInjectedPipeline(
+            coordinationEvent: checkpoints.handler(label: .firstSource)
+        )
+        let secondPipeline = fixture.makeInjectedPipeline(
+            coordinationEvent: checkpoints.handler(label: .secondSource)
+        )
         let first = Task {
-            try await fixture.pipeline.processPending(
+            try await firstPipeline.processPending(
                 sourceRootID: fixture.source.id,
                 limit: 1
             )
@@ -57,8 +71,10 @@ struct DocumentDNAAnalysisPipelineTests {
                 limit: 1
             )
         }
+        await checkpoints.waitFor(label: .secondSource, event: .acquired)
+        await fixture.analyzer.waitUntilCallCountStarts(2)
 
-        #expect(await fixture.analyzer.observesCallCount(2, within: .milliseconds(100)))
+        #expect(checkpoints.acquiredLabels == [.firstSource, .secondSource])
         await fixture.analyzer.releaseAll()
 
         #expect(try await first.value == DocumentDNAAnalysisReport(completed: 1, failed: 0))
@@ -66,62 +82,80 @@ struct DocumentDNAAnalysisPipelineTests {
         #expect(await fixture.analyzer.peakConcurrency == 2)
     }
 
-    @Test func cancellingQueuedRunDoesNotCancelOwnerOrNextWaiter() async throws {
+    @Test func cancellingNonHeadWaiterPreservesLiveWaiterFIFO() async throws {
         let fixture = try await DocumentDNAAnalysisPipelineFixture.make(
             documentCount: 1,
             analyzerStartsBlocked: true
         )
+        let checkpoints = CoordinationCheckpointRecorder()
         let recorder = PipelineOperationRecorder()
-        let cancelledCompletion = AsyncCompletionProbe()
+        let ownerPipeline = fixture.makeInjectedPipeline(
+            coordinationEvent: checkpoints.handler(label: .owner)
+        )
+        let firstLivePipeline = fixture.makeInjectedPipeline(
+            pendingAnalysis: { _, _, _ in
+                await recorder.record("first-live")
+                return []
+            },
+            coordinationEvent: checkpoints.handler(label: .firstLive)
+        )
         let cancelledPipeline = fixture.makeInjectedPipeline(
             pendingAnalysis: { _, _, _ in
                 await recorder.record("cancelled")
                 return []
-            }
+            },
+            coordinationEvent: checkpoints.handler(label: .cancelled)
         )
         let nextPipeline = fixture.makeInjectedPipeline(
             pendingAnalysis: { _, _, _ in
-                await recorder.record("next")
+                await recorder.record("next-live")
                 return []
-            }
+            },
+            coordinationEvent: checkpoints.handler(label: .nextLive)
         )
         let owner = Task {
-            try await fixture.pipeline.processPending(
+            try await ownerPipeline.processPending(
                 sourceRootID: fixture.source.id,
                 limit: 1
             )
         }
         await fixture.analyzer.waitUntilFirstCallStarts()
-        let cancelledWaiter = Task {
-            do {
-                let report = try await cancelledPipeline.processPending(
-                    sourceRootID: fixture.source.id,
-                    limit: 1
-                )
-                await cancelledCompletion.finish()
-                return report
-            } catch {
-                await cancelledCompletion.finish()
-                throw error
-            }
+        let firstLiveWaiter = Task {
+            try await firstLivePipeline.processPending(
+                sourceRootID: fixture.source.id,
+                limit: 1
+            )
         }
-        try await ContinuousClock().sleep(for: .milliseconds(10))
+        await checkpoints.waitFor(label: .firstLive, event: .waiterRegistered)
+        let cancelledWaiter = Task {
+            try await cancelledPipeline.processPending(
+                sourceRootID: fixture.source.id,
+                limit: 1
+            )
+        }
+        await checkpoints.waitFor(label: .cancelled, event: .waiterRegistered)
         let nextWaiter = Task {
             try await nextPipeline.processPending(
                 sourceRootID: fixture.source.id,
                 limit: 1
             )
         }
-        try await ContinuousClock().sleep(for: .milliseconds(10))
+        await checkpoints.waitFor(label: .nextLive, event: .waiterRegistered)
+        #expect(checkpoints.registeredLabels == [.firstLive, .cancelled, .nextLive])
 
         cancelledWaiter.cancel()
 
-        #expect(await cancelledCompletion.observesFinished(within: .milliseconds(100)))
+        let cancellation = await checkpoints.waitForFirst(event: .waiterCancelled)
+        guard cancellation.label == .cancelled else {
+            Issue.record("Cancellation removed \(cancellation.label) instead of cancelled")
+            owner.cancel()
+            firstLiveWaiter.cancel()
+            nextWaiter.cancel()
+            await fixture.analyzer.releaseAll()
+            return
+        }
         #expect(await fixture.analyzer.callCount == 1)
         #expect(await recorder.operations.isEmpty)
-        await fixture.analyzer.releaseAll()
-
-        #expect(try await owner.value == DocumentDNAAnalysisReport(completed: 1, failed: 0))
         await expectRunError(
             DocumentDNAAnalysisRunError(
                 reason: .cancelled,
@@ -130,8 +164,64 @@ struct DocumentDNAAnalysisPipelineTests {
         ) {
             try await cancelledWaiter.value
         }
+        #expect(checkpoints.acquiredLabels == [.owner])
+        await fixture.analyzer.releaseAll()
+
+        #expect(try await owner.value == DocumentDNAAnalysisReport(completed: 1, failed: 0))
+        #expect(try await firstLiveWaiter.value == DocumentDNAAnalysisReport(
+            completed: 0,
+            failed: 0
+        ))
         #expect(try await nextWaiter.value == DocumentDNAAnalysisReport(completed: 0, failed: 0))
-        #expect(await recorder.operations == ["next"])
+        #expect(checkpoints.acquiredLabels == [.owner, .firstLive, .nextLive])
+        #expect(await recorder.operations == ["first-live", "next-live"])
+        #expect(await fixture.analyzer.callCount == 1)
+        #expect(await fixture.analyzer.duplicateDocumentCalls == 0)
+    }
+
+    @Test func cancellingActiveOwnerTransfersBatonToNextWaiter() async throws {
+        let fixture = try await DocumentDNAAnalysisPipelineFixture.make(
+            documentCount: 1,
+            analyzerStartsBlocked: true
+        )
+        let checkpoints = CoordinationCheckpointRecorder()
+        let ownerPipeline = fixture.makeInjectedPipeline(
+            coordinationEvent: checkpoints.handler(label: .owner)
+        )
+        let nextPipeline = fixture.makeInjectedPipeline(
+            coordinationEvent: checkpoints.handler(label: .nextLive)
+        )
+        let owner = Task {
+            try await ownerPipeline.processPending(
+                sourceRootID: fixture.source.id,
+                limit: 1
+            )
+        }
+        await fixture.analyzer.waitUntilFirstCallStarts()
+        let nextWaiter = Task {
+            try await nextPipeline.processPending(
+                sourceRootID: fixture.source.id,
+                limit: 1
+            )
+        }
+        await checkpoints.waitFor(label: .nextLive, event: .waiterRegistered)
+
+        owner.cancel()
+        await fixture.analyzer.releaseAll()
+
+        await expectRunError(
+            DocumentDNAAnalysisRunError(
+                reason: .cancelled,
+                partialReport: DocumentDNAAnalysisReport(completed: 0, failed: 0)
+            )
+        ) {
+            try await owner.value
+        }
+        await checkpoints.waitFor(label: .nextLive, event: .acquired)
+        #expect(try await nextWaiter.value == DocumentDNAAnalysisReport(completed: 1, failed: 0))
+        #expect(checkpoints.acquiredLabels == [.owner, .nextLive])
+        #expect(await fixture.analyzer.callCount == 2)
+        #expect(await fixture.analyzer.duplicateDocumentCalls == 0)
     }
 
     @Test func firstRunPersistsEveryPendingSnapshot() async throws {
@@ -1119,15 +1209,6 @@ private struct DocumentDNAAnalysisPipelineFixture {
         )
     }
 
-    func makePipeline() -> DocumentDNAAnalysisPipeline {
-        DocumentDNAAnalysisPipeline(
-            repository: repository,
-            analyzer: analyzer,
-            target: target,
-            now: { Self.date }
-        )
-    }
-
     func makeInjectedPipeline(
         analyzer: (any DocumentDNAAnalyzing)? = nil,
         pendingAnalysis: PendingAnalysisClosure? = nil,
@@ -1135,7 +1216,8 @@ private struct DocumentDNAAnalysisPipelineFixture {
         beginAnalysis: BeginAnalysisClosure? = nil,
         markAnalysisFailed: MarkAnalysisFailedClosure? = nil,
         restoreAnalysisAfterInterruption: RestoreAnalysisClosure? = nil,
-        replace: ReplaceSnapshotClosure? = nil
+        replace: ReplaceSnapshotClosure? = nil,
+        coordinationEvent: @escaping CoordinationEventClosure = { _ in }
     ) -> DocumentDNAAnalysisPipeline {
         let repository = repository
         return DocumentDNAAnalysisPipeline(
@@ -1172,7 +1254,8 @@ private struct DocumentDNAAnalysisPipelineFixture {
                 },
             replace: replace ?? { snapshot in
                 try await repository.replace(snapshot)
-            }
+            },
+            coordinationEvent: coordinationEvent
         )
     }
 
@@ -1345,20 +1428,12 @@ private actor RecordingDocumentDNAAnalyzer: DocumentDNAAnalyzing {
         await suspension?.waitUntilStarted()
     }
 
-    func releaseAll() async {
-        suspension?.release()
+    func waitUntilCallCountStarts(_ expectedCount: Int) async {
+        await state.waitUntilCallCount(expectedCount)
     }
 
-    func observesCallCount(_ expectedCount: Int, within duration: Duration) async -> Bool {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: duration)
-        while clock.now < deadline {
-            if state.callCount >= expectedCount {
-                return true
-            }
-            try? await clock.sleep(for: .milliseconds(1))
-        }
-        return state.callCount >= expectedCount
+    func releaseAll() async {
+        suspension?.release()
     }
 }
 
@@ -1391,6 +1466,9 @@ private typealias PendingAnalysisClosure = @Sendable (
     Int
 ) async throws -> [PendingDocumentDNAAnalysis]
 private typealias RecoveryClosure = @Sendable (UUID) async throws -> Void
+private typealias CoordinationEventClosure = @Sendable (
+    DocumentDNAAnalysisCoordinationEvent
+) -> Void
 private typealias BeginAnalysisClosure = @Sendable (
     PendingDocumentDNAAnalysis,
     DocumentDNAAnalysisTarget,
@@ -1522,26 +1600,6 @@ private actor AsyncSuspensionGate {
     }
 }
 
-private actor AsyncCompletionProbe {
-    private var isFinished = false
-
-    func finish() {
-        isFinished = true
-    }
-
-    func observesFinished(within duration: Duration) async -> Bool {
-        let clock = ContinuousClock()
-        let deadline = clock.now.advanced(by: duration)
-        while clock.now < deadline {
-            if isFinished {
-                return true
-            }
-            try? await clock.sleep(for: .milliseconds(1))
-        }
-        return isFinished
-    }
-}
-
 private func expectRunError(
     _ expected: DocumentDNAAnalysisRunError,
     operation: () async throws -> DocumentDNAAnalysisReport
@@ -1590,13 +1648,119 @@ private func makeDocumentDNASnapshot(
         )
 }
 
+private final class CoordinationCheckpointRecorder: @unchecked Sendable {
+    enum Label: String, Sendable {
+        case owner
+        case firstLive
+        case cancelled
+        case nextLive
+        case firstSource
+        case secondSource
+    }
+
+    struct Entry: Sendable, Equatable {
+        let label: Label
+        let event: DocumentDNAAnalysisCoordinationEvent
+    }
+
+    private struct Waiter {
+        let label: Label?
+        let event: DocumentDNAAnalysisCoordinationEvent
+        let continuation: CheckedContinuation<Entry, Never>
+    }
+
+    private let lock = NSLock()
+    private var recordedEntries: [Entry] = []
+    private var waiters: [Waiter] = []
+
+    var acquiredLabels: [Label] {
+        lock.withLock {
+            recordedEntries.compactMap { entry in
+                entry.event == .acquired ? entry.label : nil
+            }
+        }
+    }
+
+    var registeredLabels: [Label] {
+        lock.withLock {
+            recordedEntries.compactMap { entry in
+                entry.event == .waiterRegistered ? entry.label : nil
+            }
+        }
+    }
+
+    func handler(
+        label: Label
+    ) -> @Sendable (DocumentDNAAnalysisCoordinationEvent) -> Void {
+        { [self] event in
+            record(Entry(label: label, event: event))
+        }
+    }
+
+    func waitFor(label: Label, event: DocumentDNAAnalysisCoordinationEvent) async {
+        _ = await waitForEntry(label: label, event: event)
+    }
+
+    func waitForFirst(event: DocumentDNAAnalysisCoordinationEvent) async -> Entry {
+        await waitForEntry(label: nil, event: event)
+    }
+
+    private func record(_ entry: Entry) {
+        let readyWaiters = lock.withLock {
+            recordedEntries.append(entry)
+            let ready = waiters.filter { waiter in
+                waiter.event == entry.event
+                    && (waiter.label == nil || waiter.label == entry.label)
+            }
+            waiters.removeAll { waiter in
+                waiter.event == entry.event
+                    && (waiter.label == nil || waiter.label == entry.label)
+            }
+            return ready
+        }
+        for waiter in readyWaiters {
+            waiter.continuation.resume(returning: entry)
+        }
+    }
+
+    private func waitForEntry(
+        label: Label?,
+        event: DocumentDNAAnalysisCoordinationEvent
+    ) async -> Entry {
+        await withCheckedContinuation { continuation in
+            let existing = lock.withLock { () -> Entry? in
+                if let entry = recordedEntries.first(where: { entry in
+                    entry.event == event && (label == nil || entry.label == label)
+                }) {
+                    return entry
+                }
+                waiters.append(Waiter(
+                    label: label,
+                    event: event,
+                    continuation: continuation
+                ))
+                return nil
+            }
+            if let existing {
+                continuation.resume(returning: existing)
+            }
+        }
+    }
+}
+
 private final class RecordingDocumentDNAAnalyzerState: @unchecked Sendable {
+    private struct CallCountWaiter {
+        let expectedCount: Int
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
     private let lock = NSLock()
     private var calls = 0
     private var activeCalls = 0
     private var peakCalls = 0
     private var activeDocumentIDs = Set<UUID>()
     private var duplicateCalls = 0
+    private var callCountWaiters: [CallCountWaiter] = []
 
     var callCount: Int {
         lock.withLock { calls }
@@ -1611,13 +1775,19 @@ private final class RecordingDocumentDNAAnalyzerState: @unchecked Sendable {
     }
 
     func recordCall(documentID: UUID) {
-        lock.withLock {
+        let readyWaiters = lock.withLock {
             calls += 1
             activeCalls += 1
             peakCalls = max(peakCalls, activeCalls)
             if !activeDocumentIDs.insert(documentID).inserted {
                 duplicateCalls += 1
             }
+            let ready = callCountWaiters.filter { calls >= $0.expectedCount }
+            callCountWaiters.removeAll { calls >= $0.expectedCount }
+            return ready
+        }
+        for waiter in readyWaiters {
+            waiter.continuation.resume()
         }
     }
 
@@ -1625,6 +1795,22 @@ private final class RecordingDocumentDNAAnalyzerState: @unchecked Sendable {
         lock.withLock {
             activeCalls -= 1
             activeDocumentIDs.remove(documentID)
+        }
+    }
+
+    func waitUntilCallCount(_ expectedCount: Int) async {
+        await withCheckedContinuation { continuation in
+            let shouldResume = lock.withLock {
+                guard calls < expectedCount else { return true }
+                callCountWaiters.append(CallCountWaiter(
+                    expectedCount: expectedCount,
+                    continuation: continuation
+                ))
+                return false
+            }
+            if shouldResume {
+                continuation.resume()
+            }
         }
     }
 }

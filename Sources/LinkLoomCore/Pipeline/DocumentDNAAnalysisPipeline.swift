@@ -36,6 +36,7 @@ public actor DocumentDNAAnalysisPipeline {
     private let analyzer: any DocumentDNAAnalyzing
     private let target: DocumentDNAAnalysisTarget
     private let now: @Sendable () -> Date
+    private let coordinationEvent: @Sendable (DocumentDNAAnalysisCoordinationEvent) -> Void
     private let pendingAnalysis: @Sendable (
         UUID,
         DocumentDNAAnalysisTarget,
@@ -68,6 +69,7 @@ public actor DocumentDNAAnalysisPipeline {
         self.analyzer = analyzer
         self.target = target
         self.now = now
+        coordinationEvent = { _ in }
         pendingAnalysis = { sourceRootID, target, limit in
             try await repository.pendingAnalysis(
                 sourceRootID: sourceRootID,
@@ -122,11 +124,15 @@ public actor DocumentDNAAnalysisPipeline {
             PendingDocumentDNAAnalysis,
             DocumentDNAAnalysisTarget
         ) async throws -> Void,
-        replace: @escaping @Sendable (DocumentDNA) async throws -> Void
+        replace: @escaping @Sendable (DocumentDNA) async throws -> Void,
+        coordinationEvent: @escaping @Sendable (
+            DocumentDNAAnalysisCoordinationEvent
+        ) -> Void = { _ in }
     ) {
         self.analyzer = analyzer
         self.target = target
         self.now = now
+        self.coordinationEvent = coordinationEvent
         self.pendingAnalysis = pendingAnalysis
         self.recoverInterruptedAnalysis = recoverInterruptedAnalysis
         self.beginAnalysis = beginAnalysis
@@ -143,7 +149,10 @@ public actor DocumentDNAAnalysisPipeline {
         guard limit > 0 else { return emptyReport }
 
         do {
-            try await Self.coordinator.acquire(sourceRootID: sourceRootID)
+            try await Self.coordinator.acquire(
+                sourceRootID: sourceRootID,
+                onEvent: coordinationEvent
+            )
         } catch {
             throw DocumentDNAAnalysisRunError(reason: .cancelled, partialReport: emptyReport)
         }
@@ -404,18 +413,29 @@ private struct DocumentDNABatchResult: Sendable {
     let failureReason: DocumentDNAAnalysisRunFailureReason?
 }
 
+enum DocumentDNAAnalysisCoordinationEvent: Sendable, Equatable {
+    case acquired
+    case waiterRegistered
+    case waiterCancelled
+}
+
 private actor DocumentDNAAnalysisRunCoordinator {
     private struct Waiter {
         let id: UUID
         let continuation: CheckedContinuation<Void, any Error>
+        let onEvent: @Sendable (DocumentDNAAnalysisCoordinationEvent) -> Void
     }
 
     private var activeSourceRootIDs = Set<UUID>()
     private var waiters: [UUID: [Waiter]] = [:]
 
-    func acquire(sourceRootID: UUID) async throws {
+    func acquire(
+        sourceRootID: UUID,
+        onEvent: @escaping @Sendable (DocumentDNAAnalysisCoordinationEvent) -> Void
+    ) async throws {
         try Task.checkCancellation()
         if activeSourceRootIDs.insert(sourceRootID).inserted {
+            onEvent(.acquired)
             return
         }
         let waiterID = UUID()
@@ -427,8 +447,10 @@ private actor DocumentDNAAnalysisRunCoordinator {
                 } else {
                     waiters[sourceRootID, default: []].append(Waiter(
                         id: waiterID,
-                        continuation: continuation
+                        continuation: continuation,
+                        onEvent: onEvent
                     ))
+                    onEvent(.waiterRegistered)
                 }
             }
         } onCancel: {
@@ -446,6 +468,7 @@ private actor DocumentDNAAnalysisRunCoordinator {
         }
         let next = sourceWaiters.removeFirst()
         waiters[sourceRootID] = sourceWaiters.isEmpty ? nil : sourceWaiters
+        next.onEvent(.acquired)
         next.continuation.resume()
     }
 
@@ -457,6 +480,7 @@ private actor DocumentDNAAnalysisRunCoordinator {
         }
         let waiter = sourceWaiters.remove(at: index)
         waiters[sourceRootID] = sourceWaiters.isEmpty ? nil : sourceWaiters
+        waiter.onEvent(.waiterCancelled)
         waiter.continuation.resume(throwing: CancellationError())
     }
 }
