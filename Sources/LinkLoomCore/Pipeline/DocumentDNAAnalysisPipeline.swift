@@ -140,8 +140,16 @@ public actor DocumentDNAAnalysisPipeline {
         let emptyReport = DocumentDNAAnalysisReport(completed: 0, failed: 0)
         guard limit > 0 else { return emptyReport }
 
-        var batch = try await pendingAnalysis(sourceRootID, target, limit)
         var completed = 0
+        var failed = 0
+        var batch: [PendingDocumentDNAAnalysis]
+        do {
+            batch = try await pendingAnalysis(sourceRootID, target, limit)
+        } catch is CancellationError {
+            throw DocumentDNAAnalysisRunError(reason: .cancelled, partialReport: emptyReport)
+        } catch {
+            throw DocumentDNAAnalysisRunError(reason: .pendingQuery, partialReport: emptyReport)
+        }
         while !batch.isEmpty {
             let batchResult = await Self.processBatch(
                 batch,
@@ -149,18 +157,39 @@ public actor DocumentDNAAnalysisPipeline {
                 target: target,
                 now: now,
                 beginAnalysis: beginAnalysis,
+                markAnalysisFailed: markAnalysisFailed,
+                restoreAnalysisAfterInterruption: restoreAnalysisAfterInterruption,
                 replace: replace
             )
             completed += batchResult.report.completed
+            failed += batchResult.report.failed
             if let failureReason = batchResult.failureReason {
                 throw DocumentDNAAnalysisRunError(
                     reason: failureReason,
-                    partialReport: DocumentDNAAnalysisReport(completed: completed, failed: 0)
+                    partialReport: DocumentDNAAnalysisReport(completed: completed, failed: failed)
                 )
             }
-            batch = try await pendingAnalysis(sourceRootID, target, limit)
+            do {
+                batch = try await pendingAnalysis(sourceRootID, target, limit)
+            } catch is CancellationError {
+                throw DocumentDNAAnalysisRunError(
+                    reason: .cancelled,
+                    partialReport: DocumentDNAAnalysisReport(
+                        completed: completed,
+                        failed: failed
+                    )
+                )
+            } catch {
+                throw DocumentDNAAnalysisRunError(
+                    reason: .pendingQuery,
+                    partialReport: DocumentDNAAnalysisReport(
+                        completed: completed,
+                        failed: failed
+                    )
+                )
+            }
         }
-        return DocumentDNAAnalysisReport(completed: completed, failed: 0)
+        return DocumentDNAAnalysisReport(completed: completed, failed: failed)
     }
 
     private static func processBatch(
@@ -173,25 +202,72 @@ public actor DocumentDNAAnalysisPipeline {
             DocumentDNAAnalysisTarget,
             Date
         ) async throws -> Void,
+        markAnalysisFailed: @escaping @Sendable (
+            PendingDocumentDNAAnalysis,
+            DocumentDNAAnalysisTarget,
+            DocumentDNAAnalysisFailureCode,
+            Date
+        ) async throws -> Void,
+        restoreAnalysisAfterInterruption: @escaping @Sendable (
+            PendingDocumentDNAAnalysis,
+            DocumentDNAAnalysisTarget
+        ) async throws -> Void,
         replace: @escaping @Sendable (DocumentDNA) async throws -> Void
     ) async -> DocumentDNABatchResult {
         await withTaskGroup(of: DocumentDNAProcessingOutcome.self) { group in
             for candidate in batch {
                 group.addTask {
+                    var didBegin = false
                     do {
                         let analyzedAt = now()
-                        try await beginAnalysis(candidate, target, analyzedAt)
-                        let snapshot = try analyzer.analyze(
-                            documentID: candidate.document.id,
-                            contentHash: candidate.document.contentHash,
-                            extraction: candidate.extraction,
-                            analyzedAt: analyzedAt
-                        )
                         try Task.checkCancellation()
-                        try await replace(snapshot)
+                        try await beginAnalysis(candidate, target, analyzedAt)
+                        didBegin = true
+                        try Task.checkCancellation()
+                        let snapshot: DocumentDNA
+                        do {
+                            snapshot = try analyzer.analyze(
+                                documentID: candidate.document.id,
+                                contentHash: candidate.document.contentHash,
+                                extraction: candidate.extraction,
+                                analyzedAt: analyzedAt
+                            )
+                        } catch {
+                            try Task.checkCancellation()
+                            return await markFailure(
+                                failureCode(forAnalyzerError: error),
+                                candidate: candidate,
+                                target: target,
+                                at: analyzedAt,
+                                markAnalysisFailed: markAnalysisFailed,
+                                restoreAnalysisAfterInterruption:
+                                    restoreAnalysisAfterInterruption
+                            )
+                        }
+                        try Task.checkCancellation()
+                        try Task.checkCancellation()
+                        do {
+                            try await replace(snapshot)
+                        } catch DocumentDNARepositoryError.invalidProvenance {
+                            return await markFailure(
+                                .invalidProvenance,
+                                candidate: candidate,
+                                target: target,
+                                at: analyzedAt,
+                                markAnalysisFailed: markAnalysisFailed,
+                                restoreAnalysisAfterInterruption:
+                                    restoreAnalysisAfterInterruption
+                            )
+                        }
                         return .completed
                     } catch is CancellationError {
-                        return .runFailure(.cancelled)
+                        guard didBegin else { return .runFailure(.cancelled) }
+                        return await restoreAfterCancellation(
+                            candidate,
+                            target: target,
+                            restoreAnalysisAfterInterruption:
+                                restoreAnalysisAfterInterruption
+                        )
                     } catch DocumentDNARepositoryError.staleInput {
                         return .runFailure(.staleInput)
                     } catch {
@@ -223,6 +299,63 @@ public actor DocumentDNAAnalysisPipeline {
                 failureReason: priority.first(where: failureReasons.contains)
             )
         }
+    }
+
+    private static func markFailure(
+        _ failureCode: DocumentDNAAnalysisFailureCode,
+        candidate: PendingDocumentDNAAnalysis,
+        target: DocumentDNAAnalysisTarget,
+        at date: Date,
+        markAnalysisFailed: @escaping @Sendable (
+            PendingDocumentDNAAnalysis,
+            DocumentDNAAnalysisTarget,
+            DocumentDNAAnalysisFailureCode,
+            Date
+        ) async throws -> Void,
+        restoreAnalysisAfterInterruption: @escaping @Sendable (
+            PendingDocumentDNAAnalysis,
+            DocumentDNAAnalysisTarget
+        ) async throws -> Void
+    ) async -> DocumentDNAProcessingOutcome {
+        do {
+            try await markAnalysisFailed(candidate, target, failureCode, date)
+            return .failed
+        } catch is CancellationError {
+            return await restoreAfterCancellation(
+                candidate,
+                target: target,
+                restoreAnalysisAfterInterruption: restoreAnalysisAfterInterruption
+            )
+        } catch DocumentDNARepositoryError.staleInput {
+            return .runFailure(.staleInput)
+        } catch {
+            return .runFailure(.persistence)
+        }
+    }
+
+    private static func restoreAfterCancellation(
+        _ candidate: PendingDocumentDNAAnalysis,
+        target: DocumentDNAAnalysisTarget,
+        restoreAnalysisAfterInterruption: @escaping @Sendable (
+            PendingDocumentDNAAnalysis,
+            DocumentDNAAnalysisTarget
+        ) async throws -> Void
+    ) async -> DocumentDNAProcessingOutcome {
+        let restored = await Task {
+            do {
+                try await restoreAnalysisAfterInterruption(candidate, target)
+                return true
+            } catch {
+                return false
+            }
+        }.value
+        return .runFailure(restored ? .cancelled : .persistence)
+    }
+
+    private static func failureCode(
+        forAnalyzerError error: Error
+    ) -> DocumentDNAAnalysisFailureCode {
+        error is DocumentDNAValidationError ? .invalidFinding : .analysisFailure
     }
 }
 
