@@ -111,7 +111,7 @@
 
   Re-run the Step 2 command. Expected: every `DocumentDNADomainTests` case passes without warnings.
 
-- [ ] **Step 5: Commit the domain unit**
+- [x] **Step 5: Commit the domain unit**
 
   ```sh
   git add Sources/LinkLoomCore/Models/DocumentDNA.swift \
@@ -148,7 +148,7 @@
 
   `LocalRulesDocumentDNAAnalyzer` publishes `schemaVersion = 1`, `analyzerIdentifier = "local-rules"`, and `analyzerVersion = "1"`.
 
-- [ ] **Step 1: Write failing analyzer behavior tests**
+- [x] **Step 1: Write failing analyzer behavior tests**
 
   Add independent literal tests for:
 
@@ -163,13 +163,13 @@
 
   Each assertion uses literal normalized values, offsets, excerpts, confidence values, and region indexes. The production change each test catches is a missing/wrong matching, normalization, provenance, collapse, or sorting rule.
 
-- [ ] **Step 2: Run the focused test and verify RED**
+- [x] **Step 2: Run the focused test and verify RED**
 
   Run the fallback test command from Task 1 with `--filter LocalRulesDocumentDNAAnalyzerTests`.
 
   Expected: compilation fails because the analyzer protocol and implementation do not exist.
 
-- [ ] **Step 3: Implement the pure analyzer**
+- [x] **Step 3: Implement the pure analyzer**
 
   Implement page-local Foundation regular-expression rules with these boundaries:
 
@@ -184,7 +184,7 @@
 
   The implementation performs no file, database, network, application-layer, locale-model, or `NaturalLanguage` work.
 
-- [ ] **Step 4: Run the focused test and verify GREEN**
+- [x] **Step 4: Run the focused test and verify GREEN**
 
   Re-run the Step 2 command. Expected: every analyzer unit case passes without warnings.
 
