@@ -218,6 +218,61 @@ public actor DocumentDNARepository {
         }
     }
 
+    public func restoreAnalysisAfterInterruption(
+        _ candidate: PendingDocumentDNAAnalysis,
+        target: DocumentDNAAnalysisTarget
+    ) async throws {
+        try await dbWriter.write { db in
+            try db.execute(
+                sql: """
+                    DELETE FROM documentDNAAnalysisState
+                    WHERE documentID = ?
+                        AND targetSchemaVersion = ?
+                        AND targetAnalyzerIdentifier = ?
+                        AND targetAnalyzerVersion = ?
+                        AND inputContentHash = ?
+                        AND inputExtractionVersion = ?
+                        AND status = 'analyzing'
+                    """,
+                arguments: [
+                    candidate.document.id,
+                    target.schemaVersion,
+                    target.analyzerIdentifier,
+                    target.analyzerVersion,
+                    candidate.document.contentHash,
+                    candidate.extraction.analysisVersion,
+                ]
+            )
+        }
+    }
+
+    public func recoverInterruptedAnalysis(sourceRootID: UUID) async throws {
+        try await dbWriter.write { db in
+            try db.execute(
+                sql: """
+                    DELETE FROM documentDNAAnalysisState
+                    WHERE status = 'analyzing'
+                        AND documentID IN (
+                            SELECT id FROM document WHERE sourceRootID = ?
+                        )
+                    """,
+                arguments: [sourceRootID]
+            )
+        }
+    }
+
+    public func retryFailedAnalysis(documentID: UUID) async throws {
+        try await dbWriter.write { db in
+            try db.execute(
+                sql: """
+                    DELETE FROM documentDNAAnalysisState
+                    WHERE documentID = ? AND status = 'failed'
+                    """,
+                arguments: [documentID]
+            )
+        }
+    }
+
     public func replace(_ snapshot: DocumentDNA) async throws {
         try await dbWriter.write { db in
             let analyzedAtStorage = snapshot.analyzedAt.timeIntervalSinceReferenceDate

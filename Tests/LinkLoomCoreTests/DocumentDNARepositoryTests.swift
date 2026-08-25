@@ -405,6 +405,152 @@ struct DocumentDNARepositoryTests {
         #expect(try await fixture.repository.storedSnapshot(documentID: candidate.document.id) == prior)
     }
 
+    @Test func interruptionRestorationIsExactAndIdempotent() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.make()
+        let candidate = try #require(try await fixture.repository.pendingAnalysis(
+            sourceRootID: fixture.source.id,
+            target: fixture.target,
+            limit: 1
+        ).first)
+        try await fixture.repository.beginAnalysis(candidate, target: fixture.target, at: .now)
+
+        try await fixture.repository.restoreAnalysisAfterInterruption(
+            candidate,
+            target: fixture.target
+        )
+        try await fixture.repository.restoreAnalysisAfterInterruption(
+            candidate,
+            target: fixture.target
+        )
+
+        #expect(try await fixture.analysisState(documentID: candidate.document.id) == nil)
+        #expect(try await fixture.repository.pendingAnalysis(
+            sourceRootID: fixture.source.id,
+            target: fixture.target,
+            limit: 1
+        ).map(\.document.id) == [candidate.document.id])
+    }
+
+    @Test func interruptionRestorationPreservesDifferentTuplesAndTerminalStates() async throws {
+        let differentTarget = try await DocumentDNARepositoryFixture.make()
+        let targetCandidate = try #require(try await differentTarget.repository.pendingAnalysis(
+            sourceRootID: differentTarget.source.id,
+            target: differentTarget.target,
+            limit: 1
+        ).first)
+        try await differentTarget.repository.beginAnalysis(
+            targetCandidate,
+            target: differentTarget.target,
+            at: .now
+        )
+        try await differentTarget.repository.restoreAnalysisAfterInterruption(
+            targetCandidate,
+            target: try differentTarget.target(analyzerVersion: "2")
+        )
+        #expect(try await differentTarget.analysisState(
+            documentID: targetCandidate.document.id
+        ) == LiteralAnalysisState(
+            schemaVersion: 1,
+            analyzerIdentifier: "local-rules",
+            analyzerVersion: "1",
+            contentHash: "hash-ready",
+            extractionVersion: "text-v1",
+            status: "analyzing",
+            failureCode: nil
+        ))
+
+        let differentInput = try await DocumentDNARepositoryFixture.make()
+        let inputCandidate = try #require(try await differentInput.repository.pendingAnalysis(
+            sourceRootID: differentInput.source.id,
+            target: differentInput.target,
+            limit: 1
+        ).first)
+        try await differentInput.repository.beginAnalysis(
+            inputCandidate,
+            target: differentInput.target,
+            at: .now
+        )
+        var changedDocument = inputCandidate.document
+        changedDocument.contentHash = "hash-different-candidate"
+        let changedCandidate = PendingDocumentDNAAnalysis(
+            document: changedDocument,
+            extraction: inputCandidate.extraction
+        )
+        try await differentInput.repository.restoreAnalysisAfterInterruption(
+            changedCandidate,
+            target: differentInput.target
+        )
+        #expect(try await differentInput.analysisState(
+            documentID: inputCandidate.document.id
+        ) == LiteralAnalysisState(
+            schemaVersion: 1,
+            analyzerIdentifier: "local-rules",
+            analyzerVersion: "1",
+            contentHash: "hash-ready",
+            extractionVersion: "text-v1",
+            status: "analyzing",
+            failureCode: nil
+        ))
+
+        for status in ["ready", "failed"] {
+            let terminal = try await DocumentDNARepositoryFixture.make()
+            let terminalCandidate = try #require(try await terminal.repository.pendingAnalysis(
+                sourceRootID: terminal.source.id,
+                target: terminal.target,
+                limit: 1
+            ).first)
+            try await terminal.repository.beginAnalysis(
+                terminalCandidate,
+                target: terminal.target,
+                at: .now
+            )
+            try await terminal.changeAnalysisStateStatus(
+                to: status,
+                failureCode: status == "failed" ? "analysisFailure" : nil
+            )
+            try await terminal.repository.restoreAnalysisAfterInterruption(
+                terminalCandidate,
+                target: terminal.target
+            )
+            #expect(try await terminal.analysisState(
+                documentID: terminalCandidate.document.id
+            ) == LiteralAnalysisState(
+                schemaVersion: 1,
+                analyzerIdentifier: "local-rules",
+                analyzerVersion: "1",
+                contentHash: "hash-ready",
+                extractionVersion: "text-v1",
+                status: status,
+                failureCode: status == "failed" ? "analysisFailure" : nil
+            ))
+        }
+    }
+
+    @Test func recoveryRemovesOnlyAnalyzingAttemptsForRequestedSource() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.makeWithTwoSourcesAndStates()
+
+        try await fixture.repository.recoverInterruptedAnalysis(sourceRootID: fixture.source.id)
+        try await fixture.repository.recoverInterruptedAnalysis(sourceRootID: fixture.source.id)
+
+        #expect(try await fixture.analysisStatus(relativePath: "source-a-analyzing.pdf") == nil)
+        #expect(try await fixture.analysisStatus(relativePath: "source-a-failed.pdf") == "failed")
+        #expect(try await fixture.analysisStatus(relativePath: "source-a-ready.pdf") == "ready")
+        #expect(try await fixture.analysisStatus(relativePath: "source-b-analyzing.pdf") == "analyzing")
+    }
+
+    @Test func retryIsIdempotentAndClearsOnlyFailedState() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.makeWithRetryStates()
+        let failedID = try #require(await fixture.documentID(relativePath: "failed.pdf"))
+
+        try await fixture.repository.retryFailedAnalysis(documentID: failedID)
+        try await fixture.repository.retryFailedAnalysis(documentID: failedID)
+
+        #expect(try await fixture.analysisStatus(relativePath: "failed.pdf") == nil)
+        #expect(try await fixture.analysisStatus(relativePath: "ready.pdf") == "ready")
+        #expect(try await fixture.analysisStatus(relativePath: "analyzing.pdf") == "analyzing")
+        #expect(try await fixture.repository.storedSnapshot(documentID: failedID) != nil)
+    }
+
     @Test func replaceRoundTripsCompleteSnapshotAndMarksMatchingStateReady() async throws {
         let fixture = try await DocumentDNARepositoryFixture.make()
         let snapshot = try await fixture.snapshot()
@@ -843,6 +989,61 @@ private struct DocumentDNARepositoryFixture {
         return fixture
     }
 
+    static func makeWithTwoSourcesAndStates() async throws -> Self {
+        var fixture = try await makeEmpty()
+        let sourceAAnalyzing = try await fixture.insertDocument(
+            relativePath: "source-a-analyzing.pdf",
+            contentHash: "hash-source-a-analyzing"
+        )
+        let sourceAFailed = try await fixture.insertDocument(
+            relativePath: "source-a-failed.pdf",
+            contentHash: "hash-source-a-failed"
+        )
+        let sourceAReady = try await fixture.insertDocument(
+            relativePath: "source-a-ready.pdf",
+            contentHash: "hash-source-a-ready"
+        )
+        let sourceBAnalyzing = try await fixture.insertDocument(
+            sourceRootID: fixture.otherSource.id,
+            relativePath: "source-b-analyzing.pdf",
+            contentHash: "hash-source-b-analyzing"
+        )
+        try await fixture.insertAnalysisState(document: sourceAAnalyzing, status: "analyzing")
+        try await fixture.insertAnalysisState(
+            document: sourceAFailed,
+            status: "failed",
+            failureCode: "analysisFailure"
+        )
+        try await fixture.insertAnalysisState(document: sourceAReady, status: "ready")
+        try await fixture.insertAnalysisState(document: sourceBAnalyzing, status: "analyzing")
+        return fixture
+    }
+
+    static func makeWithRetryStates() async throws -> Self {
+        var fixture = try await makeEmpty()
+        let failed = try await fixture.insertDocument(
+            relativePath: "failed.pdf",
+            contentHash: "hash-failed"
+        )
+        let ready = try await fixture.insertDocument(
+            relativePath: "ready.pdf",
+            contentHash: "hash-ready"
+        )
+        let analyzing = try await fixture.insertDocument(
+            relativePath: "analyzing.pdf",
+            contentHash: "hash-analyzing"
+        )
+        try await fixture.repository.replace(try await fixture.snapshot(document: failed))
+        try await fixture.changeAnalysisStateStatus(
+            documentID: failed.id,
+            to: "failed",
+            failureCode: "analysisFailure"
+        )
+        try await fixture.insertAnalysisState(document: ready, status: "ready")
+        try await fixture.insertAnalysisState(document: analyzing, status: "analyzing")
+        return fixture
+    }
+
     private static func makeEmpty() async throws -> Self {
         let db = try TestDatabase.make()
         let source = SourceRootRecord(
@@ -981,6 +1182,20 @@ private struct DocumentDNARepositoryFixture {
         analyzedAt: Date? = nil
     ) async throws -> DocumentDNA {
         let document = try await readyDocument()
+        return try await snapshot(
+            document: document,
+            analyzerVersion: analyzerVersion,
+            classificationEvidence: classificationEvidence,
+            analyzedAt: analyzedAt
+        )
+    }
+
+    func snapshot(
+        document: DocumentRecord,
+        analyzerVersion: String = "1",
+        classificationEvidence: DocumentDNAEvidence? = nil,
+        analyzedAt: Date? = nil
+    ) async throws -> DocumentDNA {
         let classificationEvidence = try classificationEvidence ?? DocumentDNAEvidence(
             pageIndex: 0,
             startUTF16: 0,
@@ -1063,6 +1278,31 @@ private struct DocumentDNARepositoryFixture {
                     WHERE documentID = ?
                     """,
                 arguments: [documentID]
+            )
+        }
+    }
+
+    func analysisStatus(relativePath: String) async throws -> String? {
+        try await db.read { database in
+            try String.fetchOne(
+                database,
+                sql: """
+                    SELECT documentDNAAnalysisState.status
+                    FROM documentDNAAnalysisState
+                    JOIN document ON document.id = documentDNAAnalysisState.documentID
+                    WHERE document.relativePath = ?
+                    """,
+                arguments: [relativePath]
+            )
+        }
+    }
+
+    func documentID(relativePath: String) async -> UUID? {
+        try? await db.read { database in
+            try UUID.fetchOne(
+                database,
+                sql: "SELECT id FROM document WHERE relativePath = ?",
+                arguments: [relativePath]
             )
         }
     }
@@ -1152,12 +1392,31 @@ private struct DocumentDNARepositoryFixture {
         }
     }
 
-    func changeAnalysisStateStatus(to status: String) async throws {
+    func changeAnalysisStateStatus(
+        to status: String,
+        failureCode: String? = nil
+    ) async throws {
         let document = try await readyDocument()
+        try await changeAnalysisStateStatus(
+            documentID: document.id,
+            to: status,
+            failureCode: failureCode
+        )
+    }
+
+    func changeAnalysisStateStatus(
+        documentID: UUID,
+        to status: String,
+        failureCode: String? = nil
+    ) async throws {
         try await db.write { database in
             try database.execute(
-                sql: "UPDATE documentDNAAnalysisState SET status = ? WHERE documentID = ?",
-                arguments: [status, document.id]
+                sql: """
+                    UPDATE documentDNAAnalysisState
+                    SET status = ?, failureCode = ?
+                    WHERE documentID = ?
+                    """,
+                arguments: [status, failureCode, documentID]
             )
         }
     }
