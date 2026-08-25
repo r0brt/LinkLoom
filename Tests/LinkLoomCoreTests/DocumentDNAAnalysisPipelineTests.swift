@@ -675,6 +675,113 @@ struct DocumentDNAAnalysisPipelineTests {
         ])
     }
 
+    @Test(arguments: SnapshotIdentityMismatch.allCases)
+    func mismatchedAnalyzerSnapshotIdentityFailsOriginalAttempt(
+        mismatch: SnapshotIdentityMismatch
+    ) async throws {
+        let fixture = try await DocumentDNAAnalysisPipelineFixture.make(
+            documentCount: 1,
+            seedPriorSnapshots: true
+        )
+        let documentID = fixture.documentIDs[0]
+        let priorSnapshot = try #require(
+            try await fixture.repository.storedSnapshot(documentID: documentID)
+        )
+        let analyzer = IdentityViolatingDocumentDNAAnalyzer(
+            target: fixture.target,
+            mismatch: mismatch
+        )
+        let queryGuard = BoundedPendingQuery(maximumCallCount: 2)
+        let repository = fixture.repository
+        let pipeline = fixture.makeInjectedPipeline(
+            analyzer: analyzer,
+            pendingAnalysis: { sourceRootID, target, limit in
+                try await queryGuard.recordCall()
+                return try await repository.pendingAnalysis(
+                    sourceRootID: sourceRootID,
+                    target: target,
+                    limit: limit
+                )
+            }
+        )
+
+        let report = try await pipeline.processPending(
+            sourceRootID: fixture.source.id,
+            limit: 1
+        )
+
+        #expect(report == DocumentDNAAnalysisReport(completed: 0, failed: 1))
+        #expect(try await fixture.failureCodesInPathOrder() == ["analysisFailure"])
+        #expect(try await fixture.repository.storedSnapshot(
+            documentID: documentID
+        ) == priorSnapshot)
+        let rerun = fixture.makeInjectedPipeline(analyzer: analyzer)
+        #expect(try await rerun.processPending(
+            sourceRootID: fixture.source.id,
+            limit: 1
+        ) == DocumentDNAAnalysisReport(completed: 0, failed: 0))
+    }
+
+    @Test func mismatchedAnalyzerDocumentIDCannotWriteSiblingSnapshot() async throws {
+        let fixture = try await DocumentDNAAnalysisPipelineFixture.make(
+            documentCount: 2,
+            seedPriorSnapshots: true
+        )
+        let originalID = fixture.documentIDs[0]
+        let siblingID = fixture.documentIDs[1]
+        let originalPrior = try #require(
+            try await fixture.repository.storedSnapshot(documentID: originalID)
+        )
+        let siblingPrior = try #require(
+            try await fixture.repository.storedSnapshot(documentID: siblingID)
+        )
+        try await fixture.db.write { database in
+            try database.execute(
+                sql: "UPDATE document SET contentHash = ? WHERE id = ?",
+                arguments: ["hash-0", siblingID]
+            )
+        }
+        let analyzer = IdentityViolatingDocumentDNAAnalyzer(
+            target: fixture.target,
+            replacementDocumentID: siblingID
+        )
+        let repository = fixture.repository
+        let originalOnlyPending: PendingAnalysisClosure = { sourceRootID, target, limit in
+            let candidates = try await repository.pendingAnalysis(
+                sourceRootID: sourceRootID,
+                target: target,
+                limit: max(limit, 2)
+            )
+            return Array(candidates.filter { $0.document.id == originalID }.prefix(limit))
+        }
+        let pipeline = fixture.makeInjectedPipeline(
+            analyzer: analyzer,
+            pendingAnalysis: originalOnlyPending
+        )
+
+        let report = try await pipeline.processPending(
+            sourceRootID: fixture.source.id,
+            limit: 1
+        )
+
+        #expect(report == DocumentDNAAnalysisReport(completed: 0, failed: 1))
+        #expect(try await fixture.failureCodesInPathOrder() == ["analysisFailure", nil])
+        #expect(try await fixture.repository.storedSnapshot(
+            documentID: originalID
+        ) == originalPrior)
+        #expect(try await fixture.repository.storedSnapshot(
+            documentID: siblingID
+        ) == siblingPrior)
+        let rerun = fixture.makeInjectedPipeline(
+            analyzer: analyzer,
+            pendingAnalysis: originalOnlyPending
+        )
+        #expect(try await rerun.processPending(
+            sourceRootID: fixture.source.id,
+            limit: 1
+        ) == DocumentDNAAnalysisReport(completed: 0, failed: 0))
+    }
+
     @Test func initialPendingQueryFailureThrowsZeroPartialReport() async throws {
         let fixture = try await DocumentDNAAnalysisPipelineFixture.make(documentCount: 1)
         let pipeline = fixture.makeInjectedPipeline(
@@ -1452,6 +1559,76 @@ private enum SyntheticAnalyzerError: Error {
 
 private enum SyntheticPersistenceError: Error {
     case failed
+}
+
+enum SnapshotIdentityMismatch: CaseIterable, Sendable {
+    case schemaVersion
+    case analyzerIdentifier
+    case analyzerVersion
+    case inputContentHash
+    case inputExtractionVersion
+}
+
+private struct IdentityViolatingDocumentDNAAnalyzer: DocumentDNAAnalyzing {
+    let target: DocumentDNAAnalysisTarget
+    var mismatch: SnapshotIdentityMismatch?
+    var replacementDocumentID: UUID?
+
+    init(
+        target: DocumentDNAAnalysisTarget,
+        mismatch: SnapshotIdentityMismatch? = nil,
+        replacementDocumentID: UUID? = nil
+    ) {
+        self.target = target
+        self.mismatch = mismatch
+        self.replacementDocumentID = replacementDocumentID
+    }
+
+    func analyze(
+        documentID: UUID,
+        contentHash: String,
+        extraction: StoredExtraction,
+        analyzedAt: Date
+    ) throws -> DocumentDNA {
+        let returnedTarget = try DocumentDNAAnalysisTarget(
+            schemaVersion: mismatch == .schemaVersion
+                ? target.schemaVersion + 1
+                : target.schemaVersion,
+            analyzerIdentifier: mismatch == .analyzerIdentifier
+                ? "wrong-analyzer"
+                : target.analyzerIdentifier,
+            analyzerVersion: mismatch == .analyzerVersion
+                ? "wrong-version"
+                : target.analyzerVersion
+        )
+        return try makeDocumentDNASnapshot(
+            documentID: replacementDocumentID ?? documentID,
+            target: returnedTarget,
+            contentHash: mismatch == .inputContentHash
+                ? "wrong-content-hash"
+                : contentHash,
+            extractionVersion: mismatch == .inputExtractionVersion
+                ? "wrong-extraction-version"
+                : extraction.analysisVersion,
+            analyzedAt: analyzedAt
+        )
+    }
+}
+
+private actor BoundedPendingQuery {
+    private let maximumCallCount: Int
+    private var callCount = 0
+
+    init(maximumCallCount: Int) {
+        self.maximumCallCount = maximumCallCount
+    }
+
+    func recordCall() throws {
+        callCount += 1
+        guard callCount <= maximumCallCount else {
+            throw SyntheticPersistenceError.failed
+        }
+    }
 }
 
 private struct SnapshotRowCounts: Equatable {

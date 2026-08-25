@@ -288,6 +288,21 @@ public actor DocumentDNAAnalysisPipeline {
                             )
                         }
                         try Task.checkCancellation()
+                        guard matchesExpectedIdentity(
+                            snapshot,
+                            candidate: candidate,
+                            target: target
+                        ) else {
+                            return await markFailure(
+                                .analysisFailure,
+                                candidate: candidate,
+                                target: target,
+                                at: analyzedAt,
+                                markAnalysisFailed: markAnalysisFailed,
+                                restoreAnalysisAfterInterruption:
+                                    restoreAnalysisAfterInterruption
+                            )
+                        }
                         try Task.checkCancellation()
                         do {
                             try await replace(snapshot)
@@ -342,6 +357,19 @@ public actor DocumentDNAAnalysisPipeline {
                 failureReason: priority.first(where: failureReasons.contains)
             )
         }
+    }
+
+    private static func matchesExpectedIdentity(
+        _ snapshot: DocumentDNA,
+        candidate: PendingDocumentDNAAnalysis,
+        target: DocumentDNAAnalysisTarget
+    ) -> Bool {
+        snapshot.documentID == candidate.document.id
+            && snapshot.schemaVersion == target.schemaVersion
+            && snapshot.analyzerIdentifier == target.analyzerIdentifier
+            && snapshot.analyzerVersion == target.analyzerVersion
+            && snapshot.inputContentHash == candidate.document.contentHash
+            && snapshot.inputExtractionVersion == candidate.extraction.analysisVersion
     }
 
     private static func markFailure(
