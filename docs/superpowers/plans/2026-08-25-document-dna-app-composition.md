@@ -168,7 +168,7 @@ Run the Step 2 command again.
 
 Expected: all `AppCompositionTests` pass, with the literal manual and watcher event order, failure propagation, and cancellation behavior verified.
 
-- [ ] **Step 5: Commit the focused executable composition**
+- [x] **Step 5: Commit the focused executable composition**
 
 ```sh
 git add Package.swift Sources/LinkLoomApp/LinkLoomApp.swift \
@@ -188,12 +188,14 @@ git commit -m "feat(app): compose local document DNA analysis"
 - Consumes: existing real UI workflow, v5 `documentDNA`, `documentDNAFinding`, `documentDNAEvidence`, and `documentDNAAnalysisState` tables.
 - Produces: read-only evidence that both successfully extracted fixture documents receive complete local-rules DNA snapshots and all DNA rows cascade when the source is removed.
 
-- [ ] **Step 1: Add durable DNA acceptance evidence**
+- [x] **Step 1: Add durable DNA acceptance evidence**
 
 Extend `SmokeDatabaseEvidence` with literal counts:
 
 ```swift
 let dnaSnapshotCount: Int
+let dnaFindingCount: Int
+let dnaAnalysisStateCount: Int
 let dnaReadyStateCount: Int
 let dnaClassificationCount: Int
 let localRulesSnapshotCount: Int
@@ -202,7 +204,7 @@ let dnaEvidenceCount: Int
 
 Collect them using read-only SQL. Require two snapshots, two matching ready states, two document-type findings, and two `local-rules` v1 snapshot headers in `matchesCompletedWorkflow`. The fixture text intentionally produces `unknown` classification, so require zero DNA evidence rows. In `matchesRemovedWorkflow`, require all four DNA tables to contain zero rows after source removal.
 
-- [ ] **Step 2: Record the local full-Xcode verification boundary**
+- [x] **Step 2: Record the local full-Xcode verification boundary**
 
 The executable composition already followed a behavior-test RED/GREEN cycle in Task 1. The process-level smoke assertion is additional acceptance coverage and requires full Xcode, which is unavailable on the local Command-Line-Tools host. Run the authoritative command to capture that environment limitation without weakening the assertion:
 
@@ -217,11 +219,11 @@ xcodebuild test \
 
 Expected locally: `xcodebuild` reports that full Xcode is unavailable. Expected in CI: the smoke test passes only when the composition-root wiring produces two DNA snapshots.
 
-- [ ] **Step 3: Run available focused verification**
+- [x] **Step 3: Run available focused verification**
 
 Run `swift test --filter AppCompositionTests` and `swift build`. Confirm the modified smoke support compiles through the authoritative Xcode job; do not weaken or skip the CI assertion because the local host lacks full Xcode.
 
-- [ ] **Step 4: Commit the smoke acceptance evidence**
+- [x] **Step 4: Commit the smoke acceptance evidence**
 
 ```sh
 git add LinkLoomUITests/Support/SQLiteProbe.swift
