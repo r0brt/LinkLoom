@@ -221,6 +221,31 @@ struct DocumentDNADomainTests {
         }
     }
 
+    @Test func monetaryAmountAcceptsISO4217FundsCodesBeyondCommonTender() throws {
+        let finding = try DocumentDNAFinding(
+            kind: .monetaryAmount,
+            qualifier: "CHE",
+            displayValue: "CHE 10.00",
+            normalizedValue: "10",
+            secondaryNormalizedValue: nil,
+            confidence: 1,
+            evidence: [try sampleEvidence()]
+        )
+
+        #expect(finding.qualifier == "CHE")
+        #expect(throws: DocumentDNAValidationError.invalidFinding) {
+            try DocumentDNAFinding(
+                kind: .monetaryAmount,
+                qualifier: "ZZZ",
+                displayValue: "ZZZ 10.00",
+                normalizedValue: "10",
+                secondaryNormalizedValue: nil,
+                confidence: 1,
+                evidence: [try sampleEvidence()]
+            )
+        }
+    }
+
     @Test func findingsRejectMalformedNormalizedValues() throws {
         let evidence = try sampleEvidence()
 

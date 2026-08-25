@@ -276,7 +276,7 @@
 
   Run the fallback suite filtered separately to `DocumentDNADomainTests`, `LocalRulesDocumentDNAAnalyzerTests`, and `DocumentDNAGoldenTests`.
 
-- [ ] **Step 2: Run complete verification**
+- [x] **Step 2: Run complete verification**
 
   ```sh
   swift test --disable-sandbox --enable-swift-testing \
@@ -292,11 +292,11 @@
 
   Expected: all non-opt-in tests and the release build pass; diff checks are silent; status contains only the planned analyzer/domain/golden files.
 
-- [ ] **Step 3: Review scope and privacy**
+- [x] **Step 3: Review scope and privacy**
 
   Inspect `git diff origin/main...HEAD` and confirm no persistence, pipeline, app, UI, network, dependency, source-file, real-personal-data, database, build-artifact, or generated-file change entered the branch.
 
-- [ ] **Step 4: Request review and resolve findings**
+- [x] **Step 4: Request review and resolve findings**
 
   Review the branch against this plan and the design. Resolve all critical and important findings, rerun the relevant focused test after every behavior fix, then repeat Step 2.
 

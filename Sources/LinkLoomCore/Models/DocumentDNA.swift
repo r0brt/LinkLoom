@@ -205,7 +205,7 @@ public struct DocumentDNAFinding: Codable, Sendable, Equatable {
         if value == "unknown" {
             return true
         }
-        return Locale.commonISOCurrencyCodes.contains(value)
+        return Locale.Currency(value).isISOCurrency
     }
 
     private static func isCanonicalDecimal(_ value: String) -> Bool {

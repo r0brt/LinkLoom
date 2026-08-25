@@ -113,6 +113,29 @@ struct LocalRulesDocumentDNAAnalyzerTests {
         ])
     }
 
+    @Test func acceptsOneDecimalDigitAndRejectsMalformedAmountGrouping() throws {
+        let text = """
+            Rechnung
+            Rundung: CHF 10,5
+            Standard DE: CHF 1.250,00
+            Standard EN: EUR 1,250.00
+            Invalid: CHF 1,23,456
+            """
+
+        let amounts = try analyze(text).findings.filter { $0.kind == .monetaryAmount }
+
+        #expect(amounts.map(\.normalizedValue) == ["10.5", "1250", "1250"])
+    }
+
+    @Test func referenceEmbeddedISODateIsNotAnUnlabelledDate() throws {
+        let result = try analyze("Rechnung\nRechnungsnummer: INV-2026-08-03")
+
+        #expect(result.findings.filter { $0.kind == .date }.isEmpty)
+        #expect(result.findings.filter { $0.kind == .referenceNumber }.map(\.normalizedValue) == [
+            "INV-2026-08-03",
+        ])
+    }
+
     @Test func extractsEverySupportedLabelledReferenceKind() throws {
         let text = """
             Rechnung

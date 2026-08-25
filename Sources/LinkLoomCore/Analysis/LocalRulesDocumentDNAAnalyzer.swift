@@ -4,6 +4,7 @@ public struct LocalRulesDocumentDNAAnalyzer: DocumentDNAAnalyzing {
     public static let schemaVersion = 1
     public static let analyzerIdentifier = "local-rules"
     public static let analyzerVersion = "1"
+    private static let labelledReferencePattern = #"(?mi)^(Vertragsnummer|Rechnungsnummer|Policennummer|Schadennummer|Kundennummer|Zahlungsreferenz|Referenz):[ \t]*([A-Z0-9][A-Z0-9 ./-]*?)[ \t]*$"#
 
     public init() {}
 
@@ -197,6 +198,11 @@ public struct LocalRulesDocumentDNAAnalyzer: DocumentDNAAnalyzing {
         var candidates = [Candidate]()
         var claimedRanges = [Int: [NSRange]]()
         for page in pages {
+            for match in matches(Self.labelledReferencePattern, in: page.text) {
+                claimedRanges[page.pageIndex, default: []].append(match.range(at: 2))
+            }
+        }
+        for page in pages {
             let source = page.text as NSString
             for match in matches(labelledPattern, in: page.text) {
                 let startRange = match.range(at: 2)
@@ -293,7 +299,6 @@ public struct LocalRulesDocumentDNAAnalyzer: DocumentDNAAnalyzing {
     }
 
     private func references(in pages: [ExtractedPage]) throws -> [Candidate] {
-        let pattern = #"(?mi)^(Vertragsnummer|Rechnungsnummer|Policennummer|Schadennummer|Kundennummer|Zahlungsreferenz|Referenz):[ \t]*([A-Z0-9][A-Z0-9 ./-]*?)[ \t]*$"#
         let kinds: [String: DocumentDNAReferenceNumberKind] = [
             "vertragsnummer": .contractNumber,
             "rechnungsnummer": .invoiceNumber,
@@ -306,7 +311,7 @@ public struct LocalRulesDocumentDNAAnalyzer: DocumentDNAAnalyzing {
         var candidates = [Candidate]()
         for page in pages {
             let source = page.text as NSString
-            for match in matches(pattern, in: page.text) {
+            for match in matches(Self.labelledReferencePattern, in: page.text) {
                 let label = source.substring(with: match.range(at: 1))
                     .lowercased(with: Locale(identifier: "en_US_POSIX"))
                 let valueRange = match.range(at: 2)
@@ -467,28 +472,31 @@ public struct LocalRulesDocumentDNAAnalyzer: DocumentDNAAnalyzing {
     }
 
     private func normalizeAmount(_ value: String) -> String? {
-        let compact = value.filter {
-            !$0.isWhitespace && $0 != "'" && $0 != "’"
-        }
-        let separators = compact.indices.filter { compact[$0] == "." || compact[$0] == "," }
-        var canonical = compact
-        if let last = separators.last {
-            let fractionalCount = compact.distance(from: compact.index(after: last), to: compact.endIndex)
-            if fractionalCount == 2 {
-                let decimalCharacter = compact[last]
-                canonical = String(compact.enumerated().compactMap { offset, character in
-                    let index = compact.index(compact.startIndex, offsetBy: offset)
-                    if character == "." || character == "," {
-                        return index == last ? "." : nil
-                    }
-                    return String(character)
-                }.joined())
-                if decimalCharacter != "." && decimalCharacter != "," {
-                    return nil
-                }
-            } else {
-                canonical.removeAll { $0 == "." || $0 == "," }
-            }
+        let normalizedSpaces = String(value.map { $0.isWhitespace ? " " : $0 })
+        let canonical: String
+        if matchesEntire(#"[0-9]+(?:[.,][0-9]{1,2})?"#, value: normalizedSpaces) {
+            canonical = normalizedSpaces.replacingOccurrences(of: ",", with: ".")
+        } else if matchesEntire(
+            #"[0-9]{1,3}(?:['’ ][0-9]{3})+(?:[.,][0-9]{1,2})?"#,
+            value: normalizedSpaces
+        ) {
+            canonical = normalizedSpaces
+                .filter { $0 != "'" && $0 != "’" && !$0.isWhitespace }
+                .replacingOccurrences(of: ",", with: ".")
+        } else if matchesEntire(
+            #"[0-9]{1,3}(?:\.[0-9]{3})+(?:,[0-9]{1,2})?"#,
+            value: normalizedSpaces
+        ) {
+            canonical = normalizedSpaces
+                .replacingOccurrences(of: ".", with: "")
+                .replacingOccurrences(of: ",", with: ".")
+        } else if matchesEntire(
+            #"[0-9]{1,3}(?:,[0-9]{3})+(?:\.[0-9]{1,2})?"#,
+            value: normalizedSpaces
+        ) {
+            canonical = normalizedSpaces.replacingOccurrences(of: ",", with: "")
+        } else {
+            return nil
         }
         guard let decimal = Decimal(
             string: canonical,
@@ -497,6 +505,13 @@ public struct LocalRulesDocumentDNAAnalyzer: DocumentDNAAnalyzing {
             return nil
         }
         return NSDecimalNumber(decimal: decimal).stringValue
+    }
+
+    private func matchesEntire(_ pattern: String, value: String) -> Bool {
+        value.range(
+            of: "^(?:" + pattern + ")$",
+            options: .regularExpression
+        ) != nil
     }
 
     private func candidateSort(_ lhs: Candidate, _ rhs: Candidate) -> Bool {
