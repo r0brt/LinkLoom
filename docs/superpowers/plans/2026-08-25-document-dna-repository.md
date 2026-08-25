@@ -481,6 +481,6 @@ Inspect the complete diff and confirm it contains only `.gitignore`, the impleme
 
 Review against sections 6, 8, 10, 11, and 13.2 of the accepted spec. Resolve every Important/Critical finding with a new failing regression test before changing production code, then repeat Steps 1-4.
 
-- [ ] **Step 6: Push and create the focused pull request**
+- [x] **Step 6: Push and create the focused pull request**
 
 Use a Conventional Commit PR title at most 72 characters. Report exact local/CI verification, explain the local-only privacy boundary, state that v5 is reused with no migration, identify additive API compatibility and rollback risk, and explain any diff above 500 lines. Do not merge without a separate explicit authorization after required checks pass.
