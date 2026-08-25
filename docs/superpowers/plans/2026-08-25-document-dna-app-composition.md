@@ -275,11 +275,11 @@ git diff origin/main...HEAD
 
 Confirm there are no source files, databases, `.build/`, `.superpowers/`, secrets, dependency changes, schema changes, UI changes, or unrelated cleanup.
 
-- [ ] **Step 5: Request independent read-only review**
+- [x] **Step 5: Request independent read-only review**
 
 Dispatch a fresh reviewer with `BASE_SHA=$(git rev-parse origin/main)` and `HEAD_SHA=$(git rev-parse HEAD)`. Require review of ordering, cancellation, source coordination, error propagation, privacy, actor isolation, test quality, and scope. Resolve every Critical or Important finding and rerun affected verification.
 
-- [ ] **Step 6: Report handoff without push or merge**
+- [x] **Step 6: Report handoff without push or merge**
 
 Report branch, commits, exact verification, the local full-Xcode limitation, review verdict, and remaining GitHub CI requirement. Do not push, open/merge a pull request, change GitHub settings, or delete any branch without explicit authorization.
 
@@ -299,3 +299,6 @@ Report branch, commits, exact verification, the local full-Xcode limitation, rev
   watcher cancellation test was mutation-checked to fail without the catalog-to-
   processing cancellation checkpoint, and the smoke probe now checks joined DNA
   coherence rather than independent global counts.
+- Independent re-review of the corrected range reported no Critical, Important,
+  or Minor findings and returned `Ready to merge: Yes`. The authoritative
+  `Swift / UI smoke` CI check remains required before an actual merge.
