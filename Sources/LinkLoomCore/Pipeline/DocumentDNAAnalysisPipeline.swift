@@ -31,6 +31,8 @@ public struct DocumentDNAAnalysisRunError: Error, Sendable, Equatable {
 }
 
 public actor DocumentDNAAnalysisPipeline {
+    private static let coordinator = DocumentDNAAnalysisRunCoordinator()
+
     private let analyzer: any DocumentDNAAnalyzing
     private let target: DocumentDNAAnalysisTarget
     private let now: @Sendable () -> Date
@@ -139,6 +141,38 @@ public actor DocumentDNAAnalysisPipeline {
     ) async throws -> DocumentDNAAnalysisReport {
         let emptyReport = DocumentDNAAnalysisReport(completed: 0, failed: 0)
         guard limit > 0 else { return emptyReport }
+
+        do {
+            try await Self.coordinator.acquire(sourceRootID: sourceRootID)
+        } catch {
+            throw DocumentDNAAnalysisRunError(reason: .cancelled, partialReport: emptyReport)
+        }
+        do {
+            let report = try await processPendingExclusively(
+                sourceRootID: sourceRootID,
+                limit: limit
+            )
+            await Self.coordinator.release(sourceRootID: sourceRootID)
+            return report
+        } catch {
+            await Self.coordinator.release(sourceRootID: sourceRootID)
+            throw error
+        }
+    }
+
+    private func processPendingExclusively(
+        sourceRootID: UUID,
+        limit: Int
+    ) async throws -> DocumentDNAAnalysisReport {
+        let emptyReport = DocumentDNAAnalysisReport(completed: 0, failed: 0)
+
+        do {
+            try await recoverInterruptedAnalysis(sourceRootID)
+        } catch is CancellationError {
+            throw DocumentDNAAnalysisRunError(reason: .cancelled, partialReport: emptyReport)
+        } catch {
+            throw DocumentDNAAnalysisRunError(reason: .persistence, partialReport: emptyReport)
+        }
 
         var completed = 0
         var failed = 0
@@ -368,4 +402,61 @@ private enum DocumentDNAProcessingOutcome: Sendable {
 private struct DocumentDNABatchResult: Sendable {
     let report: DocumentDNAAnalysisReport
     let failureReason: DocumentDNAAnalysisRunFailureReason?
+}
+
+private actor DocumentDNAAnalysisRunCoordinator {
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Void, any Error>
+    }
+
+    private var activeSourceRootIDs = Set<UUID>()
+    private var waiters: [UUID: [Waiter]] = [:]
+
+    func acquire(sourceRootID: UUID) async throws {
+        try Task.checkCancellation()
+        if activeSourceRootIDs.insert(sourceRootID).inserted {
+            return
+        }
+        let waiterID = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation {
+                (continuation: CheckedContinuation<Void, any Error>) in
+                if Task.isCancelled {
+                    continuation.resume(throwing: CancellationError())
+                } else {
+                    waiters[sourceRootID, default: []].append(Waiter(
+                        id: waiterID,
+                        continuation: continuation
+                    ))
+                }
+            }
+        } onCancel: {
+            Task {
+                await self.cancelWaiter(id: waiterID, sourceRootID: sourceRootID)
+            }
+        }
+    }
+
+    func release(sourceRootID: UUID) {
+        guard var sourceWaiters = waiters[sourceRootID], !sourceWaiters.isEmpty else {
+            activeSourceRootIDs.remove(sourceRootID)
+            waiters[sourceRootID] = nil
+            return
+        }
+        let next = sourceWaiters.removeFirst()
+        waiters[sourceRootID] = sourceWaiters.isEmpty ? nil : sourceWaiters
+        next.continuation.resume()
+    }
+
+    private func cancelWaiter(id: UUID, sourceRootID: UUID) {
+        guard var sourceWaiters = waiters[sourceRootID],
+              let index = sourceWaiters.firstIndex(where: { $0.id == id })
+        else {
+            return
+        }
+        let waiter = sourceWaiters.remove(at: index)
+        waiters[sourceRootID] = sourceWaiters.isEmpty ? nil : sourceWaiters
+        waiter.continuation.resume(throwing: CancellationError())
+    }
 }
