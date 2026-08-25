@@ -222,7 +222,7 @@ public actor DocumentDNARepository {
                     snapshot.analyzerVersion,
                     snapshot.inputContentHash,
                     snapshot.inputExtractionVersion,
-                    analyzedAtStorage,
+                    snapshot.analyzedAt,
                 ]
             )
         }

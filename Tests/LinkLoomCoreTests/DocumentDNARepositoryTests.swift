@@ -128,6 +128,17 @@ struct DocumentDNARepositoryTests {
         ) == snapshot)
     }
 
+    @Test func readyStateKeepsGRDBDateStorageContract() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.make()
+        let snapshot = try await fixture.snapshot()
+
+        try await fixture.repository.replace(snapshot)
+
+        #expect(try await fixture.analysisStateUpdatedAt(
+            documentID: snapshot.documentID
+        ) == snapshot.analyzedAt)
+    }
+
     @Test func replacementIsVersionIdempotentAndDoesNotAppendChildren() async throws {
         let fixture = try await DocumentDNARepositoryFixture.make()
         let versionOne = try await fixture.snapshot()
@@ -716,6 +727,20 @@ private struct DocumentDNARepositoryFixture {
                 extractionVersion: row["inputExtractionVersion"],
                 status: row["status"],
                 failureCode: row["failureCode"]
+            )
+        }
+    }
+
+    func analysisStateUpdatedAt(documentID: UUID) async throws -> Date? {
+        try await db.read { database in
+            try Date.fetchOne(
+                database,
+                sql: """
+                    SELECT updatedAt
+                    FROM documentDNAAnalysisState
+                    WHERE documentID = ?
+                    """,
+                arguments: [documentID]
             )
         }
     }
