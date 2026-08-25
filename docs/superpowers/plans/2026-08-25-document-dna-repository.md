@@ -71,7 +71,7 @@ public actor DocumentDNARepository {
 }
 ```
 
-- [ ] **Step 1: Add the real in-memory fixture and failing pending-selection tests**
+- [x] **Step 1: Add the real in-memory fixture and failing pending-selection tests**
 
 Create `DocumentDNARepositoryTests.swift` with a `DocumentDNARepositoryFixture` that inserts one synthetic source, inserts `DocumentRecord` values directly through GRDB, and persists synthetic `ExtractedDocument` values through `ExtractionRepository.replace`. Use the literal page text `Rechnung\nBewohnerin: Elise Muster`, extraction version `text-v1`, and content hashes derived only from fixture literals.
 
@@ -119,7 +119,7 @@ struct DocumentDNARepositoryTests {
 
 The first test catches selecting discovered, unavailable, missing-extraction, or other-source rows. The second catches missing SQL ordering, source scope, limit handling, or a second read that mismatches a document with its extraction.
 
-- [ ] **Step 2: Add failing target/current-state selection tests**
+- [x] **Step 2: Add failing target/current-state selection tests**
 
 Seed snapshot and state rows directly in the fixture so the pending-query contract is tested independently from the later write API. Add literal cases proving:
 
@@ -162,13 +162,13 @@ Seed snapshot and state rows directly in the fixture so the pending-query contra
 
 The state-case fixture includes exact `failed` and exact `analyzing` attempts, which must not be returned; changing any target or input field makes the row eligible again. A matching completed snapshot is not pending regardless of a missing redundant state row.
 
-- [ ] **Step 3: Run the focused suite and verify RED**
+- [x] **Step 3: Run the focused suite and verify RED**
 
 Run the repository fallback test command with `--filter DocumentDNARepositoryTests`.
 
 Expected: compilation fails because `DocumentDNARepository`, `DocumentDNAAnalysisTarget`, `PendingDocumentDNAAnalysis`, and `DocumentDNARepositoryError` do not exist.
 
-- [ ] **Step 4: Implement the minimal target and coherent pending query**
+- [x] **Step 4: Implement the minimal target and coherent pending query**
 
 Create the three public value/error types and the actor. Validate the target with `schemaVersion > 0` plus non-blank identifier/version strings.
 
@@ -193,11 +193,11 @@ static func extraction(
 ) throws -> StoredExtraction?
 ```
 
-- [ ] **Step 5: Run focused tests and verify GREEN**
+- [x] **Step 5: Run focused tests and verify GREEN**
 
 Run the Step 3 command. Expected: all pending/target cases pass, and existing `ExtractionRepository` consumers still compile.
 
-- [ ] **Step 6: Commit the pending contract**
+- [x] **Step 6: Commit the pending contract**
 
 ```sh
 git add Sources/LinkLoomCore/Persistence/DocumentDNARepository.swift \
@@ -231,7 +231,7 @@ public func currentSnapshot(
 ) async throws -> DocumentDNA?
 ```
 
-- [ ] **Step 1: Add failing complete round-trip and state tests**
+- [x] **Step 1: Add failing complete round-trip and state tests**
 
 Create a literal valid snapshot containing:
 
@@ -263,7 +263,7 @@ Add:
 
 The expected snapshot is constructed independently from literal values, not by reading rows back into the expected value.
 
-- [ ] **Step 2: Add failing replacement/idempotence and rollback tests**
+- [x] **Step 2: Add failing replacement/idempotence and rollback tests**
 
 Add one reanalysis test that persists analyzer version `1`, proves target `1` has no pending candidate, proves target `2` has one, persists a version `2` snapshot, then asserts target `2` is empty and literal row counts are exactly header `1`, findings `2`, evidence `2`, state `1`.
 
@@ -278,7 +278,7 @@ Add one rollback test that:
 
 This test catches deleting the prior snapshot outside the transaction, appending children, or updating state before all evidence commits.
 
-- [ ] **Step 3: Add failing current-versus-stored read tests**
+- [x] **Step 3: Add failing current-versus-stored read tests**
 
 Add independent literal tests:
 
@@ -308,13 +308,13 @@ Add independent literal tests:
 
 Use a separate test for a changed catalog content hash so extraction-version and content-hash branches cannot mask each other.
 
-- [ ] **Step 4: Run the focused suite and verify RED**
+- [x] **Step 4: Run the focused suite and verify RED**
 
 Run the Task 1 focused command.
 
 Expected: compilation fails because `replace`, `storedSnapshot`, and `currentSnapshot` do not exist.
 
-- [ ] **Step 5: Implement complete transactional persistence and decoding**
+- [x] **Step 5: Implement complete transactional persistence and decoding**
 
 Inside one `dbWriter.write` transaction:
 
@@ -326,11 +326,11 @@ Inside one `dbWriter.write` transaction:
 
 Implement a single private row decoder that orders findings by `sortOrder`, evidence by `evidenceOrder`, JSON-decodes `[Int]`, and reconstructs values through the throwing domain initializers. `storedSnapshot` uses it directly. `currentSnapshot` first requires header target/input equality with the current `document.contentHash` and `documentExtraction.analysisVersion`; stale snapshots remain readable only through `storedSnapshot`.
 
-- [ ] **Step 6: Run focused tests and verify GREEN**
+- [x] **Step 6: Run focused tests and verify GREEN**
 
 Run the Task 1 focused command. Expected: round-trip, replacement, rollback, pending-idempotence, and current/stored read tests pass.
 
-- [ ] **Step 7: Commit atomic persistence and reads**
+- [x] **Step 7: Commit atomic persistence and reads**
 
 ```sh
 git add Sources/LinkLoomCore/Persistence/DocumentDNARepository.swift \
@@ -352,7 +352,7 @@ git commit -m "feat(dna): persist atomic snapshots"
 - Consumes: Task 2 `replace(_:)`, the snapshot input identity, and persisted extracted pages/regions.
 - Produces: `replace(_:)` throws `DocumentDNARepositoryError.staleInput` or `.invalidProvenance` before deleting the previous completed snapshot.
 
-- [ ] **Step 1: Add failing stale content-hash test**
+- [x] **Step 1: Add failing stale content-hash test**
 
 Persist the fixture snapshot, change only `document.contentHash` to `hash-changed`, then call `replace` with an analyzer-version-2 snapshot still bound to `hash-ready`.
 
@@ -367,33 +367,33 @@ await #expect(throws: DocumentDNARepositoryError.staleInput) {
 
 Also assert that a stale first write creates zero DNA/state rows.
 
-- [ ] **Step 2: Run the stale content test and verify RED**
+- [x] **Step 2: Run the stale content test and verify RED**
 
 Run the focused suite filtered to the stale-content test.
 
 Expected: the write succeeds or replaces the old snapshot instead of throwing `staleInput`.
 
-- [ ] **Step 3: Add the minimal transactional content-hash guard**
+- [x] **Step 3: Add the minimal transactional content-hash guard**
 
 Before any delete, fetch the current ready document and extraction inside the same write transaction. Require the current document ID and `contentHash` to equal the snapshot input. Throw `.staleInput` on absence, non-ready status, or mismatch.
 
-- [ ] **Step 4: Run the stale content test and verify GREEN**
+- [x] **Step 4: Run the stale content test and verify GREEN**
 
 Run the Step 2 command. Expected: stale write is rejected and the prior snapshot remains.
 
-- [ ] **Step 5: Add failing extraction-version stale test**
+- [x] **Step 5: Add failing extraction-version stale test**
 
 Persist the original snapshot, replace only the stored extraction version with `text-v2`, and attempt a version-2 DNA snapshot still bound to `text-v1`. Assert `.staleInput`, unchanged prior DNA/state, and unchanged document status.
 
-- [ ] **Step 6: Run the extraction-version test and verify RED**
+- [x] **Step 6: Run the extraction-version test and verify RED**
 
 Run only the extraction-version stale test. Expected: it succeeds because only content hash is guarded.
 
-- [ ] **Step 7: Add the minimal extraction-version guard and verify GREEN**
+- [x] **Step 7: Add the minimal extraction-version guard and verify GREEN**
 
 Require the current `documentExtraction.analysisVersion` to equal `snapshot.inputExtractionVersion` in the pre-delete transaction guard, then rerun the extraction-version test and the full focused repository suite.
 
-- [ ] **Step 8: Add failing literal-text and page provenance tests**
+- [x] **Step 8: Add failing literal-text and page provenance tests**
 
 Add separate snapshots whose domain values are valid but whose stored-page provenance is not:
 
@@ -403,23 +403,23 @@ Add separate snapshots whose domain values are valid but whose stored-page prove
 
 Each test asserts `.invalidProvenance`, no rows on a first write, and preservation of an existing snapshot on replacement.
 
-- [ ] **Step 9: Run the text/page provenance tests and verify RED**
+- [x] **Step 9: Run the text/page provenance tests and verify RED**
 
 Run the focused suite filtered to each new test. Expected: persistence accepts the domain-valid but source-invalid evidence.
 
-- [ ] **Step 10: Validate page/range/excerpt before replacement and verify GREEN**
+- [x] **Step 10: Validate page/range/excerpt before replacement and verify GREEN**
 
 For every evidence value, locate the persisted page by zero-based `pageIndex`; validate a positive in-bounds UTF-16 `NSRange`; slice `page.text as NSString`; require equality with `exactText`. Throw `.invalidProvenance` before deleting old rows. Rerun all Step 8 tests.
 
-- [ ] **Step 11: Add failing exact OCR-region provenance test**
+- [x] **Step 11: Add failing exact OCR-region provenance test**
 
 For the fixture extraction, supply classification evidence `(0, 8)` with OCR indexes `[1]` even though it intersects only region `0`. Add a second case with empty indexes. Both domain values are valid; both repository writes must throw `.invalidProvenance` and preserve prior data.
 
-- [ ] **Step 12: Run OCR provenance tests and verify RED**
+- [x] **Step 12: Run OCR provenance tests and verify RED**
 
 Run the two OCR cases. Expected: they persist because text-only provenance validation does not compare OCR regions.
 
-- [ ] **Step 13: Validate the complete intersecting OCR index set and verify GREEN**
+- [x] **Step 13: Validate the complete intersecting OCR index set and verify GREEN**
 
 Reconstruct each region range using the persisted ordering and newline separator:
 
@@ -430,7 +430,7 @@ let precedingLength = page.regions[..<index]
 
 Compute every region whose range has positive intersection with the evidence range and require exact equality with `ocrRegionIndexes`. Rerun OCR cases and the entire repository suite.
 
-- [ ] **Step 14: Commit stale/provenance protection**
+- [x] **Step 14: Commit stale/provenance protection**
 
 ```sh
 git add Sources/LinkLoomCore/Persistence/DocumentDNARepository.swift \
@@ -451,15 +451,15 @@ git commit -m "fix(dna): reject stale repository writes"
 - Consumes: Tasks 1-3.
 - Produces: a clean branch and exact review evidence for one repository-only pull request.
 
-- [ ] **Step 1: Run focused repository tests**
+- [x] **Step 1: Run focused repository tests**
 
 Run the fallback Swift command with `--filter DocumentDNARepositoryTests`. Expected: every pending, read, replacement, rollback, stale-input, and provenance test passes.
 
-- [ ] **Step 2: Run the complete suite**
+- [x] **Step 2: Run the complete suite**
 
 Run the complete fallback Swift Testing command. Expected: all non-opt-in tests pass; the opt-in 10,000-document test remains skipped because this slice does not change catalog scale behavior.
 
-- [ ] **Step 3: Run the release build**
+- [x] **Step 3: Run the release build**
 
 ```sh
 swift build -c release
@@ -467,7 +467,7 @@ swift build -c release
 
 Expected: production build succeeds without warnings attributable to this branch.
 
-- [ ] **Step 4: Verify diff hygiene and scope**
+- [x] **Step 4: Verify diff hygiene and scope**
 
 ```sh
 git diff --check origin/main...HEAD
@@ -477,7 +477,7 @@ git status --short
 
 Inspect the complete diff and confirm it contains only `.gitignore`, the implementation plan, `DocumentDNARepository`, the narrow shared extraction decoder refactor, and repository tests. Confirm no migration, pipeline, app/UI, source-file, network, telemetry, dependency, database artifact, build artifact, or real personal data is present.
 
-- [ ] **Step 5: Request independent review and resolve findings**
+- [x] **Step 5: Request independent review and resolve findings**
 
 Review against sections 6, 8, 10, 11, and 13.2 of the accepted spec. Resolve every Important/Critical finding with a new failing regression test before changing production code, then repeat Steps 1-4.
 
