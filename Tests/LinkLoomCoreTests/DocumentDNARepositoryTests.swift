@@ -82,6 +82,137 @@ struct DocumentDNARepositoryTests {
             )
         }
     }
+
+    @Test func replaceRoundTripsCompleteSnapshotAndMarksMatchingStateReady() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.make()
+        let snapshot = try await fixture.snapshot()
+
+        try await fixture.repository.replace(snapshot)
+
+        #expect(try await fixture.repository.storedSnapshot(documentID: snapshot.documentID) == snapshot)
+        let state = try await fixture.analysisState(documentID: snapshot.documentID)
+        #expect(state == LiteralAnalysisState(
+            schemaVersion: 1,
+            analyzerIdentifier: "local-rules",
+            analyzerVersion: "1",
+            contentHash: "hash-ready",
+            extractionVersion: "text-v1",
+            status: "ready",
+            failureCode: nil
+        ))
+    }
+
+    @Test func replacementIsVersionIdempotentAndDoesNotAppendChildren() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.make()
+        let versionOne = try await fixture.snapshot()
+        let versionTwoTarget = try fixture.target(analyzerVersion: "2")
+        let versionTwo = try await fixture.snapshot(analyzerVersion: "2")
+
+        try await fixture.repository.replace(versionOne)
+        #expect(try await fixture.repository.pendingAnalysis(
+            sourceRootID: fixture.source.id,
+            target: fixture.target,
+            limit: 10
+        ).isEmpty)
+        #expect(try await fixture.repository.pendingAnalysis(
+            sourceRootID: fixture.source.id,
+            target: versionTwoTarget,
+            limit: 10
+        ).map(\.document.id) == [versionOne.documentID])
+
+        try await fixture.repository.replace(versionTwo)
+
+        #expect(try await fixture.repository.pendingAnalysis(
+            sourceRootID: fixture.source.id,
+            target: versionTwoTarget,
+            limit: 10
+        ).isEmpty)
+        #expect(try await fixture.rowCounts() == DNARowCounts(
+            snapshots: 1,
+            findings: 2,
+            evidence: 2,
+            states: 1
+        ))
+    }
+
+    @Test func failedChildWriteRollsBackCompleteReplacement() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.make()
+        let original = try await fixture.snapshot()
+        let replacement = try await fixture.snapshot(analyzerVersion: "2")
+        try await fixture.repository.replace(original)
+        try await fixture.installEvidenceRejectionTrigger()
+        var didThrow = false
+
+        do {
+            try await fixture.repository.replace(replacement)
+        } catch {
+            didThrow = true
+        }
+
+        #expect(didThrow)
+        #expect(try await fixture.repository.storedSnapshot(documentID: original.documentID) == original)
+        #expect(try await fixture.analysisState(documentID: original.documentID)?.analyzerVersion == "1")
+        #expect(try await fixture.rowCounts() == DNARowCounts(
+            snapshots: 1,
+            findings: 2,
+            evidence: 2,
+            states: 1
+        ))
+    }
+
+    @Test func currentSnapshotRequiresMatchingTargetAndExtractionInput() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.make()
+        let snapshot = try await fixture.snapshot()
+        try await fixture.repository.replace(snapshot)
+
+        #expect(try await fixture.repository.currentSnapshot(
+            documentID: snapshot.documentID,
+            target: fixture.target
+        ) == snapshot)
+        #expect(try await fixture.repository.currentSnapshot(
+            documentID: snapshot.documentID,
+            target: fixture.target(analyzerVersion: "2")
+        ) == nil)
+
+        try await fixture.changeExtractionVersion(to: "text-v2")
+
+        #expect(try await fixture.repository.currentSnapshot(
+            documentID: snapshot.documentID,
+            target: fixture.target
+        ) == nil)
+        #expect(try await fixture.repository.storedSnapshot(documentID: snapshot.documentID) == snapshot)
+    }
+
+    @Test func currentSnapshotRequiresMatchingCatalogContentHash() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.make()
+        let snapshot = try await fixture.snapshot()
+        try await fixture.repository.replace(snapshot)
+
+        try await fixture.changeContentHash(to: "hash-changed")
+
+        #expect(try await fixture.repository.currentSnapshot(
+            documentID: snapshot.documentID,
+            target: fixture.target
+        ) == nil)
+        #expect(try await fixture.repository.storedSnapshot(documentID: snapshot.documentID) == snapshot)
+    }
+}
+
+private struct LiteralAnalysisState: Equatable {
+    let schemaVersion: Int
+    let analyzerIdentifier: String
+    let analyzerVersion: String
+    let contentHash: String
+    let extractionVersion: String
+    let status: String
+    let failureCode: String?
+}
+
+private struct DNARowCounts: Equatable {
+    let snapshots: Int
+    let findings: Int
+    let evidence: Int
+    let states: Int
 }
 
 private struct DocumentDNARepositoryFixture {
@@ -344,6 +475,151 @@ private struct DocumentDNARepositoryFixture {
                     Self.date,
                 ]
             )
+        }
+    }
+
+    func target(analyzerVersion: String) throws -> DocumentDNAAnalysisTarget {
+        try DocumentDNAAnalysisTarget(
+            schemaVersion: target.schemaVersion,
+            analyzerIdentifier: target.analyzerIdentifier,
+            analyzerVersion: analyzerVersion
+        )
+    }
+
+    func snapshot(analyzerVersion: String = "1") async throws -> DocumentDNA {
+        let document = try await readyDocument()
+        return try DocumentDNA(
+            documentID: document.id,
+            schemaVersion: 1,
+            analyzerIdentifier: "local-rules",
+            analyzerVersion: analyzerVersion,
+            inputContentHash: document.contentHash,
+            inputExtractionVersion: "text-v1",
+            findings: [
+                DocumentDNAFinding(
+                    kind: .documentType,
+                    qualifier: nil,
+                    displayValue: "Rechnung",
+                    normalizedValue: "invoice",
+                    secondaryNormalizedValue: nil,
+                    confidence: 0.95,
+                    evidence: [DocumentDNAEvidence(
+                        pageIndex: 0,
+                        startUTF16: 0,
+                        lengthUTF16: 8,
+                        exactText: "Rechnung",
+                        ocrRegionIndexes: [0]
+                    )]
+                ),
+                DocumentDNAFinding(
+                    kind: .person,
+                    qualifier: nil,
+                    displayValue: "Elise Muster",
+                    normalizedValue: "elise muster",
+                    secondaryNormalizedValue: nil,
+                    confidence: 0.9,
+                    evidence: [DocumentDNAEvidence(
+                        pageIndex: 0,
+                        startUTF16: 21,
+                        lengthUTF16: 12,
+                        exactText: "Elise Muster",
+                        ocrRegionIndexes: [1]
+                    )]
+                ),
+            ],
+            analyzedAt: Self.date.addingTimeInterval(analyzerVersion == "1" ? 0 : 1)
+        )
+    }
+
+    func analysisState(documentID: UUID) async throws -> LiteralAnalysisState? {
+        try await db.read { database in
+            guard let row = try Row.fetchOne(
+                database,
+                sql: """
+                    SELECT targetSchemaVersion, targetAnalyzerIdentifier,
+                           targetAnalyzerVersion, inputContentHash,
+                           inputExtractionVersion, status, failureCode
+                    FROM documentDNAAnalysisState
+                    WHERE documentID = ?
+                    """,
+                arguments: [documentID]
+            ) else {
+                return nil
+            }
+            return LiteralAnalysisState(
+                schemaVersion: row["targetSchemaVersion"],
+                analyzerIdentifier: row["targetAnalyzerIdentifier"],
+                analyzerVersion: row["targetAnalyzerVersion"],
+                contentHash: row["inputContentHash"],
+                extractionVersion: row["inputExtractionVersion"],
+                status: row["status"],
+                failureCode: row["failureCode"]
+            )
+        }
+    }
+
+    func rowCounts() async throws -> DNARowCounts {
+        try await db.read { database in
+            DNARowCounts(
+                snapshots: try Int.fetchOne(
+                    database,
+                    sql: "SELECT COUNT(*) FROM documentDNA"
+                )!,
+                findings: try Int.fetchOne(
+                    database,
+                    sql: "SELECT COUNT(*) FROM documentDNAFinding"
+                )!,
+                evidence: try Int.fetchOne(
+                    database,
+                    sql: "SELECT COUNT(*) FROM documentDNAEvidence"
+                )!,
+                states: try Int.fetchOne(
+                    database,
+                    sql: "SELECT COUNT(*) FROM documentDNAAnalysisState"
+                )!
+            )
+        }
+    }
+
+    func installEvidenceRejectionTrigger() async throws {
+        try await db.write { database in
+            try database.execute(sql: """
+                CREATE TRIGGER reject_document_dna_evidence
+                BEFORE INSERT ON documentDNAEvidence
+                BEGIN
+                    SELECT RAISE(ABORT, 'blocked DNA evidence');
+                END
+                """)
+        }
+    }
+
+    func changeExtractionVersion(to analysisVersion: String) async throws {
+        let document = try await readyDocument()
+        try await ExtractionRepository(dbWriter: db).replace(
+            documentID: document.id,
+            analysisVersion: analysisVersion,
+            extraction: Self.extraction,
+            at: Self.date.addingTimeInterval(2)
+        )
+    }
+
+    func changeContentHash(to contentHash: String) async throws {
+        let document = try await readyDocument()
+        try await db.write { database in
+            try database.execute(
+                sql: "UPDATE document SET contentHash = ? WHERE id = ?",
+                arguments: [contentHash, document.id]
+            )
+        }
+    }
+
+    private func readyDocument() async throws -> DocumentRecord {
+        try await db.read { database in
+            let document = try DocumentRecord.fetchOne(
+                database,
+                sql: "SELECT * FROM document WHERE relativePath = 'a-ready.pdf'"
+            )
+            return try #require(document)
         }
     }
 
