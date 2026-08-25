@@ -102,6 +102,32 @@ struct DocumentDNARepositoryTests {
         ))
     }
 
+    @Test func analyzedAtRoundTripsSubmillisecondPrecision() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.make()
+        let analyzedAt = Date(timeIntervalSinceReferenceDate: 123_456_789.123_456_7)
+        let snapshot = try await fixture.snapshot(analyzedAt: analyzedAt)
+
+        try await fixture.repository.replace(snapshot)
+
+        let stored = try #require(try await fixture.repository.storedSnapshot(
+            documentID: snapshot.documentID
+        ))
+        #expect(stored.analyzedAt == analyzedAt)
+        #expect(stored == snapshot)
+    }
+
+    @Test func storedSnapshotDecodesLegacyGRDBDateText() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.make()
+        let analyzedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let snapshot = try await fixture.snapshot(analyzedAt: analyzedAt)
+        try await fixture.repository.replace(snapshot)
+        try await fixture.rewriteAnalyzedAtUsingLegacyGRDBDate(analyzedAt)
+
+        #expect(try await fixture.repository.storedSnapshot(
+            documentID: snapshot.documentID
+        ) == snapshot)
+    }
+
     @Test func replacementIsVersionIdempotentAndDoesNotAppendChildren() async throws {
         let fixture = try await DocumentDNARepositoryFixture.make()
         let versionOne = try await fixture.snapshot()
@@ -618,7 +644,8 @@ private struct DocumentDNARepositoryFixture {
 
     func snapshot(
         analyzerVersion: String = "1",
-        classificationEvidence: DocumentDNAEvidence? = nil
+        classificationEvidence: DocumentDNAEvidence? = nil,
+        analyzedAt: Date? = nil
     ) async throws -> DocumentDNA {
         let document = try await readyDocument()
         let classificationEvidence = try classificationEvidence ?? DocumentDNAEvidence(
@@ -661,7 +688,8 @@ private struct DocumentDNARepositoryFixture {
                     )]
                 ),
             ],
-            analyzedAt: Self.date.addingTimeInterval(analyzerVersion == "1" ? 0 : 1)
+            analyzedAt: analyzedAt
+                ?? Self.date.addingTimeInterval(analyzerVersion == "1" ? 0 : 1)
         )
     }
 
@@ -749,6 +777,16 @@ private struct DocumentDNARepositoryFixture {
 
     func documentStatus() async throws -> DocumentStatus {
         try await readyDocument().status
+    }
+
+    func rewriteAnalyzedAtUsingLegacyGRDBDate(_ date: Date) async throws {
+        let document = try await readyDocument()
+        try await db.write { database in
+            try database.execute(
+                sql: "UPDATE documentDNA SET analyzedAt = ? WHERE documentID = ?",
+                arguments: [date, document.id]
+            )
+        }
     }
 
     private func readyDocument() async throws -> DocumentRecord {

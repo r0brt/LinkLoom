@@ -120,6 +120,7 @@ public actor DocumentDNARepository {
 
     public func replace(_ snapshot: DocumentDNA) async throws {
         try await dbWriter.write { db in
+            let analyzedAtStorage = snapshot.analyzedAt.timeIntervalSinceReferenceDate
             guard let document = try DocumentRecord.fetchOne(db, key: snapshot.documentID),
                   document.status == .ready,
                   document.availability == .available,
@@ -154,7 +155,7 @@ public actor DocumentDNARepository {
                     snapshot.analyzerVersion,
                     snapshot.inputContentHash,
                     snapshot.inputExtractionVersion,
-                    snapshot.analyzedAt,
+                    analyzedAtStorage,
                 ]
             )
             for (sortOrder, finding) in snapshot.findings.enumerated() {
@@ -221,7 +222,7 @@ public actor DocumentDNARepository {
                     snapshot.analyzerVersion,
                     snapshot.inputContentHash,
                     snapshot.inputExtractionVersion,
-                    snapshot.analyzedAt,
+                    analyzedAtStorage,
                 ]
             )
         }
@@ -341,7 +342,15 @@ public actor DocumentDNARepository {
         let analyzerVersion: String = header["analyzerVersion"]
         let inputContentHash: String = header["inputContentHash"]
         let inputExtractionVersion: String = header["inputExtractionVersion"]
-        let analyzedAt: Date = header["analyzedAt"]
+        let analyzedAtValue: DatabaseValue = header["analyzedAt"]
+        let analyzedAt: Date
+        if let interval = Double.fromDatabaseValue(analyzedAtValue) {
+            analyzedAt = Date(timeIntervalSinceReferenceDate: interval)
+        } else if let decodedDate = Date.fromDatabaseValue(analyzedAtValue) {
+            analyzedAt = decodedDate
+        } else {
+            throw DocumentDNAValidationError.invalidSnapshot
+        }
         return try DocumentDNA(
             documentID: documentID,
             schemaVersion: schemaVersion,
