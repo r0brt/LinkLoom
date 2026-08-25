@@ -24,7 +24,8 @@ let package = Package(
         ),
         .testTarget(
             name: "LinkLoomCoreTests",
-            dependencies: ["LinkLoomCore"]
+            dependencies: ["LinkLoomCore"],
+            resources: [.process("Fixtures")]
         ),
         .testTarget(
             name: "LinkLoomAppFeatureTests",

@@ -1,0 +1,65 @@
+{
+  "name": "Synthetic ambiguous correspondence",
+  "documentID": "30000000-0000-0000-0000-000000000008",
+  "contentHash": "synthetic-ambiguous-hash",
+  "extractionVersion": "text-v1",
+  "extractionMethod": "embeddedPDFText",
+  "pages": [
+    {
+      "pageIndex": 0,
+      "text": "Korrespondenz\nVertrag und Rechnung\nBewohnerin: Elise Muster\nReferenz: brief-77",
+      "regions": []
+    }
+  ],
+  "analyzedAt": "2026-08-25T10:00:00Z",
+  "expected": {
+    "documentID": "30000000-0000-0000-0000-000000000008",
+    "schemaVersion": 1,
+    "analyzerIdentifier": "local-rules",
+    "analyzerVersion": "1",
+    "inputContentHash": "synthetic-ambiguous-hash",
+    "inputExtractionVersion": "text-v1",
+    "findings": [
+      {
+        "kind": "person",
+        "qualifier": "resident",
+        "displayValue": "Elise Muster",
+        "normalizedValue": "elise muster",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 47,
+            "lengthUTF16": 12,
+            "exactText": "Elise Muster",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "referenceNumber",
+        "qualifier": "other",
+        "displayValue": "brief-77",
+        "normalizedValue": "BRIEF-77",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 70,
+            "lengthUTF16": 8,
+            "exactText": "brief-77",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "documentType",
+        "displayValue": "",
+        "normalizedValue": "unknown",
+        "confidence": 0,
+        "evidence": []
+      }
+    ],
+    "analyzedAt": "2026-08-25T10:00:00Z"
+  }
+}

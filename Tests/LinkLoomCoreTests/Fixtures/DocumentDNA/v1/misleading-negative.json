@@ -1,0 +1,33 @@
+{
+  "name": "Synthetic misleading negative",
+  "documentID": "30000000-0000-0000-0000-000000000007",
+  "contentHash": "synthetic-negative-hash",
+  "extractionVersion": "text-v1",
+  "extractionMethod": "embeddedPDFText",
+  "pages": [
+    {
+      "pageIndex": 0,
+      "text": "Notiz zum Vorgang\nUnbeteiligte Person\nTelefon: 044 555 12 12\n8000 Zürich\nJahreszahl 2026\n123456789012",
+      "regions": []
+    }
+  ],
+  "analyzedAt": "2026-08-25T10:00:00Z",
+  "expected": {
+    "documentID": "30000000-0000-0000-0000-000000000007",
+    "schemaVersion": 1,
+    "analyzerIdentifier": "local-rules",
+    "analyzerVersion": "1",
+    "inputContentHash": "synthetic-negative-hash",
+    "inputExtractionVersion": "text-v1",
+    "findings": [
+      {
+        "kind": "documentType",
+        "displayValue": "",
+        "normalizedValue": "unknown",
+        "confidence": 0,
+        "evidence": []
+      }
+    ],
+    "analyzedAt": "2026-08-25T10:00:00Z"
+  }
+}

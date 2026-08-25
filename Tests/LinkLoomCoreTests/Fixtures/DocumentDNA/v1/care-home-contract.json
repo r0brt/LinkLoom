@@ -1,0 +1,121 @@
+{
+  "name": "Synthetic care-home contract",
+  "documentID": "30000000-0000-0000-0000-000000000001",
+  "contentHash": "synthetic-contract-hash",
+  "extractionVersion": "text-v1",
+  "extractionMethod": "embeddedPDFText",
+  "pages": [
+    {
+      "pageIndex": 0,
+      "text": "Pflegevertrag\nBewohnerin: Elise Muster\nAnbieter: Pflegezentrum Sonnenrain AG\nVertragsdatum: 01.08.2026\nMonatspauschale: CHF 6'250.00\nVertragsnummer: ver 2026-001",
+      "regions": []
+    }
+  ],
+  "analyzedAt": "2026-08-25T10:00:00Z",
+  "expected": {
+    "documentID": "30000000-0000-0000-0000-000000000001",
+    "schemaVersion": 1,
+    "analyzerIdentifier": "local-rules",
+    "analyzerVersion": "1",
+    "inputContentHash": "synthetic-contract-hash",
+    "inputExtractionVersion": "text-v1",
+    "findings": [
+      {
+        "kind": "documentType",
+        "displayValue": "Pflegevertrag",
+        "normalizedValue": "contract",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 0,
+            "lengthUTF16": 13,
+            "exactText": "Pflegevertrag",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "person",
+        "qualifier": "resident",
+        "displayValue": "Elise Muster",
+        "normalizedValue": "elise muster",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 26,
+            "lengthUTF16": 12,
+            "exactText": "Elise Muster",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "organization",
+        "qualifier": "provider",
+        "displayValue": "Pflegezentrum Sonnenrain AG",
+        "normalizedValue": "pflegezentrum sonnenrain ag",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 49,
+            "lengthUTF16": 27,
+            "exactText": "Pflegezentrum Sonnenrain AG",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "date",
+        "qualifier": "issueDate",
+        "displayValue": "01.08.2026",
+        "normalizedValue": "2026-08-01",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 92,
+            "lengthUTF16": 10,
+            "exactText": "01.08.2026",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "monetaryAmount",
+        "qualifier": "CHF",
+        "displayValue": "CHF 6'250.00",
+        "normalizedValue": "6250",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 120,
+            "lengthUTF16": 12,
+            "exactText": "CHF 6'250.00",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "referenceNumber",
+        "qualifier": "contractNumber",
+        "displayValue": "ver 2026-001",
+        "normalizedValue": "VER2026-001",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 149,
+            "lengthUTF16": 12,
+            "exactText": "ver 2026-001",
+            "ocrRegionIndexes": []
+          }
+        ]
+      }
+    ],
+    "analyzedAt": "2026-08-25T10:00:00Z"
+  }
+}
