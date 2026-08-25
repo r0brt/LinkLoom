@@ -188,7 +188,7 @@
 
   Re-run the Step 2 command. Expected: every analyzer unit case passes without warnings.
 
-- [ ] **Step 5: Commit the analyzer unit**
+- [x] **Step 5: Commit the analyzer unit**
 
   ```sh
   git add Sources/LinkLoomCore/Analysis \
@@ -218,7 +218,7 @@
 - Consumes: `LocalRulesDocumentDNAAnalyzer`, `Bundle.module`, and literal JSON.
 - Produces: eight independently reviewable fixtures whose `expected` member decodes as the complete `DocumentDNA` snapshot.
 
-- [ ] **Step 1: Register fixtures and write the failing golden runner**
+- [x] **Step 1: Register fixtures and write the failing golden runner**
 
   Register `.process("Fixtures")` on `LinkLoomCoreTests`. Define a test-only Codable fixture envelope with:
 
@@ -237,17 +237,17 @@
 
   The runner loads all eight fixed filenames, reconstructs `StoredExtraction`, verifies every literal expected evidence range by slicing the fixture page text, runs the real analyzer, and compares the entire returned `DocumentDNA` value to `expected`.
 
-- [ ] **Step 2: Run the golden test and verify RED**
+- [x] **Step 2: Run the golden test and verify RED**
 
   Run the fallback test command with `--filter DocumentDNAGoldenTests`.
 
   Expected: the runner fails because the eight resources are absent.
 
-- [ ] **Step 3: Add eight literal JSON fixtures one at a time**
+- [x] **Step 3: Add eight literal JSON fixtures one at a time**
 
   Add the exact corpus listed in design section 12. Every file uses only fictional names and identifiers, includes literal UTF-16 offsets and exact excerpts, and contains a complete expected snapshot with fixed UUID, versions, content hash, and timestamp. After adding each fixture, rerun the focused golden test and confirm the failure count decreases for the expected missing or mismatching next fixture.
 
-- [ ] **Step 4: Verify the complete golden corpus GREEN**
+- [x] **Step 4: Verify the complete golden corpus GREEN**
 
   Run the Step 2 command. Expected: all eight complete snapshot comparisons and all expected evidence re-slices pass.
 

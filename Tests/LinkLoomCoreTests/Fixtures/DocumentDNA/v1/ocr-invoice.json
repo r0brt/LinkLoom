@@ -1,0 +1,131 @@
+{
+  "name": "Synthetic OCR invoice",
+  "documentID": "30000000-0000-0000-0000-000000000006",
+  "contentHash": "synthetic-ocr-invoice-hash",
+  "extractionVersion": "text-v1",
+  "extractionMethod": "visionOCR",
+  "pages": [
+    {
+      "pageIndex": 0,
+      "text": "Rechnung\nRechnung an: Elise Muster\nAusstellerin: Pflegezentrum Sonnenrain AG\nRechnungsnummer: ocr-0043\nTotal: Fr. 980.00",
+      "regions": [
+        {
+          "text": "Rechnung",
+          "confidence": 0.99,
+          "boundingBox": { "x": 0.1, "y": 0.9, "width": 0.4, "height": 0.05 }
+        },
+        {
+          "text": "Rechnung an: Elise Muster",
+          "confidence": 0.97,
+          "boundingBox": { "x": 0.1, "y": 0.8, "width": 0.6, "height": 0.05 }
+        },
+        {
+          "text": "Ausstellerin: Pflegezentrum Sonnenrain AG",
+          "confidence": 0.96,
+          "boundingBox": { "x": 0.1, "y": 0.7, "width": 0.8, "height": 0.05 }
+        },
+        {
+          "text": "Rechnungsnummer: ocr-0043",
+          "confidence": 0.95,
+          "boundingBox": { "x": 0.1, "y": 0.6, "width": 0.6, "height": 0.05 }
+        },
+        {
+          "text": "Total: Fr. 980.00",
+          "confidence": 0.98,
+          "boundingBox": { "x": 0.1, "y": 0.5, "width": 0.4, "height": 0.05 }
+        }
+      ]
+    }
+  ],
+  "analyzedAt": "2026-08-25T10:00:00Z",
+  "expected": {
+    "documentID": "30000000-0000-0000-0000-000000000006",
+    "schemaVersion": 1,
+    "analyzerIdentifier": "local-rules",
+    "analyzerVersion": "1",
+    "inputContentHash": "synthetic-ocr-invoice-hash",
+    "inputExtractionVersion": "text-v1",
+    "findings": [
+      {
+        "kind": "documentType",
+        "displayValue": "Rechnung",
+        "normalizedValue": "invoice",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 0,
+            "lengthUTF16": 8,
+            "exactText": "Rechnung",
+            "ocrRegionIndexes": [0]
+          }
+        ]
+      },
+      {
+        "kind": "person",
+        "qualifier": "invoiceRecipient",
+        "displayValue": "Elise Muster",
+        "normalizedValue": "elise muster",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 22,
+            "lengthUTF16": 12,
+            "exactText": "Elise Muster",
+            "ocrRegionIndexes": [1]
+          }
+        ]
+      },
+      {
+        "kind": "organization",
+        "qualifier": "issuer",
+        "displayValue": "Pflegezentrum Sonnenrain AG",
+        "normalizedValue": "pflegezentrum sonnenrain ag",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 49,
+            "lengthUTF16": 27,
+            "exactText": "Pflegezentrum Sonnenrain AG",
+            "ocrRegionIndexes": [2]
+          }
+        ]
+      },
+      {
+        "kind": "referenceNumber",
+        "qualifier": "invoiceNumber",
+        "displayValue": "ocr-0043",
+        "normalizedValue": "OCR-0043",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 94,
+            "lengthUTF16": 8,
+            "exactText": "ocr-0043",
+            "ocrRegionIndexes": [3]
+          }
+        ]
+      },
+      {
+        "kind": "monetaryAmount",
+        "qualifier": "CHF",
+        "displayValue": "Fr. 980.00",
+        "normalizedValue": "980",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 110,
+            "lengthUTF16": 10,
+            "exactText": "Fr. 980.00",
+            "ocrRegionIndexes": [4]
+          }
+        ]
+      }
+    ],
+    "analyzedAt": "2026-08-25T10:00:00Z"
+  }
+}

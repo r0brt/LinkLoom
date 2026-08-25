@@ -1,0 +1,105 @@
+{
+  "name": "Synthetic power of attorney",
+  "documentID": "30000000-0000-0000-0000-000000000005",
+  "contentHash": "synthetic-power-hash",
+  "extractionVersion": "text-v1",
+  "extractionMethod": "embeddedPDFText",
+  "pages": [
+    {
+      "pageIndex": 0,
+      "text": "Vollmacht\nVollmachtgeberin: Elise Muster\nBevollmächtigte: Nora Muster\nBehörde: Gemeinde Musterwil\nDatum: 01.09.2026",
+      "regions": []
+    }
+  ],
+  "analyzedAt": "2026-08-25T10:00:00Z",
+  "expected": {
+    "documentID": "30000000-0000-0000-0000-000000000005",
+    "schemaVersion": 1,
+    "analyzerIdentifier": "local-rules",
+    "analyzerVersion": "1",
+    "inputContentHash": "synthetic-power-hash",
+    "inputExtractionVersion": "text-v1",
+    "findings": [
+      {
+        "kind": "documentType",
+        "displayValue": "Vollmacht",
+        "normalizedValue": "powerOfAttorney",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 0,
+            "lengthUTF16": 9,
+            "exactText": "Vollmacht",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "person",
+        "qualifier": "grantor",
+        "displayValue": "Elise Muster",
+        "normalizedValue": "elise muster",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 28,
+            "lengthUTF16": 12,
+            "exactText": "Elise Muster",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "person",
+        "qualifier": "authorizedPerson",
+        "displayValue": "Nora Muster",
+        "normalizedValue": "nora muster",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 58,
+            "lengthUTF16": 11,
+            "exactText": "Nora Muster",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "organization",
+        "qualifier": "authority",
+        "displayValue": "Gemeinde Musterwil",
+        "normalizedValue": "gemeinde musterwil",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 79,
+            "lengthUTF16": 18,
+            "exactText": "Gemeinde Musterwil",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "date",
+        "qualifier": "unknown",
+        "displayValue": "01.09.2026",
+        "normalizedValue": "2026-09-01",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 105,
+            "lengthUTF16": 10,
+            "exactText": "01.09.2026",
+            "ocrRegionIndexes": []
+          }
+        ]
+      }
+    ],
+    "analyzedAt": "2026-08-25T10:00:00Z"
+  }
+}

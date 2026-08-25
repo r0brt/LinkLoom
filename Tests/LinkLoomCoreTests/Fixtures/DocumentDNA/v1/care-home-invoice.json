@@ -1,0 +1,137 @@
+{
+  "name": "Synthetic care-home invoice",
+  "documentID": "30000000-0000-0000-0000-000000000002",
+  "contentHash": "synthetic-invoice-hash",
+  "extractionVersion": "text-v1",
+  "extractionMethod": "embeddedPDFText",
+  "pages": [
+    {
+      "pageIndex": 0,
+      "text": "Rechnung\nRechnung an: Elise Muster\nAusstellerin: Pflegezentrum Sonnenrain AG\nRechnungsdatum: 05.08.2026\nFälligkeitsdatum: 20.08.2026\nRechnungsnummer: inv-2026-0042\nTotal: CHF 1'250.00",
+      "regions": []
+    }
+  ],
+  "analyzedAt": "2026-08-25T10:00:00Z",
+  "expected": {
+    "documentID": "30000000-0000-0000-0000-000000000002",
+    "schemaVersion": 1,
+    "analyzerIdentifier": "local-rules",
+    "analyzerVersion": "1",
+    "inputContentHash": "synthetic-invoice-hash",
+    "inputExtractionVersion": "text-v1",
+    "findings": [
+      {
+        "kind": "documentType",
+        "displayValue": "Rechnung",
+        "normalizedValue": "invoice",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 0,
+            "lengthUTF16": 8,
+            "exactText": "Rechnung",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "person",
+        "qualifier": "invoiceRecipient",
+        "displayValue": "Elise Muster",
+        "normalizedValue": "elise muster",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 22,
+            "lengthUTF16": 12,
+            "exactText": "Elise Muster",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "organization",
+        "qualifier": "issuer",
+        "displayValue": "Pflegezentrum Sonnenrain AG",
+        "normalizedValue": "pflegezentrum sonnenrain ag",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 49,
+            "lengthUTF16": 27,
+            "exactText": "Pflegezentrum Sonnenrain AG",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "date",
+        "qualifier": "issueDate",
+        "displayValue": "05.08.2026",
+        "normalizedValue": "2026-08-05",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 93,
+            "lengthUTF16": 10,
+            "exactText": "05.08.2026",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "date",
+        "qualifier": "dueDate",
+        "displayValue": "20.08.2026",
+        "normalizedValue": "2026-08-20",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 122,
+            "lengthUTF16": 10,
+            "exactText": "20.08.2026",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "referenceNumber",
+        "qualifier": "invoiceNumber",
+        "displayValue": "inv-2026-0042",
+        "normalizedValue": "INV-2026-0042",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 150,
+            "lengthUTF16": 13,
+            "exactText": "inv-2026-0042",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "monetaryAmount",
+        "qualifier": "CHF",
+        "displayValue": "CHF 1'250.00",
+        "normalizedValue": "1250",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 171,
+            "lengthUTF16": 12,
+            "exactText": "CHF 1'250.00",
+            "ocrRegionIndexes": []
+          }
+        ]
+      }
+    ],
+    "analyzedAt": "2026-08-25T10:00:00Z"
+  }
+}

@@ -1,0 +1,121 @@
+{
+  "name": "Synthetic payment confirmation",
+  "documentID": "30000000-0000-0000-0000-000000000003",
+  "contentHash": "synthetic-payment-hash",
+  "extractionVersion": "text-v1",
+  "extractionMethod": "embeddedPDFText",
+  "pages": [
+    {
+      "pageIndex": 0,
+      "text": "Zahlungsbestätigung\nKontoinhaberin: Elise Muster\nZahlungsempfängerin: Pflegezentrum Sonnenrain AG\nBuchungsdatum: 18.08.2026\nZahlungsreferenz: inv 2026 0042\nBetrag: CHF 1'250.00",
+      "regions": []
+    }
+  ],
+  "analyzedAt": "2026-08-25T10:00:00Z",
+  "expected": {
+    "documentID": "30000000-0000-0000-0000-000000000003",
+    "schemaVersion": 1,
+    "analyzerIdentifier": "local-rules",
+    "analyzerVersion": "1",
+    "inputContentHash": "synthetic-payment-hash",
+    "inputExtractionVersion": "text-v1",
+    "findings": [
+      {
+        "kind": "documentType",
+        "displayValue": "Zahlungsbestätigung",
+        "normalizedValue": "paymentConfirmation",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 0,
+            "lengthUTF16": 19,
+            "exactText": "Zahlungsbestätigung",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "person",
+        "qualifier": "accountHolder",
+        "displayValue": "Elise Muster",
+        "normalizedValue": "elise muster",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 36,
+            "lengthUTF16": 12,
+            "exactText": "Elise Muster",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "organization",
+        "qualifier": "payee",
+        "displayValue": "Pflegezentrum Sonnenrain AG",
+        "normalizedValue": "pflegezentrum sonnenrain ag",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 70,
+            "lengthUTF16": 27,
+            "exactText": "Pflegezentrum Sonnenrain AG",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "date",
+        "qualifier": "bookingDate",
+        "displayValue": "18.08.2026",
+        "normalizedValue": "2026-08-18",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 113,
+            "lengthUTF16": 10,
+            "exactText": "18.08.2026",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "referenceNumber",
+        "qualifier": "paymentReference",
+        "displayValue": "inv 2026 0042",
+        "normalizedValue": "INV20260042",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 142,
+            "lengthUTF16": 13,
+            "exactText": "inv 2026 0042",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "monetaryAmount",
+        "qualifier": "CHF",
+        "displayValue": "CHF 1'250.00",
+        "normalizedValue": "1250",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 164,
+            "lengthUTF16": 12,
+            "exactText": "CHF 1'250.00",
+            "ocrRegionIndexes": []
+          }
+        ]
+      }
+    ],
+    "analyzedAt": "2026-08-25T10:00:00Z"
+  }
+}

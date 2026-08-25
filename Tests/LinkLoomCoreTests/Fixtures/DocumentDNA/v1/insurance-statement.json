@@ -1,0 +1,137 @@
+{
+  "name": "Synthetic insurance statement",
+  "documentID": "30000000-0000-0000-0000-000000000004",
+  "contentHash": "synthetic-insurance-hash",
+  "extractionVersion": "text-v1",
+  "extractionMethod": "embeddedPDFText",
+  "pages": [
+    {
+      "pageIndex": 0,
+      "text": "Leistungsabrechnung\nVersicherte Person: Elise Muster\nVersicherer: Helvetia Pflegekasse AG\nAusstellungsdatum: 22.08.2026\nPolicennummer: pol 77 88\nSchadennummer: clm-2026-9\nRückerstattung: 300,50 EUR",
+      "regions": []
+    }
+  ],
+  "analyzedAt": "2026-08-25T10:00:00Z",
+  "expected": {
+    "documentID": "30000000-0000-0000-0000-000000000004",
+    "schemaVersion": 1,
+    "analyzerIdentifier": "local-rules",
+    "analyzerVersion": "1",
+    "inputContentHash": "synthetic-insurance-hash",
+    "inputExtractionVersion": "text-v1",
+    "findings": [
+      {
+        "kind": "documentType",
+        "displayValue": "Leistungsabrechnung",
+        "normalizedValue": "insuranceStatement",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 0,
+            "lengthUTF16": 19,
+            "exactText": "Leistungsabrechnung",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "person",
+        "qualifier": "insuredPerson",
+        "displayValue": "Elise Muster",
+        "normalizedValue": "elise muster",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 40,
+            "lengthUTF16": 12,
+            "exactText": "Elise Muster",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "organization",
+        "qualifier": "insurer",
+        "displayValue": "Helvetia Pflegekasse AG",
+        "normalizedValue": "helvetia pflegekasse ag",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 66,
+            "lengthUTF16": 23,
+            "exactText": "Helvetia Pflegekasse AG",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "date",
+        "qualifier": "issueDate",
+        "displayValue": "22.08.2026",
+        "normalizedValue": "2026-08-22",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 109,
+            "lengthUTF16": 10,
+            "exactText": "22.08.2026",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "referenceNumber",
+        "qualifier": "policyNumber",
+        "displayValue": "pol 77 88",
+        "normalizedValue": "POL7788",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 135,
+            "lengthUTF16": 9,
+            "exactText": "pol 77 88",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "referenceNumber",
+        "qualifier": "claimNumber",
+        "displayValue": "clm-2026-9",
+        "normalizedValue": "CLM-2026-9",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 160,
+            "lengthUTF16": 10,
+            "exactText": "clm-2026-9",
+            "ocrRegionIndexes": []
+          }
+        ]
+      },
+      {
+        "kind": "monetaryAmount",
+        "qualifier": "EUR",
+        "displayValue": "300,50 EUR",
+        "normalizedValue": "300.5",
+        "confidence": 1,
+        "evidence": [
+          {
+            "pageIndex": 0,
+            "startUTF16": 187,
+            "lengthUTF16": 10,
+            "exactText": "300,50 EUR",
+            "ocrRegionIndexes": []
+          }
+        ]
+      }
+    ],
+    "analyzedAt": "2026-08-25T10:00:00Z"
+  }
+}
