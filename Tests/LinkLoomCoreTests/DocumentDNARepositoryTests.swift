@@ -196,6 +196,136 @@ struct DocumentDNARepositoryTests {
         ) == nil)
         #expect(try await fixture.repository.storedSnapshot(documentID: snapshot.documentID) == snapshot)
     }
+
+    @Test func staleContentHashRejectsFirstAndReplacementWrites() async throws {
+        let replacementFixture = try await DocumentDNARepositoryFixture.make()
+        let original = try await replacementFixture.snapshot()
+        let staleReplacement = try await replacementFixture.snapshot(analyzerVersion: "2")
+        try await replacementFixture.repository.replace(original)
+        try await replacementFixture.changeContentHash(to: "hash-changed")
+
+        await #expect(throws: DocumentDNARepositoryError.staleInput) {
+            try await replacementFixture.repository.replace(staleReplacement)
+        }
+        #expect(try await replacementFixture.repository.storedSnapshot(
+            documentID: original.documentID
+        ) == original)
+
+        let firstWriteFixture = try await DocumentDNARepositoryFixture.make()
+        let staleFirstWrite = try await firstWriteFixture.snapshot()
+        try await firstWriteFixture.changeContentHash(to: "hash-changed")
+
+        await #expect(throws: DocumentDNARepositoryError.staleInput) {
+            try await firstWriteFixture.repository.replace(staleFirstWrite)
+        }
+        #expect(try await firstWriteFixture.rowCounts() == DNARowCounts(
+            snapshots: 0,
+            findings: 0,
+            evidence: 0,
+            states: 0
+        ))
+    }
+
+    @Test func staleExtractionVersionRejectsReplacementWithoutChangingDocumentStatus() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.make()
+        let original = try await fixture.snapshot()
+        let staleReplacement = try await fixture.snapshot(analyzerVersion: "2")
+        try await fixture.repository.replace(original)
+        try await fixture.changeExtractionVersion(to: "text-v2")
+
+        await #expect(throws: DocumentDNARepositoryError.staleInput) {
+            try await fixture.repository.replace(staleReplacement)
+        }
+
+        #expect(try await fixture.repository.storedSnapshot(documentID: original.documentID) == original)
+        #expect(try await fixture.analysisState(documentID: original.documentID)?.analyzerVersion == "1")
+        #expect(try await fixture.documentStatus() == .ready)
+    }
+
+    @Test func invalidProvenanceRejectsMissingPage() async throws {
+        try await assertInvalidProvenance(DocumentDNAEvidence(
+            pageIndex: 9,
+            startUTF16: 0,
+            lengthUTF16: 8,
+            exactText: "Rechnung",
+            ocrRegionIndexes: [0]
+        ))
+    }
+
+    @Test func invalidProvenanceRejectsWrongExactText() async throws {
+        try await assertInvalidProvenance(DocumentDNAEvidence(
+            pageIndex: 0,
+            startUTF16: 0,
+            lengthUTF16: 8,
+            exactText: "Vertragx",
+            ocrRegionIndexes: [0]
+        ))
+    }
+
+    @Test func invalidProvenanceRejectsOutOfBoundsUTF16Range() async throws {
+        try await assertInvalidProvenance(DocumentDNAEvidence(
+            pageIndex: 0,
+            startUTF16: 100,
+            lengthUTF16: 8,
+            exactText: "Rechnung",
+            ocrRegionIndexes: [0]
+        ))
+    }
+
+    @Test func invalidProvenanceRejectsWrongOCRRegionIndexes() async throws {
+        try await assertInvalidProvenance(DocumentDNAEvidence(
+            pageIndex: 0,
+            startUTF16: 0,
+            lengthUTF16: 8,
+            exactText: "Rechnung",
+            ocrRegionIndexes: [1]
+        ))
+    }
+
+    @Test func invalidProvenanceRejectsMissingOCRRegionIndexes() async throws {
+        try await assertInvalidProvenance(DocumentDNAEvidence(
+            pageIndex: 0,
+            startUTF16: 0,
+            lengthUTF16: 8,
+            exactText: "Rechnung",
+            ocrRegionIndexes: []
+        ))
+    }
+
+    private func assertInvalidProvenance(_ evidence: DocumentDNAEvidence) async throws {
+        let firstWriteFixture = try await DocumentDNARepositoryFixture.make()
+        let invalidFirstWrite = try await firstWriteFixture.snapshot(
+            classificationEvidence: evidence
+        )
+
+        await #expect(throws: DocumentDNARepositoryError.invalidProvenance) {
+            try await firstWriteFixture.repository.replace(invalidFirstWrite)
+        }
+        #expect(try await firstWriteFixture.rowCounts() == DNARowCounts(
+            snapshots: 0,
+            findings: 0,
+            evidence: 0,
+            states: 0
+        ))
+
+        let replacementFixture = try await DocumentDNARepositoryFixture.make()
+        let original = try await replacementFixture.snapshot()
+        let invalidReplacement = try await replacementFixture.snapshot(
+            analyzerVersion: "2",
+            classificationEvidence: evidence
+        )
+        try await replacementFixture.repository.replace(original)
+
+        await #expect(throws: DocumentDNARepositoryError.invalidProvenance) {
+            try await replacementFixture.repository.replace(invalidReplacement)
+        }
+        #expect(try await replacementFixture.repository.storedSnapshot(
+            documentID: original.documentID
+        ) == original)
+        #expect(try await replacementFixture.analysisState(
+            documentID: original.documentID
+        )?.analyzerVersion == "1")
+    }
 }
 
 private struct LiteralAnalysisState: Equatable {
@@ -486,8 +616,18 @@ private struct DocumentDNARepositoryFixture {
         )
     }
 
-    func snapshot(analyzerVersion: String = "1") async throws -> DocumentDNA {
+    func snapshot(
+        analyzerVersion: String = "1",
+        classificationEvidence: DocumentDNAEvidence? = nil
+    ) async throws -> DocumentDNA {
         let document = try await readyDocument()
+        let classificationEvidence = try classificationEvidence ?? DocumentDNAEvidence(
+            pageIndex: 0,
+            startUTF16: 0,
+            lengthUTF16: 8,
+            exactText: "Rechnung",
+            ocrRegionIndexes: [0]
+        )
         return try DocumentDNA(
             documentID: document.id,
             schemaVersion: 1,
@@ -503,13 +643,7 @@ private struct DocumentDNARepositoryFixture {
                     normalizedValue: "invoice",
                     secondaryNormalizedValue: nil,
                     confidence: 0.95,
-                    evidence: [DocumentDNAEvidence(
-                        pageIndex: 0,
-                        startUTF16: 0,
-                        lengthUTF16: 8,
-                        exactText: "Rechnung",
-                        ocrRegionIndexes: [0]
-                    )]
+                    evidence: [classificationEvidence]
                 ),
                 DocumentDNAFinding(
                     kind: .person,
@@ -611,6 +745,10 @@ private struct DocumentDNARepositoryFixture {
                 arguments: [contentHash, document.id]
             )
         }
+    }
+
+    func documentStatus() async throws -> DocumentStatus {
+        try await readyDocument().status
     }
 
     private func readyDocument() async throws -> DocumentRecord {

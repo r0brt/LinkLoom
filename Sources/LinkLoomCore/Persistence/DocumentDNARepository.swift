@@ -120,6 +120,22 @@ public actor DocumentDNARepository {
 
     public func replace(_ snapshot: DocumentDNA) async throws {
         try await dbWriter.write { db in
+            guard let document = try DocumentRecord.fetchOne(db, key: snapshot.documentID),
+                  document.status == .ready,
+                  document.availability == .available,
+                  document.contentHash == snapshot.inputContentHash,
+                  let extraction = try ExtractionRepository.extraction(
+                      in: db,
+                      documentID: snapshot.documentID
+                  ),
+                  extraction.analysisVersion == snapshot.inputExtractionVersion
+            else {
+                throw DocumentDNARepositoryError.staleInput
+            }
+            try Self.validateTextProvenance(
+                snapshot.findings.flatMap(\.evidence),
+                pages: extraction.extraction.pages
+            )
             try db.execute(
                 sql: "DELETE FROM documentDNA WHERE documentID = ?",
                 arguments: [snapshot.documentID]
@@ -336,5 +352,44 @@ public actor DocumentDNARepository {
             findings: findings,
             analyzedAt: analyzedAt
         )
+    }
+
+    private static func validateTextProvenance(
+        _ evidenceValues: [DocumentDNAEvidence],
+        pages: [ExtractedPage]
+    ) throws {
+        for evidence in evidenceValues {
+            guard let page = pages.first(where: { $0.pageIndex == evidence.pageIndex })
+            else {
+                throw DocumentDNARepositoryError.invalidProvenance
+            }
+            let text = page.text as NSString
+            guard evidence.startUTF16 <= text.length,
+                  evidence.lengthUTF16 <= text.length - evidence.startUTF16,
+                  text.substring(with: NSRange(
+                      location: evidence.startUTF16,
+                      length: evidence.lengthUTF16
+                  )) == evidence.exactText
+            else {
+                throw DocumentDNARepositoryError.invalidProvenance
+            }
+            let evidenceRange = NSRange(
+                location: evidence.startUTF16,
+                length: evidence.lengthUTF16
+            )
+            let intersectingRegionIndexes = page.regions.indices.filter { index in
+                let precedingLength = page.regions[..<index].reduce(0) {
+                    $0 + ($1.text as NSString).length + 1
+                }
+                let regionRange = NSRange(
+                    location: precedingLength,
+                    length: (page.regions[index].text as NSString).length
+                )
+                return NSIntersectionRange(evidenceRange, regionRange).length > 0
+            }
+            guard evidence.ocrRegionIndexes == intersectingRegionIndexes else {
+                throw DocumentDNARepositoryError.invalidProvenance
+            }
+        }
     }
 }
