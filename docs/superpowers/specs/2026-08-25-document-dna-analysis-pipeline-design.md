@@ -1,6 +1,6 @@
 # Document DNA Analysis Pipeline Design
 
-**Status:** Proposed for written-spec review
+**Status:** Approved for implementation
 
 **Date:** 2026-08-25
 
