@@ -33,6 +33,12 @@ public struct PendingDocumentDNAAnalysis: Sendable, Equatable {
     }
 }
 
+public enum DocumentDNAAnalysisFailureCode: String, Sendable, Equatable, CaseIterable {
+    case analysisFailure
+    case invalidFinding
+    case invalidProvenance
+}
+
 public enum DocumentDNARepositoryError: Error, Sendable, Equatable {
     case invalidTarget
     case staleInput
@@ -114,6 +120,98 @@ public actor DocumentDNARepository {
                     document: document,
                     extraction: extraction
                 )
+            }
+        }
+    }
+
+    public func beginAnalysis(
+        _ candidate: PendingDocumentDNAAnalysis,
+        target: DocumentDNAAnalysisTarget,
+        at date: Date
+    ) async throws {
+        try await dbWriter.write { db in
+            guard try Self.isEligibleForAnalysis(
+                in: db,
+                candidate: candidate,
+                target: target
+            ) else {
+                throw DocumentDNARepositoryError.staleInput
+            }
+            try db.execute(
+                sql: """
+                    INSERT INTO documentDNAAnalysisState (
+                        documentID, targetSchemaVersion, targetAnalyzerIdentifier,
+                        targetAnalyzerVersion, inputContentHash, inputExtractionVersion,
+                        status, failureCode, updatedAt
+                    ) VALUES (?, ?, ?, ?, ?, ?, 'analyzing', NULL, ?)
+                    ON CONFLICT(documentID) DO UPDATE SET
+                        targetSchemaVersion = excluded.targetSchemaVersion,
+                        targetAnalyzerIdentifier = excluded.targetAnalyzerIdentifier,
+                        targetAnalyzerVersion = excluded.targetAnalyzerVersion,
+                        inputContentHash = excluded.inputContentHash,
+                        inputExtractionVersion = excluded.inputExtractionVersion,
+                        status = excluded.status,
+                        failureCode = NULL,
+                        updatedAt = excluded.updatedAt
+                    """,
+                arguments: [
+                    candidate.document.id,
+                    target.schemaVersion,
+                    target.analyzerIdentifier,
+                    target.analyzerVersion,
+                    candidate.document.contentHash,
+                    candidate.extraction.analysisVersion,
+                    date,
+                ]
+            )
+        }
+    }
+
+    public func markAnalysisFailed(
+        _ candidate: PendingDocumentDNAAnalysis,
+        target: DocumentDNAAnalysisTarget,
+        failureCode: DocumentDNAAnalysisFailureCode,
+        at date: Date
+    ) async throws {
+        try await dbWriter.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE documentDNAAnalysisState
+                    SET status = 'failed', failureCode = ?, updatedAt = ?
+                    WHERE documentID = ?
+                        AND targetSchemaVersion = ?
+                        AND targetAnalyzerIdentifier = ?
+                        AND targetAnalyzerVersion = ?
+                        AND inputContentHash = ?
+                        AND inputExtractionVersion = ?
+                        AND status = 'analyzing'
+                        AND EXISTS (
+                            SELECT 1
+                            FROM document
+                            JOIN documentExtraction
+                                ON documentExtraction.documentID = document.id
+                            WHERE document.id = documentDNAAnalysisState.documentID
+                                AND document.status = 'ready'
+                                AND document.availability = 'available'
+                                AND document.contentHash =
+                                    documentDNAAnalysisState.inputContentHash
+                                AND documentExtraction.analysisVersion =
+                                    documentDNAAnalysisState.inputExtractionVersion
+                        )
+                    """,
+                arguments: [
+                    failureCode.rawValue,
+                    date,
+                    candidate.document.id,
+                    target.schemaVersion,
+                    target.analyzerIdentifier,
+                    target.analyzerVersion,
+                    candidate.document.contentHash,
+                    candidate.extraction.analysisVersion,
+                ]
+            )
+            guard db.changesCount == 1 else {
+                throw DocumentDNARepositoryError.staleInput
             }
         }
     }
@@ -361,6 +459,64 @@ public actor DocumentDNARepository {
             findings: findings,
             analyzedAt: analyzedAt
         )
+    }
+
+    private static func isEligibleForAnalysis(
+        in db: Database,
+        candidate: PendingDocumentDNAAnalysis,
+        target: DocumentDNAAnalysisTarget
+    ) throws -> Bool {
+        try Bool.fetchOne(
+            db,
+            sql: """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM document
+                    JOIN documentExtraction
+                        ON documentExtraction.documentID = document.id
+                    WHERE document.id = ?
+                        AND document.sourceRootID = ?
+                        AND document.status = 'ready'
+                        AND document.availability = 'available'
+                        AND document.contentHash = ?
+                        AND documentExtraction.analysisVersion = ?
+                        AND NOT EXISTS (
+                            SELECT 1 FROM documentDNA
+                            WHERE documentDNA.documentID = document.id
+                                AND documentDNA.schemaVersion = ?
+                                AND documentDNA.analyzerIdentifier = ?
+                                AND documentDNA.analyzerVersion = ?
+                                AND documentDNA.inputContentHash = document.contentHash
+                                AND documentDNA.inputExtractionVersion =
+                                    documentExtraction.analysisVersion
+                        )
+                        AND NOT EXISTS (
+                            SELECT 1 FROM documentDNAAnalysisState
+                            WHERE documentDNAAnalysisState.documentID = document.id
+                                AND documentDNAAnalysisState.targetSchemaVersion = ?
+                                AND documentDNAAnalysisState.targetAnalyzerIdentifier = ?
+                                AND documentDNAAnalysisState.targetAnalyzerVersion = ?
+                                AND documentDNAAnalysisState.inputContentHash =
+                                    document.contentHash
+                                AND documentDNAAnalysisState.inputExtractionVersion =
+                                    documentExtraction.analysisVersion
+                                AND documentDNAAnalysisState.status IN ('failed', 'analyzing')
+                        )
+                )
+                """,
+            arguments: [
+                candidate.document.id,
+                candidate.document.sourceRootID,
+                candidate.document.contentHash,
+                candidate.extraction.analysisVersion,
+                target.schemaVersion,
+                target.analyzerIdentifier,
+                target.analyzerVersion,
+                target.schemaVersion,
+                target.analyzerIdentifier,
+                target.analyzerVersion,
+            ]
+        ) ?? false
     }
 
     private static func validateTextProvenance(

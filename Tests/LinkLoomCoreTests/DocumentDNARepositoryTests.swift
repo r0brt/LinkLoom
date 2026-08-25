@@ -83,6 +83,303 @@ struct DocumentDNARepositoryTests {
         }
     }
 
+    @Test func beginAnalysisWritesExactAttemptAndBlocksPendingSelection() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.make()
+        let candidate = try #require(try await fixture.repository.pendingAnalysis(
+            sourceRootID: fixture.source.id,
+            target: fixture.target,
+            limit: 1
+        ).first)
+        let startedAt = Date(timeIntervalSince1970: 1_800_000_100)
+
+        try await fixture.repository.beginAnalysis(
+            candidate,
+            target: fixture.target,
+            at: startedAt
+        )
+
+        #expect(try await fixture.analysisState(documentID: candidate.document.id) ==
+            LiteralAnalysisState(
+                schemaVersion: 1,
+                analyzerIdentifier: "local-rules",
+                analyzerVersion: "1",
+                contentHash: "hash-ready",
+                extractionVersion: "text-v1",
+                status: "analyzing",
+                failureCode: nil
+            ))
+        #expect(try await fixture.analysisStateUpdatedAt(
+            documentID: candidate.document.id
+        ) == startedAt)
+        #expect(try await fixture.repository.pendingAnalysis(
+            sourceRootID: fixture.source.id,
+            target: fixture.target,
+            limit: 1
+        ).isEmpty)
+    }
+
+    @Test(arguments: DocumentDNAAnalysisFailureCode.allCases)
+    func markAnalysisFailedUpdatesOnlyExactAttempt(
+        failureCode: DocumentDNAAnalysisFailureCode
+    ) async throws {
+        let fixture = try await DocumentDNARepositoryFixture.make()
+        let prior = try await fixture.snapshot(analyzerVersion: "0")
+        try await fixture.repository.replace(prior)
+        let candidate = try #require(try await fixture.repository.pendingAnalysis(
+            sourceRootID: fixture.source.id,
+            target: fixture.target,
+            limit: 1
+        ).first)
+        try await fixture.repository.beginAnalysis(candidate, target: fixture.target, at: .now)
+        let failedAt = Date(timeIntervalSince1970: 1_800_000_200)
+
+        try await fixture.repository.markAnalysisFailed(
+            candidate,
+            target: fixture.target,
+            failureCode: failureCode,
+            at: failedAt
+        )
+
+        #expect(try await fixture.analysisState(documentID: candidate.document.id) ==
+            LiteralAnalysisState(
+                schemaVersion: 1,
+                analyzerIdentifier: "local-rules",
+                analyzerVersion: "1",
+                contentHash: "hash-ready",
+                extractionVersion: "text-v1",
+                status: "failed",
+                failureCode: failureCode.rawValue
+            ))
+        #expect(try await fixture.analysisStateUpdatedAt(
+            documentID: candidate.document.id
+        ) == failedAt)
+        #expect(try await fixture.repository.storedSnapshot(documentID: candidate.document.id) == prior)
+    }
+
+    @Test func beginRejectsCandidateAfterContentHashChanges() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.make()
+        let candidate = try #require(try await fixture.repository.pendingAnalysis(
+            sourceRootID: fixture.source.id,
+            target: fixture.target,
+            limit: 1
+        ).first)
+        try await fixture.changeContentHash(to: "hash-superseded")
+
+        await #expect(throws: DocumentDNARepositoryError.staleInput) {
+            try await fixture.repository.beginAnalysis(candidate, target: fixture.target, at: .now)
+        }
+        #expect(try await fixture.analysisState(documentID: candidate.document.id) == nil)
+        #expect(try await fixture.repository.storedSnapshot(documentID: candidate.document.id) == nil)
+    }
+
+    @Test func beginRejectsCandidateAfterExtractionVersionChanges() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.make()
+        let candidate = try #require(try await fixture.repository.pendingAnalysis(
+            sourceRootID: fixture.source.id,
+            target: fixture.target,
+            limit: 1
+        ).first)
+        try await fixture.changeExtractionVersion(to: "text-v2")
+
+        await #expect(throws: DocumentDNARepositoryError.staleInput) {
+            try await fixture.repository.beginAnalysis(candidate, target: fixture.target, at: .now)
+        }
+        #expect(try await fixture.analysisState(documentID: candidate.document.id) == nil)
+        #expect(try await fixture.repository.storedSnapshot(documentID: candidate.document.id) == nil)
+    }
+
+    @Test func beginRejectsDocumentThatIsNotReadyOrAvailable() async throws {
+        let notReady = try await DocumentDNARepositoryFixture.make()
+        let notReadyCandidate = try #require(try await notReady.repository.pendingAnalysis(
+            sourceRootID: notReady.source.id,
+            target: notReady.target,
+            limit: 1
+        ).first)
+        try await notReady.changeDocumentStatus(to: .discovered)
+
+        await #expect(throws: DocumentDNARepositoryError.staleInput) {
+            try await notReady.repository.beginAnalysis(
+                notReadyCandidate,
+                target: notReady.target,
+                at: .now
+            )
+        }
+        #expect(try await notReady.analysisState(documentID: notReadyCandidate.document.id) == nil)
+
+        let unavailable = try await DocumentDNARepositoryFixture.make()
+        let unavailableCandidate = try #require(try await unavailable.repository.pendingAnalysis(
+            sourceRootID: unavailable.source.id,
+            target: unavailable.target,
+            limit: 1
+        ).first)
+        try await unavailable.changeDocumentAvailability(to: .unavailable)
+
+        await #expect(throws: DocumentDNARepositoryError.staleInput) {
+            try await unavailable.repository.beginAnalysis(
+                unavailableCandidate,
+                target: unavailable.target,
+                at: .now
+            )
+        }
+        #expect(try await unavailable.analysisState(documentID: unavailableCandidate.document.id) == nil)
+    }
+
+    @Test func beginRejectsCurrentSnapshotAndExactBlockedAttempt() async throws {
+        let current = try await DocumentDNARepositoryFixture.make()
+        let currentCandidate = try #require(try await current.repository.pendingAnalysis(
+            sourceRootID: current.source.id,
+            target: current.target,
+            limit: 1
+        ).first)
+        let currentSnapshot = try await current.snapshot()
+        try await current.repository.replace(currentSnapshot)
+
+        await #expect(throws: DocumentDNARepositoryError.staleInput) {
+            try await current.repository.beginAnalysis(
+                currentCandidate,
+                target: current.target,
+                at: .now
+            )
+        }
+        #expect(try await current.repository.storedSnapshot(
+            documentID: currentCandidate.document.id
+        ) == currentSnapshot)
+        #expect(try await current.analysisState(documentID: currentCandidate.document.id)?.status == "ready")
+
+        for status in ["failed", "analyzing"] {
+            let blocked = try await DocumentDNARepositoryFixture.make()
+            let blockedCandidate = try #require(try await blocked.repository.pendingAnalysis(
+                sourceRootID: blocked.source.id,
+                target: blocked.target,
+                limit: 1
+            ).first)
+            try await blocked.insertAnalysisState(
+                document: blockedCandidate.document,
+                status: status,
+                failureCode: status == "failed" ? "analysisFailure" : nil
+            )
+            let priorState = try await blocked.analysisState(documentID: blockedCandidate.document.id)
+
+            await #expect(throws: DocumentDNARepositoryError.staleInput) {
+                try await blocked.repository.beginAnalysis(
+                    blockedCandidate,
+                    target: blocked.target,
+                    at: .now
+                )
+            }
+            #expect(try await blocked.analysisState(documentID: blockedCandidate.document.id) == priorState)
+            #expect(try await blocked.repository.storedSnapshot(
+                documentID: blockedCandidate.document.id
+            ) == nil)
+        }
+    }
+
+    @Test func failedTransitionRejectsSupersededTupleAndTerminalState() async throws {
+        let differentTarget = try await DocumentDNARepositoryFixture.make()
+        let targetCandidate = try #require(try await differentTarget.repository.pendingAnalysis(
+            sourceRootID: differentTarget.source.id,
+            target: differentTarget.target,
+            limit: 1
+        ).first)
+        try await differentTarget.repository.beginAnalysis(
+            targetCandidate,
+            target: differentTarget.target,
+            at: .now
+        )
+        let targetState = try await differentTarget.analysisState(documentID: targetCandidate.document.id)
+
+        await #expect(throws: DocumentDNARepositoryError.staleInput) {
+            try await differentTarget.repository.markAnalysisFailed(
+                targetCandidate,
+                target: differentTarget.target(analyzerVersion: "2"),
+                failureCode: .analysisFailure,
+                at: .now
+            )
+        }
+        #expect(try await differentTarget.analysisState(documentID: targetCandidate.document.id) == targetState)
+
+        let differentContent = try await DocumentDNARepositoryFixture.make()
+        let contentCandidate = try #require(try await differentContent.repository.pendingAnalysis(
+            sourceRootID: differentContent.source.id,
+            target: differentContent.target,
+            limit: 1
+        ).first)
+        try await differentContent.repository.beginAnalysis(
+            contentCandidate,
+            target: differentContent.target,
+            at: .now
+        )
+        var changedDocument = contentCandidate.document
+        changedDocument.contentHash = "hash-different-candidate"
+        let changedCandidate = PendingDocumentDNAAnalysis(
+            document: changedDocument,
+            extraction: contentCandidate.extraction
+        )
+        let contentState = try await differentContent.analysisState(documentID: contentCandidate.document.id)
+
+        await #expect(throws: DocumentDNARepositoryError.staleInput) {
+            try await differentContent.repository.markAnalysisFailed(
+                changedCandidate,
+                target: differentContent.target,
+                failureCode: .analysisFailure,
+                at: .now
+            )
+        }
+        #expect(try await differentContent.analysisState(documentID: contentCandidate.document.id) == contentState)
+
+        let changedExtraction = try await DocumentDNARepositoryFixture.make()
+        let extractionCandidate = try #require(try await changedExtraction.repository.pendingAnalysis(
+            sourceRootID: changedExtraction.source.id,
+            target: changedExtraction.target,
+            limit: 1
+        ).first)
+        try await changedExtraction.repository.beginAnalysis(
+            extractionCandidate,
+            target: changedExtraction.target,
+            at: .now
+        )
+        try await changedExtraction.changeExtractionVersion(to: "text-v2")
+        let extractionState = try await changedExtraction.analysisState(
+            documentID: extractionCandidate.document.id
+        )
+
+        await #expect(throws: DocumentDNARepositoryError.staleInput) {
+            try await changedExtraction.repository.markAnalysisFailed(
+                extractionCandidate,
+                target: changedExtraction.target,
+                failureCode: .analysisFailure,
+                at: .now
+            )
+        }
+        #expect(try await changedExtraction.analysisState(
+            documentID: extractionCandidate.document.id
+        ) == extractionState)
+
+        let terminal = try await DocumentDNARepositoryFixture.make()
+        let terminalCandidate = try #require(try await terminal.repository.pendingAnalysis(
+            sourceRootID: terminal.source.id,
+            target: terminal.target,
+            limit: 1
+        ).first)
+        try await terminal.repository.beginAnalysis(
+            terminalCandidate,
+            target: terminal.target,
+            at: .now
+        )
+        try await terminal.changeAnalysisStateStatus(to: "ready")
+        let terminalState = try await terminal.analysisState(documentID: terminalCandidate.document.id)
+
+        await #expect(throws: DocumentDNARepositoryError.staleInput) {
+            try await terminal.repository.markAnalysisFailed(
+                terminalCandidate,
+                target: terminal.target,
+                failureCode: .analysisFailure,
+                at: .now
+            )
+        }
+        #expect(try await terminal.analysisState(documentID: terminalCandidate.document.id) == terminalState)
+    }
+
     @Test func replaceRoundTripsCompleteSnapshotAndMarksMatchingStateReady() async throws {
         let fixture = try await DocumentDNARepositoryFixture.make()
         let snapshot = try await fixture.snapshot()
@@ -616,7 +913,7 @@ private struct DocumentDNARepositoryFixture {
         }
     }
 
-    private func insertAnalysisState(
+    func insertAnalysisState(
         document: DocumentRecord,
         status: String,
         failureCode: String? = nil
@@ -782,12 +1079,12 @@ private struct DocumentDNARepositoryFixture {
 
     func changeExtractionVersion(to analysisVersion: String) async throws {
         let document = try await readyDocument()
-        try await ExtractionRepository(dbWriter: db).replace(
-            documentID: document.id,
-            analysisVersion: analysisVersion,
-            extraction: Self.extraction,
-            at: Self.date.addingTimeInterval(2)
-        )
+        try await db.write { database in
+            try database.execute(
+                sql: "UPDATE documentExtraction SET analysisVersion = ? WHERE documentID = ?",
+                arguments: [analysisVersion, document.id]
+            )
+        }
     }
 
     func changeContentHash(to contentHash: String) async throws {
@@ -796,6 +1093,36 @@ private struct DocumentDNARepositoryFixture {
             try database.execute(
                 sql: "UPDATE document SET contentHash = ? WHERE id = ?",
                 arguments: [contentHash, document.id]
+            )
+        }
+    }
+
+    func changeDocumentStatus(to status: DocumentStatus) async throws {
+        let document = try await readyDocument()
+        try await db.write { database in
+            try database.execute(
+                sql: "UPDATE document SET status = ? WHERE id = ?",
+                arguments: [status, document.id]
+            )
+        }
+    }
+
+    func changeDocumentAvailability(to availability: DocumentAvailability) async throws {
+        let document = try await readyDocument()
+        try await db.write { database in
+            try database.execute(
+                sql: "UPDATE document SET availability = ? WHERE id = ?",
+                arguments: [availability, document.id]
+            )
+        }
+    }
+
+    func changeAnalysisStateStatus(to status: String) async throws {
+        let document = try await readyDocument()
+        try await db.write { database in
+            try database.execute(
+                sql: "UPDATE documentDNAAnalysisState SET status = ? WHERE documentID = ?",
+                arguments: [status, document.id]
             )
         }
     }
