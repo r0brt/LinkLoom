@@ -300,6 +300,6 @@
 
   Review the branch against this plan and the design. Resolve all critical and important findings, rerun the relevant focused test after every behavior fix, then repeat Step 2.
 
-- [ ] **Step 5: Push and open a focused pull request**
+- [x] **Step 5: Push and open a focused pull request**
 
   Use a Conventional Commit PR title no longer than 72 characters. Report the exact tests/builds, the local-only privacy boundary, synthetic fixture status, absence of schema/pipeline/UI changes, compatibility considerations, and rollback risk. Do not merge until required checks pass.
