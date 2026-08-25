@@ -13,6 +13,14 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
     let selectableTextMatchCount: Int
     let ocrTextMatchCount: Int
     let corruptFailureMatchCount: Int
+    let dnaSnapshotCount: Int
+    let dnaFindingCount: Int
+    let dnaEvidenceCount: Int
+    let dnaAnalysisStateCount: Int
+    let dnaReadyStateCount: Int
+    let dnaClassificationCount: Int
+    let localRulesSnapshotCount: Int
+    let coherentDNADocumentCount: Int
 
     var matchesCompletedWorkflow: Bool {
         sourceCount == 1
@@ -26,6 +34,14 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
             && selectableTextMatchCount == 1
             && ocrTextMatchCount == 1
             && corruptFailureMatchCount == 1
+            && dnaSnapshotCount == 2
+            && dnaFindingCount == 2
+            && dnaEvidenceCount == 0
+            && dnaAnalysisStateCount == 2
+            && dnaReadyStateCount == 2
+            && dnaClassificationCount == 2
+            && localRulesSnapshotCount == 2
+            && coherentDNADocumentCount == 2
     }
 
     var matchesRemovedWorkflow: Bool {
@@ -34,6 +50,11 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
             && extractionCount == 0
             && extractedPageCount == 0
             && ftsCount == 0
+            && dnaSnapshotCount == 0
+            && dnaFindingCount == 0
+            && dnaEvidenceCount == 0
+            && dnaAnalysisStateCount == 0
+            && coherentDNADocumentCount == 0
     }
 
     var description: String {
@@ -41,7 +62,13 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
             + "failed=\(failedCount), extraction=\(extractionCount), "
             + "page=\(extractedPageCount), fts=\(ftsCount), "
             + "unsupported=\(unsupportedCount), selectableText=\(selectableTextMatchCount), "
-            + "ocrText=\(ocrTextMatchCount), corruptFailure=\(corruptFailureMatchCount)"
+            + "ocrText=\(ocrTextMatchCount), corruptFailure=\(corruptFailureMatchCount), "
+            + "dnaSnapshot=\(dnaSnapshotCount), dnaFinding=\(dnaFindingCount), "
+            + "dnaEvidence=\(dnaEvidenceCount), dnaState=\(dnaAnalysisStateCount), "
+            + "dnaReady=\(dnaReadyStateCount), "
+            + "dnaClassification=\(dnaClassificationCount), "
+            + "localRulesSnapshot=\(localRulesSnapshotCount), "
+            + "coherentDNADocument=\(coherentDNADocumentCount)"
     }
 }
 
@@ -103,6 +130,62 @@ final class SQLiteProbe {
                 FROM document
                 WHERE relativePath = 'corrupt.pdf'
                   AND failureCode = 'unreadableDocument'
+                """),
+            dnaSnapshotCount: try scalar("SELECT COUNT(*) FROM documentDNA"),
+            dnaFindingCount: try scalar("SELECT COUNT(*) FROM documentDNAFinding"),
+            dnaEvidenceCount: try scalar("SELECT COUNT(*) FROM documentDNAEvidence"),
+            dnaAnalysisStateCount: try scalar(
+                "SELECT COUNT(*) FROM documentDNAAnalysisState"
+            ),
+            dnaReadyStateCount: try scalar("""
+                SELECT COUNT(*)
+                FROM documentDNAAnalysisState
+                WHERE status = 'ready'
+                  AND targetSchemaVersion = 1
+                  AND targetAnalyzerIdentifier = 'local-rules'
+                  AND targetAnalyzerVersion = '1'
+                """),
+            dnaClassificationCount: try scalar("""
+                SELECT COUNT(*)
+                FROM documentDNAFinding
+                WHERE kind = 'documentType'
+                """),
+            localRulesSnapshotCount: try scalar("""
+                SELECT COUNT(*)
+                FROM documentDNA
+                WHERE schemaVersion = 1
+                  AND analyzerIdentifier = 'local-rules'
+                  AND analyzerVersion = '1'
+                """),
+            coherentDNADocumentCount: try scalar("""
+                SELECT COUNT(DISTINCT document.id)
+                FROM document
+                JOIN documentExtraction
+                  ON documentExtraction.documentID = document.id
+                JOIN documentDNA
+                  ON documentDNA.documentID = document.id
+                JOIN documentDNAAnalysisState
+                  ON documentDNAAnalysisState.documentID = document.id
+                WHERE document.status = 'ready'
+                  AND document.availability = 'available'
+                  AND documentDNA.schemaVersion = 1
+                  AND documentDNA.analyzerIdentifier = 'local-rules'
+                  AND documentDNA.analyzerVersion = '1'
+                  AND documentDNA.inputContentHash = document.contentHash
+                  AND documentDNA.inputExtractionVersion =
+                    documentExtraction.analysisVersion
+                  AND documentDNAAnalysisState.targetSchemaVersion =
+                    documentDNA.schemaVersion
+                  AND documentDNAAnalysisState.targetAnalyzerIdentifier =
+                    documentDNA.analyzerIdentifier
+                  AND documentDNAAnalysisState.targetAnalyzerVersion =
+                    documentDNA.analyzerVersion
+                  AND documentDNAAnalysisState.inputContentHash =
+                    documentDNA.inputContentHash
+                  AND documentDNAAnalysisState.inputExtractionVersion =
+                    documentDNA.inputExtractionVersion
+                  AND documentDNAAnalysisState.status = 'ready'
+                  AND documentDNAAnalysisState.failureCode IS NULL
                 """)
         )
     }

@@ -128,6 +128,7 @@ struct LinkLoomApp: App {
         let sources = SourceRootRepository(dbWriter: database)
         let documents = DocumentRepository(dbWriter: database)
         let extractions = ExtractionRepository(dbWriter: database)
+        let dnaRepository = DocumentDNARepository(dbWriter: database)
         let catalog = CatalogService(
             sourceAccess: sourceAccess,
             enumerator: DefaultFileEnumerator(),
@@ -141,6 +142,21 @@ struct LinkLoomApp: App {
             extractions: extractions,
             extractor: CompositeTextExtractor()
         )
+        let dnaAnalyzer = LocalRulesDocumentDNAAnalyzer()
+        let dnaTarget = try DocumentDNAAnalysisTarget(
+            schemaVersion: LocalRulesDocumentDNAAnalyzer.schemaVersion,
+            analyzerIdentifier: LocalRulesDocumentDNAAnalyzer.analyzerIdentifier,
+            analyzerVersion: LocalRulesDocumentDNAAnalyzer.analyzerVersion
+        )
+        let dnaAnalysis = DocumentDNAAnalysisPipeline(
+            repository: dnaRepository,
+            analyzer: dnaAnalyzer,
+            target: dnaTarget
+        )
+        let documentProcessor = LocalDocumentProcessor(
+            ingestion: ingestion,
+            dnaAnalysis: dnaAnalysis
+        )
         let watchScheduler: (any SourceWatchScheduling)?
         if disablesWatcher {
             watchScheduler = nil
@@ -149,7 +165,7 @@ struct LinkLoomApp: App {
                 watcher: FSEventsDirectoryWatcher(),
                 rescanner: IncrementalRescanner(
                     catalog: catalog,
-                    ingestion: ingestion
+                    documentProcessor: documentProcessor
                 )
             )
         }
@@ -158,7 +174,7 @@ struct LinkLoomApp: App {
             documents: documents,
             sourceAccess: sourceAccess,
             catalog: CatalogScanner(service: catalog),
-            ingestion: PendingIngester(pipeline: ingestion),
+            ingestion: documentProcessor,
             watchScheduler: watchScheduler,
             reportRuntimeFailure: { diagnostic in
                 Self.runtimeLogger.error(
@@ -215,13 +231,31 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
-private struct IncrementalRescanner: SourceRescanning {
-    let catalog: CatalogService
-    let ingestion: IngestionPipeline
+struct IncrementalRescanner: SourceRescanning {
+    private let scanCatalog: @Sendable (SourceRootRecord) async throws -> Void
+    private let processDocuments: @Sendable (SourceRootRecord) async throws -> Void
+
+    init(catalog: CatalogService, documentProcessor: LocalDocumentProcessor) {
+        scanCatalog = { source in
+            _ = try await catalog.scan(source: source)
+        }
+        processDocuments = { source in
+            try await documentProcessor.processPending(source: source)
+        }
+    }
+
+    init(
+        scanCatalog: @escaping @Sendable (SourceRootRecord) async throws -> Void,
+        processDocuments: @escaping @Sendable (SourceRootRecord) async throws -> Void
+    ) {
+        self.scanCatalog = scanCatalog
+        self.processDocuments = processDocuments
+    }
 
     func rescan(source: SourceRootRecord) async throws {
-        _ = try await catalog.scan(source: source)
-        _ = try await ingestion.processPending(source: source)
+        try await scanCatalog(source)
+        try Task.checkCancellation()
+        try await processDocuments(source)
     }
 }
 
@@ -233,10 +267,33 @@ private struct CatalogScanner: CatalogScanning {
     }
 }
 
-private struct PendingIngester: PendingIngesting {
-    let pipeline: IngestionPipeline
+struct LocalDocumentProcessor: PendingIngesting {
+    private let ingest: @Sendable (SourceRootRecord) async throws -> Void
+    private let analyzeDNA: @Sendable (UUID) async throws -> Void
+
+    init(
+        ingestion: IngestionPipeline,
+        dnaAnalysis: DocumentDNAAnalysisPipeline
+    ) {
+        ingest = { source in
+            _ = try await ingestion.processPending(source: source)
+        }
+        analyzeDNA = { sourceID in
+            _ = try await dnaAnalysis.processPending(sourceRootID: sourceID)
+        }
+    }
+
+    init(
+        ingest: @escaping @Sendable (SourceRootRecord) async throws -> Void,
+        analyzeDNA: @escaping @Sendable (UUID) async throws -> Void
+    ) {
+        self.ingest = ingest
+        self.analyzeDNA = analyzeDNA
+    }
 
     func processPending(source: SourceRootRecord) async throws {
-        _ = try await pipeline.processPending(source: source)
+        try await ingest(source)
+        try Task.checkCancellation()
+        try await analyzeDNA(source.id)
     }
 }
