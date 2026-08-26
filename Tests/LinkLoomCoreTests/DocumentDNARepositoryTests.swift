@@ -59,6 +59,82 @@ struct DocumentDNARepositoryTests {
         ])
     }
 
+    @Test func currentAnalysisStatusesProjectExactPhasesInStableSourceOrder() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.makeWithCurrentAnalysisStatuses()
+
+        let statuses = try await fixture.repository.currentAnalysisStatuses(
+            sourceRootID: fixture.source.id,
+            target: fixture.target
+        )
+
+        #expect(statuses == [
+            DocumentDNAAnalysisStatus(
+                documentID: try #require(await fixture.documentID(relativePath: "a-pending.pdf")),
+                phase: .pending
+            ),
+            DocumentDNAAnalysisStatus(
+                documentID: try #require(await fixture.documentID(relativePath: "b-analyzing.pdf")),
+                phase: .analyzing
+            ),
+            DocumentDNAAnalysisStatus(
+                documentID: try #require(await fixture.documentID(relativePath: "c-ready.pdf")),
+                phase: .ready
+            ),
+            DocumentDNAAnalysisStatus(
+                documentID: try #require(await fixture.documentID(relativePath: "d-analysis-failure.pdf")),
+                phase: .failed(.analysisFailure)
+            ),
+            DocumentDNAAnalysisStatus(
+                documentID: try #require(await fixture.documentID(relativePath: "e-invalid-finding.pdf")),
+                phase: .failed(.invalidFinding)
+            ),
+            DocumentDNAAnalysisStatus(
+                documentID: try #require(await fixture.documentID(relativePath: "f-invalid-provenance.pdf")),
+                phase: .failed(.invalidProvenance)
+            ),
+        ])
+    }
+
+    @Test func currentAnalysisStatusesTreatStaleAndIncompleteStatesAsPending() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.makeWithNonCurrentAnalysisStatuses()
+
+        let statuses = try await fixture.repository.currentAnalysisStatuses(
+            sourceRootID: fixture.source.id,
+            target: fixture.target
+        )
+
+        #expect(statuses.map(\.phase) == [
+            .pending,
+            .pending,
+            .pending,
+            .pending,
+            .pending,
+        ])
+    }
+
+    @Test func currentAnalysisStatusesRejectInvalidStoredFailureCode() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.makeWithInvalidFailureCode()
+
+        await #expect(throws: DocumentDNARepositoryError.invalidStoredState) {
+            try await fixture.repository.currentAnalysisStatuses(
+                sourceRootID: fixture.source.id,
+                target: fixture.target
+            )
+        }
+    }
+
+    @Test func currentAnalysisStatusesDoNotMutatePersistence() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.makeWithCurrentAnalysisStatuses()
+        let countsBefore = try await fixture.rowCounts()
+
+        _ = try await fixture.repository.currentAnalysisStatuses(
+            sourceRootID: fixture.source.id,
+            target: fixture.target
+        )
+
+        #expect(try await fixture.rowCounts() == countsBefore)
+    }
+
     @Test func targetRejectsInvalidVersionIdentity() {
         #expect(throws: DocumentDNARepositoryError.invalidTarget) {
             try DocumentDNAAnalysisTarget(
@@ -905,6 +981,138 @@ private struct DocumentDNARepositoryFixture {
         return fixture
     }
 
+    static func makeWithCurrentAnalysisStatuses() async throws -> Self {
+        var fixture = try await makeEmpty()
+        let ready = try await fixture.insertDocument(
+            relativePath: "c-ready.pdf",
+            contentHash: "hash-ready"
+        )
+        let invalidProvenance = try await fixture.insertDocument(
+            relativePath: "f-invalid-provenance.pdf",
+            contentHash: "hash-invalid-provenance"
+        )
+        _ = try await fixture.insertDocument(
+            relativePath: "a-pending.pdf",
+            contentHash: "hash-pending"
+        )
+        let analyzing = try await fixture.insertDocument(
+            relativePath: "b-analyzing.pdf",
+            contentHash: "hash-analyzing"
+        )
+        let analysisFailure = try await fixture.insertDocument(
+            relativePath: "d-analysis-failure.pdf",
+            contentHash: "hash-analysis-failure"
+        )
+        let invalidFinding = try await fixture.insertDocument(
+            relativePath: "e-invalid-finding.pdf",
+            contentHash: "hash-invalid-finding"
+        )
+        _ = try await fixture.insertDocument(
+            relativePath: "0-discovered.pdf",
+            contentHash: "hash-discovered",
+            status: .discovered
+        )
+        _ = try await fixture.insertDocument(
+            relativePath: "0-unavailable.pdf",
+            contentHash: "hash-unavailable",
+            availability: .unavailable
+        )
+        _ = try await fixture.insertDocument(
+            relativePath: "0-no-extraction.pdf",
+            contentHash: "hash-no-extraction",
+            storesExtraction: false
+        )
+        _ = try await fixture.insertDocument(
+            sourceRootID: fixture.otherSource.id,
+            relativePath: "0-other-source.pdf",
+            contentHash: "hash-other-source"
+        )
+
+        try await fixture.repository.replace(try await fixture.snapshot(document: ready))
+        try await fixture.insertAnalysisState(document: analyzing, status: "analyzing")
+        try await fixture.insertAnalysisState(
+            document: analysisFailure,
+            status: "failed",
+            failureCode: DocumentDNAAnalysisFailureCode.analysisFailure.rawValue
+        )
+        try await fixture.insertAnalysisState(
+            document: invalidFinding,
+            status: "failed",
+            failureCode: DocumentDNAAnalysisFailureCode.invalidFinding.rawValue
+        )
+        try await fixture.insertAnalysisState(
+            document: invalidProvenance,
+            status: "failed",
+            failureCode: DocumentDNAAnalysisFailureCode.invalidProvenance.rawValue
+        )
+        return fixture
+    }
+
+    static func makeWithNonCurrentAnalysisStatuses() async throws -> Self {
+        var fixture = try await makeEmpty()
+        let targetChanged = try await fixture.insertDocument(
+            relativePath: "a-target-changed.pdf",
+            contentHash: "hash-target"
+        )
+        let contentChanged = try await fixture.insertDocument(
+            relativePath: "b-content-changed.pdf",
+            contentHash: "hash-content"
+        )
+        let extractionChanged = try await fixture.insertDocument(
+            relativePath: "c-extraction-changed.pdf",
+            contentHash: "hash-extraction"
+        )
+        let readyWithoutSnapshot = try await fixture.insertDocument(
+            relativePath: "d-ready-without-snapshot.pdf",
+            contentHash: "hash-ready-without-snapshot"
+        )
+        let snapshotWithoutReady = try await fixture.insertDocument(
+            relativePath: "e-snapshot-without-ready.pdf",
+            contentHash: "hash-snapshot-without-ready"
+        )
+
+        try await fixture.insertAnalysisState(
+            document: targetChanged,
+            status: "analyzing",
+            analyzerVersion: "0"
+        )
+        try await fixture.insertAnalysisState(
+            document: contentChanged,
+            status: "failed",
+            failureCode: DocumentDNAAnalysisFailureCode.analysisFailure.rawValue,
+            inputContentHash: "hash-before-change"
+        )
+        try await fixture.insertAnalysisState(
+            document: extractionChanged,
+            status: "analyzing",
+            inputExtractionVersion: "text-v0"
+        )
+        try await fixture.insertAnalysisState(document: readyWithoutSnapshot, status: "ready")
+        try await fixture.insertSnapshotHeader(
+            document: snapshotWithoutReady,
+            schemaVersion: fixture.target.schemaVersion,
+            analyzerIdentifier: fixture.target.analyzerIdentifier,
+            analyzerVersion: fixture.target.analyzerVersion,
+            inputContentHash: snapshotWithoutReady.contentHash,
+            inputExtractionVersion: "text-v1"
+        )
+        return fixture
+    }
+
+    static func makeWithInvalidFailureCode() async throws -> Self {
+        var fixture = try await makeEmpty()
+        let document = try await fixture.insertDocument(
+            relativePath: "invalid-failure-code.pdf",
+            contentHash: "hash-invalid-failure-code"
+        )
+        try await fixture.insertAnalysisState(
+            document: document,
+            status: "failed",
+            failureCode: "contains-private-details"
+        )
+        return fixture
+    }
+
     static func makeWithPendingStateCases() async throws -> Self {
         var fixture = try await makeEmpty()
         let analyzerChanged = try await fixture.insertDocument(
@@ -1142,7 +1350,12 @@ private struct DocumentDNARepositoryFixture {
     func insertAnalysisState(
         document: DocumentRecord,
         status: String,
-        failureCode: String? = nil
+        failureCode: String? = nil,
+        schemaVersion: Int? = nil,
+        analyzerIdentifier: String? = nil,
+        analyzerVersion: String? = nil,
+        inputContentHash: String? = nil,
+        inputExtractionVersion: String? = nil
     ) async throws {
         try await db.write { database in
             try database.execute(
@@ -1155,11 +1368,11 @@ private struct DocumentDNARepositoryFixture {
                     """,
                 arguments: [
                     document.id,
-                    target.schemaVersion,
-                    target.analyzerIdentifier,
-                    target.analyzerVersion,
-                    document.contentHash,
-                    "text-v1",
+                    schemaVersion ?? target.schemaVersion,
+                    analyzerIdentifier ?? target.analyzerIdentifier,
+                    analyzerVersion ?? target.analyzerVersion,
+                    inputContentHash ?? document.contentHash,
+                    inputExtractionVersion ?? "text-v1",
                     status,
                     failureCode,
                     Self.date,
