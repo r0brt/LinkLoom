@@ -157,6 +157,10 @@ struct LinkLoomApp: App {
             repository: dnaRepository,
             target: dnaTarget
         )
+        let dnaSnapshots = CurrentDocumentDNASnapshotLoader(
+            repository: dnaRepository,
+            target: dnaTarget
+        )
         let documentProcessor = LocalDocumentProcessor(
             ingestion: ingestion,
             dnaAnalysis: dnaAnalysis
@@ -180,6 +184,7 @@ struct LinkLoomApp: App {
             catalog: CatalogScanner(service: catalog),
             ingestion: documentProcessor,
             dnaStatuses: dnaStatuses,
+            dnaSnapshots: dnaSnapshots,
             watchScheduler: watchScheduler,
             reportRuntimeFailure: { diagnostic in
                 Self.runtimeLogger.error(
@@ -314,5 +319,14 @@ struct CurrentDocumentDNAStatusLoader: DocumentDNAStatusLoading {
             sourceRootID: sourceRootID,
             target: target
         )
+    }
+}
+
+struct CurrentDocumentDNASnapshotLoader: DocumentDNASnapshotLoading {
+    let repository: DocumentDNARepository
+    let target: DocumentDNAAnalysisTarget
+
+    func currentSnapshot(documentID: UUID) async throws -> DocumentDNA? {
+        try await repository.currentSnapshot(documentID: documentID, target: target)
     }
 }

@@ -8,6 +8,7 @@ public enum AppRuntimeFailureCategory: String, Sendable, Equatable {
     case refresh
     case sourceRemove
     case documentLoad
+    case documentDNADetailLoad
     case watcherStart
     case incrementalRefresh
 }

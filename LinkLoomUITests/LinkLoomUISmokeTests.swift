@@ -66,6 +66,19 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 requireExists(app.staticTexts[text], description: text)
             }
             XCTAssertFalse(app.staticTexts["unsupported.txt"].exists)
+            app.staticTexts["selectable.pdf"].click()
+            requireExists(
+                element("document-dna.inspector", in: app),
+                description: "document-dna.inspector"
+            )
+            requireLabel(
+                "Dokumenttyp: Rechnung",
+                for: element("document-dna.document-type", in: app)
+            )
+            requireLabel(
+                "Seite 1: Rechnung",
+                for: element("document-dna.document-type.evidence.0", in: app)
+            )
         }
 
         terminateAndWait(app)
@@ -89,6 +102,19 @@ final class LinkLoomUISmokeTests: XCTestCase {
             for text in ["selectable.pdf", "scan.png", "corrupt.pdf", "unreadableDocument"] {
                 requireExists(relaunchedApp.staticTexts[text], description: "persisted \(text)")
             }
+            relaunchedApp.staticTexts["selectable.pdf"].click()
+            requireExists(
+                element("document-dna.inspector", in: relaunchedApp),
+                description: "persisted document-dna.inspector"
+            )
+            requireLabel(
+                "Dokumenttyp: Rechnung",
+                for: element("document-dna.document-type", in: relaunchedApp)
+            )
+            requireLabel(
+                "Seite 1: Rechnung",
+                for: element("document-dna.document-type.evidence.0", in: relaunchedApp)
+            )
         }
 
         XCTContext.runActivity(named: "Remove source through its context menu") { _ in
