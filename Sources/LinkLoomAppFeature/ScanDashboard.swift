@@ -274,6 +274,13 @@ public struct ScanDashboard: View {
                             Text(fact.confidence, format: .percent.precision(.fractionLength(0)))
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
+                                .accessibilityLabel("Konfidenz")
+                                .accessibilityValue(
+                                    Text(
+                                        fact.confidence,
+                                        format: .percent.precision(.fractionLength(0))
+                                    )
+                                )
                             evidenceList(
                                 fact.evidence,
                                 identifierPrefix: "document-dna.fact.\(index).evidence"

@@ -339,10 +339,13 @@ public final class AppModel: ObservableObject {
         documentDNADetailState = .loading(documentID: id)
         do {
             let snapshot = try await dnaSnapshots.currentSnapshot(documentID: id)
-            guard !Task.isCancelled,
-                  generation == documentDNADetailGeneration,
+            guard generation == documentDNADetailGeneration,
                   selectedDocumentID == id
             else {
+                return
+            }
+            guard !Task.isCancelled else {
+                documentDNADetailState = .unavailable(documentID: id)
                 return
             }
             guard let snapshot,
@@ -460,6 +463,9 @@ public final class AppModel: ObservableObject {
         documentDNADetailGeneration += 1
         selectedDocumentID = nil
         documentDNADetailState = .none
+        if lastErrorCode == "documentDNADetailLoadFailure" {
+            lastErrorCode = nil
+        }
     }
 
     private func publishSelection(

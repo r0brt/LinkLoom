@@ -258,17 +258,18 @@ struct AppModelTests {
     }
 
     @Test @MainActor func staleDocumentDNAResultCannotReplaceOrFailNewerSelection() async throws {
-        for staleResult in [
-            Result<DocumentDNA?, AppModelTestError>.success(nil),
-            .failure(.documentDNASnapshotLoadFailed),
-        ] {
+        for staleLoadFails in [false, true] {
             let fixture = try AppModelFixture()
             let source = try await fixture.addSource(named: "Archive")
             let first = fixture.document(sourceRootID: source.id, path: "first.pdf")
             let second = fixture.document(sourceRootID: source.id, path: "second.pdf")
             try await fixture.documents.save(first)
             try await fixture.documents.save(second)
+            let firstSnapshot = try testDocumentDNA(document: first)
             let secondSnapshot = try testDocumentDNA(document: second)
+            let staleResult: Result<DocumentDNA?, AppModelTestError> = staleLoadFails
+                ? .failure(.documentDNASnapshotLoadFailed)
+                : .success(firstSnapshot)
             let statuses = [first, second].map {
                 DocumentDNAAnalysisStatus(documentID: $0.id, phase: .ready)
             }
@@ -396,6 +397,31 @@ struct AppModelTests {
         #expect(diagnostics.values.isEmpty)
     }
 
+    @Test @MainActor func cancelledBlockedDocumentDNALoadCannotStayLoading() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        try await fixture.documents.save(document)
+        let snapshot = try testDocumentDNA(document: document)
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [DocumentDNAAnalysisStatus(documentID: document.id, phase: .ready)],
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            document.id: [.blocked(.success(snapshot))],
+        ])
+        let model = fixture.model(dnaStatuses: dnaStatuses, dnaSnapshots: dnaSnapshots)
+        try await model.reload()
+        let selection = Task { await model.selectDocument(id: document.id) }
+        await dnaSnapshots.waitUntilBlockedLoadStarts()
+
+        selection.cancel()
+        await dnaSnapshots.releaseBlockedLoad()
+        await selection.value
+
+        #expect(model.selectedDocumentID == document.id)
+        #expect(model.documentDNADetailState == .unavailable(documentID: document.id))
+    }
+
     @Test @MainActor func newDocumentSelectionClearsPriorDNALoadFailure() async throws {
         let fixture = try AppModelFixture()
         let source = try await fixture.addSource(named: "Archive")
@@ -444,6 +470,29 @@ struct AppModelTests {
 
         #expect(model.selectedDocumentID == nil)
         #expect(model.documentDNADetailState == .none)
+    }
+
+    @Test @MainActor func reloadClearsObsoleteDocumentDNALoadFailure() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        try await fixture.documents.save(document)
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [DocumentDNAAnalysisStatus(documentID: document.id, phase: .ready)],
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            document.id: [.failure],
+        ])
+        let model = fixture.model(dnaStatuses: dnaStatuses, dnaSnapshots: dnaSnapshots)
+        try await model.reload()
+        await model.selectDocument(id: document.id)
+        #expect(model.lastErrorCode == "documentDNADetailLoadFailure")
+
+        try await model.reload()
+
+        #expect(model.selectedDocumentID == nil)
+        #expect(model.documentDNADetailState == .none)
+        #expect(model.lastErrorCode == nil)
     }
 
     @Test @MainActor func documentDNAStatusFailurePreservesVisibleSourceState() async throws {
