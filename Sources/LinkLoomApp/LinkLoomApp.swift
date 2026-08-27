@@ -153,6 +153,10 @@ struct LinkLoomApp: App {
             analyzer: dnaAnalyzer,
             target: dnaTarget
         )
+        let dnaStatuses = CurrentDocumentDNAStatusLoader(
+            repository: dnaRepository,
+            target: dnaTarget
+        )
         let documentProcessor = LocalDocumentProcessor(
             ingestion: ingestion,
             dnaAnalysis: dnaAnalysis
@@ -175,6 +179,7 @@ struct LinkLoomApp: App {
             sourceAccess: sourceAccess,
             catalog: CatalogScanner(service: catalog),
             ingestion: documentProcessor,
+            dnaStatuses: dnaStatuses,
             watchScheduler: watchScheduler,
             reportRuntimeFailure: { diagnostic in
                 Self.runtimeLogger.error(
@@ -295,5 +300,19 @@ struct LocalDocumentProcessor: PendingIngesting {
         try await ingest(source)
         try Task.checkCancellation()
         try await analyzeDNA(source.id)
+    }
+}
+
+struct CurrentDocumentDNAStatusLoader: DocumentDNAStatusLoading {
+    let repository: DocumentDNARepository
+    let target: DocumentDNAAnalysisTarget
+
+    func currentAnalysisStatuses(
+        sourceRootID: UUID
+    ) async throws -> [DocumentDNAAnalysisStatus] {
+        try await repository.currentAnalysisStatuses(
+            sourceRootID: sourceRootID,
+            target: target
+        )
     }
 }

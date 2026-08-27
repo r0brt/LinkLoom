@@ -75,11 +75,26 @@ public struct ScanDashboard: View {
     }
 
     private var statusSummary: some View {
-        HStack(spacing: 12) {
-            statusCard("Entdeckt", status: .discovered, identifier: "status.discovered")
-            statusCard("Extraktion", status: .extracting, identifier: "status.extracting")
-            statusCard("Bereit", status: .ready, identifier: "status.ready")
-            statusCard("Fehler", status: .failed, identifier: "status.failed")
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Textverarbeitung").font(.headline)
+            HStack(spacing: 12) {
+                statusCard("Entdeckt", status: .discovered, identifier: "status.discovered")
+                statusCard("Extraktion", status: .extracting, identifier: "status.extracting")
+                statusCard("Bereit", status: .ready, identifier: "status.ready")
+                statusCard("Fehler", status: .failed, identifier: "status.failed")
+            }
+            Text("Document DNA").font(.headline).padding(.top, 4)
+            documentDNAStatusSummary
+        }
+    }
+
+    private var documentDNAStatusSummary: some View {
+        let summary = DocumentDNAAnalysisSummary(phases: model.documentDNAAnalysisPhases)
+        return HStack(spacing: 12) {
+            documentDNAStatusCard("Ausstehend", count: summary.pending, identifier: "dna-status.pending")
+            documentDNAStatusCard("Läuft", count: summary.analyzing, identifier: "dna-status.analyzing")
+            documentDNAStatusCard("Bereit", count: summary.ready, identifier: "dna-status.ready")
+            documentDNAStatusCard("Fehler", count: summary.failed, identifier: "dna-status.failed")
         }
     }
 
@@ -89,7 +104,34 @@ public struct ScanDashboard: View {
         identifier: String
     ) -> some View {
         let count = model.documents.filter { $0.status == status }.count
-        return VStack(alignment: .leading, spacing: 4) {
+        return countCard(
+            title,
+            count: count,
+            accessibilityTitle: title,
+            identifier: identifier
+        )
+    }
+
+    private func documentDNAStatusCard(
+        _ title: String,
+        count: Int,
+        identifier: String
+    ) -> some View {
+        countCard(
+            title,
+            count: count,
+            accessibilityTitle: "Document DNA \(title)",
+            identifier: identifier
+        )
+    }
+
+    private func countCard(
+        _ title: String,
+        count: Int,
+        accessibilityTitle: String,
+        identifier: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
             Text(title).font(.caption).foregroundStyle(.secondary)
             Text(count.formatted())
                 .font(.title3.monospacedDigit())
@@ -98,7 +140,7 @@ public struct ScanDashboard: View {
         .padding(12)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(title): \(count)")
+        .accessibilityLabel("\(accessibilityTitle): \(count)")
         .accessibilityIdentifier(identifier)
     }
 
@@ -110,6 +152,11 @@ public struct ScanDashboard: View {
             }
             TableColumn("Status") { document in
                 Text(document.status.rawValue)
+            }
+            TableColumn("Document DNA") { document in
+                Text(DocumentDNAAnalysisPresentation.title(
+                    for: model.documentDNAAnalysisPhases[document.id]
+                ))
             }
             TableColumn("Seiten") { document in
                 Text(document.pageCount?.formatted() ?? "—")
@@ -135,5 +182,53 @@ public struct ScanDashboard: View {
     private func lastScanText(_ date: Date?) -> String {
         guard let date else { return "Noch nicht analysiert" }
         return "Letzter Scan: \(date.formatted(date: .abbreviated, time: .shortened))"
+    }
+}
+
+enum DocumentDNAAnalysisPresentation {
+    static func title(for phase: DocumentDNAAnalysisPhase?) -> String {
+        switch phase {
+        case nil:
+            "—"
+        case .pending:
+            "Ausstehend"
+        case .analyzing:
+            "Läuft"
+        case .ready:
+            "Bereit"
+        case .failed(.analysisFailure):
+            "Analyse fehlgeschlagen"
+        case .failed(.invalidFinding):
+            "Ungültiger Befund"
+        case .failed(.invalidProvenance):
+            "Ungültiger Nachweis"
+        }
+    }
+}
+
+struct DocumentDNAAnalysisSummary: Equatable {
+    let pending, analyzing, ready, failed: Int
+
+    init(phases: [UUID: DocumentDNAAnalysisPhase]) {
+        var pending = 0
+        var analyzing = 0
+        var ready = 0
+        var failed = 0
+        for phase in phases.values {
+            switch phase {
+            case .pending:
+                pending += 1
+            case .analyzing:
+                analyzing += 1
+            case .ready:
+                ready += 1
+            case .failed:
+                failed += 1
+            }
+        }
+        self.pending = pending
+        self.analyzing = analyzing
+        self.ready = ready
+        self.failed = failed
     }
 }
