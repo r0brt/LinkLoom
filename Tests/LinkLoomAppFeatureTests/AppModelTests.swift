@@ -310,6 +310,201 @@ struct AppModelTests {
         #expect(model.lastErrorCode == "documentLoadFailure")
     }
 
+    @Test @MainActor func addingSourcePublishesSelectionOnlyAfterDNAStatusSucceeds() async throws {
+        let results: [Result<[DocumentDNAAnalysisStatus], AppModelTestError>] = [
+            .success([]), .failure(.documentDNAStatusLoadFailed),
+        ]
+        for result in results {
+            let fixture = try AppModelFixture()
+            let first = try await fixture.addSource(named: "First")
+            let document = fixture.document(sourceRootID: first.id, path: "first.pdf")
+            try await fixture.documents.save(document)
+            let ready = DocumentDNAAnalysisStatus(documentID: document.id, phase: .ready)
+            let dnaStatuses = ScriptedDocumentDNAStatusLoader(
+                stepsBySource: [first.id: [.statuses([ready])]],
+                defaultSteps: [.blocked(result)]
+            )
+            let scheduler = FakeSourceWatchScheduler()
+            let model = AppModel(
+                sources: fixture.sources,
+                documents: fixture.documents,
+                sourceAccess: fixture.sourceAccess,
+                catalog: FakeCatalogScanner(),
+                ingestion: FakePendingIngester(),
+                dnaStatuses: dnaStatuses,
+                watchScheduler: scheduler,
+                sourceResolver: { _ in fixture.directory }
+            )
+            try await model.reload()
+            let add = Task {
+                await model.addSource(
+                    fixture.directory.appendingPathComponent("Second", isDirectory: true)
+                )
+            }
+            await dnaStatuses.waitUntilBlockedLoadStarts()
+
+            #expect(model.selectedSourceID == first.id)
+            #expect(model.documents == [document])
+            #expect(model.documentDNAAnalysisPhases == [ready.documentID: ready.phase])
+            #expect(await scheduler.startedSourceRecords.count == 2)
+            await dnaStatuses.releaseBlockedLoad()
+            await add.value
+
+            if case .success = result {
+                #expect(model.selectedSourceID != first.id)
+                #expect(model.documents.isEmpty)
+                #expect(model.documentDNAAnalysisPhases.isEmpty)
+            } else {
+                #expect(model.selectedSourceID == first.id)
+                #expect(model.documents == [document])
+                #expect(model.documentDNAAnalysisPhases == [ready.documentID: ready.phase])
+                #expect(model.lastErrorCode == "documentLoadFailure")
+            }
+            #expect(model.sources.count == 2)
+        }
+    }
+
+    @Test @MainActor func removingSelectedSourceClearsPresentationBeforeFallbackLoad() async throws {
+        let results: [Result<[DocumentDNAAnalysisStatus], AppModelTestError>] = [
+            .success([]), .failure(.documentDNAStatusLoadFailed),
+        ]
+        for result in results {
+            let fixture = try AppModelFixture()
+            let pair = try await TwoSourceDocuments.make(in: fixture)
+            let firstReady = DocumentDNAAnalysisStatus(
+                documentID: pair.firstDocument.id,
+                phase: .ready
+            )
+            let secondReady = DocumentDNAAnalysisStatus(
+                documentID: pair.secondDocument.id,
+                phase: .ready
+            )
+            let fallbackResult = result.map { _ in [secondReady] }
+            let dnaStatuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [
+                pair.first.id: [.statuses([firstReady])],
+                pair.second.id: [.blocked(fallbackResult)],
+            ])
+            let model = fixture.model(dnaStatuses: dnaStatuses)
+            try await model.reload()
+            let remove = Task { await model.removeSource(pair.first) }
+            await dnaStatuses.waitUntilBlockedLoadStarts()
+
+            #expect(model.selectedSourceID == nil)
+            #expect(model.documents.isEmpty)
+            #expect(model.documentDNAAnalysisPhases.isEmpty)
+            await dnaStatuses.releaseBlockedLoad()
+            await remove.value
+
+            if case .success = result {
+                #expect(model.selectedSourceID == pair.second.id)
+                #expect(model.documents == [pair.secondDocument])
+                #expect(model.documentDNAAnalysisPhases == [secondReady.documentID: secondReady.phase])
+            } else {
+                #expect(model.selectedSourceID == nil)
+                #expect(model.documents.isEmpty)
+                #expect(model.documentDNAAnalysisPhases.isEmpty)
+                #expect(model.lastErrorCode == "documentLoadFailure")
+            }
+        }
+    }
+
+    @Test @MainActor func reloadStagesFallbackUntilDNAStatusSucceeds() async throws {
+        let fixture = try AppModelFixture()
+        let pair = try await TwoSourceDocuments.make(in: fixture)
+        let firstReady = DocumentDNAAnalysisStatus(
+            documentID: pair.firstDocument.id,
+            phase: .ready
+        )
+        let secondReady = DocumentDNAAnalysisStatus(
+            documentID: pair.secondDocument.id,
+            phase: .ready
+        )
+        let dnaStatuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [
+            pair.first.id: [.statuses([firstReady])],
+            pair.second.id: [.blocked(.success([secondReady]))],
+        ])
+        let model = fixture.model(dnaStatuses: dnaStatuses)
+        try await model.reload()
+        try await fixture.sources.remove(id: pair.first.id)
+        let reload = Task { try await model.reload() }
+        await dnaStatuses.waitUntilBlockedLoadStarts()
+
+        #expect(model.sources.contains { $0.id == pair.first.id })
+        #expect(model.selectedSourceID == pair.first.id)
+        #expect(model.documents == [pair.firstDocument])
+        await dnaStatuses.releaseBlockedLoad()
+        try await reload.value
+
+        #expect(model.sources == [pair.second])
+        #expect(model.selectedSourceID == pair.second.id)
+        #expect(model.documents == [pair.secondDocument])
+        #expect(model.documentDNAAnalysisPhases == [secondReady.documentID: secondReady.phase])
+    }
+
+    @Test @MainActor func staleReloadResultCannotReplaceOrFailNewerPresentation() async throws {
+        for staleResult in [
+            Result<[DocumentDNAAnalysisStatus], AppModelTestError>.success([]),
+            .failure(.documentDNAStatusLoadFailed),
+        ] {
+            let fixture = try AppModelFixture()
+            let source = try await fixture.addSource(named: "Archive")
+            let document = fixture.document(sourceRootID: source.id, path: "document.pdf")
+            try await fixture.documents.save(document)
+            let ready = DocumentDNAAnalysisStatus(documentID: document.id, phase: .ready)
+            let dnaStatuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [
+                source.id: [
+                    .statuses([]), .blocked(staleResult), .statuses([ready]),
+                ],
+            ])
+            let diagnostics = RuntimeDiagnosticRecorder()
+            let model = AppModel(
+                sources: fixture.sources,
+                documents: fixture.documents,
+                sourceAccess: fixture.sourceAccess,
+                catalog: FakeCatalogScanner(),
+                ingestion: FakePendingIngester(),
+                dnaStatuses: dnaStatuses,
+                reportRuntimeFailure: { diagnostics.record($0) }
+            )
+            try await model.reload()
+            let staleReload = Task { try await model.reload() }
+            await dnaStatuses.waitUntilBlockedLoadStarts()
+
+            try await model.reload()
+            await dnaStatuses.releaseBlockedLoad()
+            try await staleReload.value
+
+            #expect(model.selectedSourceID == source.id)
+            #expect(model.documents == [document])
+            #expect(model.documentDNAAnalysisPhases == [document.id: .ready])
+            #expect(diagnostics.values.isEmpty)
+        }
+    }
+
+    @Test @MainActor func reloadPropagatesCancellationError() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let dnaStatuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [
+            source.id: [.statuses([]), .cancellation],
+        ])
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses,
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+
+        await #expect(throws: CancellationError.self) {
+            try await model.reload()
+        }
+        #expect(diagnostics.values.map(\.category) == [.reload])
+    }
+
     @Test @MainActor func overlappingScanDoesNotStartTwiceOrPublishIdleEarly() async throws {
         let fixture = try AppModelFixture()
         _ = try await fixture.addSource(named: "Archive")
@@ -543,7 +738,7 @@ struct AppModelTests {
 
         async let firstReload: Void = model.reload()
         async let secondReload: Void = model.reload()
-        await access.waitUntilAccessCount(2)
+        await access.waitUntilAccessCount(1)
         await access.releaseAccess()
         _ = try await (firstReload, secondReload)
 
@@ -1026,12 +1221,21 @@ struct AppModelTests {
         try await fixture.documents.save(removedDocument)
         try await fixture.documents.save(fallbackDocument)
         let scheduler = FakeSourceWatchScheduler()
+        let fallbackStatus = DocumentDNAAnalysisStatus(
+            documentID: fallbackDocument.id,
+            phase: .ready
+        )
+        let dnaStatuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [
+            removed.id: [.statuses([])],
+            fallback.id: [.blocked(.success([fallbackStatus]))],
+        ])
         let model = AppModel(
             sources: fixture.sources,
             documents: fixture.documents,
             sourceAccess: fixture.sourceAccess,
             catalog: FakeCatalogScanner(),
             ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses,
             watchScheduler: scheduler,
             sourceResolver: { _ in fixture.directory }
         )
@@ -1040,11 +1244,15 @@ struct AppModelTests {
         try await fixture.sources.remove(id: removed.id)
 
         scheduler.completeRescan(sourceID: removed.id)
+        await dnaStatuses.waitUntilBlockedLoadStarts()
+        #expect(model.selectedSourceID == removed.id)
+        #expect(model.documents == [removedDocument])
+        await dnaStatuses.releaseBlockedLoad()
         await waitUntil {
             model.selectedSourceID == fallback.id && model.documents == [fallbackDocument]
         }
 
-        #expect(model.documents == [fallbackDocument])
+        #expect(model.documentDNAAnalysisPhases == [fallbackStatus.documentID: .ready])
     }
 
     @Test @MainActor func currentIncrementalRefreshFailurePreservesVisibleDocuments() async throws {
@@ -1111,8 +1319,9 @@ struct AppModelTests {
             model.lastErrorCode == "incrementalRefreshFailure"
         }
 
-        #expect(model.selectedSourceID == fallback.id)
+        #expect(model.selectedSourceID == removed.id)
         #expect(model.documents == [visible])
+        #expect(model.sources.contains { $0.id == removed.id })
     }
 
     @Test @MainActor func staleIncrementalRefreshFailureDoesNotPublishError() async throws {
@@ -1985,29 +2194,42 @@ private actor ScriptedDocumentDNAStatusLoader: DocumentDNAStatusLoading {
     enum Step: Sendable {
         case statuses([DocumentDNAAnalysisStatus])
         case failure
+        case cancellation
         case blocked(Result<[DocumentDNAAnalysisStatus], AppModelTestError>)
     }
 
     private var stepsBySource: [UUID: [Step]]
+    private var defaultSteps: [Step]
     private var blockedLoadStarted = false
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
 
-    init(stepsBySource: [UUID: [Step]]) {
+    init(
+        stepsBySource: [UUID: [Step]],
+        defaultSteps: [Step] = [.statuses([])]
+    ) {
         self.stepsBySource = stepsBySource
+        self.defaultSteps = defaultSteps
     }
 
     func currentAnalysisStatuses(
         sourceRootID: UUID
     ) async throws -> [DocumentDNAAnalysisStatus] {
-        var steps = stepsBySource[sourceRootID] ?? [.statuses([])]
+        let usesDefaultSteps = stepsBySource[sourceRootID] == nil
+        var steps = stepsBySource[sourceRootID] ?? defaultSteps
         let step = steps.count > 1 ? steps.removeFirst() : steps[0]
-        stepsBySource[sourceRootID] = steps
+        if usesDefaultSteps {
+            defaultSteps = steps
+        } else {
+            stepsBySource[sourceRootID] = steps
+        }
         switch step {
         case .statuses(let statuses):
             return statuses
         case .failure:
             throw AppModelTestError.documentDNAStatusLoadFailed
+        case .cancellation:
+            throw CancellationError()
         case .blocked(let result):
             blockedLoadStarted = true
             startWaiters.forEach { $0.resume() }

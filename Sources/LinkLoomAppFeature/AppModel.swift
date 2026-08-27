@@ -150,18 +150,30 @@ public final class AppModel: ObservableObject {
     public func reload() async throws {
         activeReloadCount += 1
         invalidateIncrementalRefreshes()
+        let generation = incrementalRefreshGeneration
         do {
-            sources = try await sourceRepository.all()
-            if !sources.contains(where: { $0.id == selectedSourceID }) {
-                selectedSourceID = sources.first?.id
+            let loadedSources = try await sourceRepository.all()
+            let targetSourceID = loadedSources.contains(where: { $0.id == selectedSourceID })
+                ? selectedSourceID
+                : loadedSources.first?.id
+            let presentation = try await loadDocumentPresentation(sourceID: targetSourceID)
+            guard !Task.isCancelled,
+                  generation == incrementalRefreshGeneration
+            else {
+                await finishReload()
+                return
             }
-            _ = try await reloadDocuments()
+            sources = loadedSources
+            publishSelection(targetSourceID, presentation: presentation)
             await startWatchingSavedSources()
-            activeReloadCount -= 1
-            await processPendingRescanCompletions()
+            await finishReload()
         } catch {
-            activeReloadCount -= 1
-            await processPendingRescanCompletions()
+            await finishReload()
+            guard error is CancellationError
+                    || generation == incrementalRefreshGeneration
+            else {
+                return
+            }
             reportRuntimeFailure(AppRuntimeDiagnostic(category: .reload, error: error))
             throw error
         }
@@ -171,20 +183,23 @@ public final class AppModel: ObservableObject {
         guard beginExclusiveSourceOperation() else { return }
         defer { endExclusiveSourceOperation() }
         invalidateIncrementalRefreshes()
+        var sourceWasPersisted = false
         do {
             let source = try await sourceRepository.add(
                 url: url,
                 sourceAccess: sourceAccess
             )
+            sourceWasPersisted = true
             sources = try await sourceRepository.all()
-            selectedSourceID = source.id
-            _ = try await reloadDocuments()
             await startWatching(source)
+            let presentation = try await loadDocumentPresentation(sourceID: source.id)
+            guard !Task.isCancelled else { return }
+            publishSelection(source.id, presentation: presentation)
             lastErrorCode = nil
         } catch {
             publishRuntimeFailure(
-                code: "sourceAddFailure",
-                category: .sourceAdd,
+                code: sourceWasPersisted ? "documentLoadFailure" : "sourceAddFailure",
+                category: sourceWasPersisted ? .documentLoad : .sourceAdd,
                 error: error
             )
         }
@@ -222,21 +237,30 @@ public final class AppModel: ObservableObject {
         guard beginExclusiveSourceOperation() else { return }
         defer { endExclusiveSourceOperation() }
         invalidateIncrementalRefreshes()
+        var sourceWasRemoved = false
         do {
             try await sourceRepository.remove(id: source.id)
+            sourceWasRemoved = true
             await watchScheduler?.stop(sourceID: source.id)
             watchedSourceIDs.remove(source.id)
             unavailableSourceIDs.remove(source.id)
             sources = try await sourceRepository.all()
-            if selectedSourceID == source.id {
-                selectedSourceID = sources.first?.id
+            let removedSelection = selectedSourceID == source.id
+            let targetSourceID = removedSelection ? sources.first?.id : selectedSourceID
+            if removedSelection {
+                publishSelection(
+                    nil,
+                    presentation: DocumentPresentation(documents: [], dnaAnalysisPhases: [:])
+                )
             }
-            _ = try await reloadDocuments()
+            let presentation = try await loadDocumentPresentation(sourceID: targetSourceID)
+            guard !Task.isCancelled else { return }
+            publishSelection(targetSourceID, presentation: presentation)
             lastErrorCode = nil
         } catch {
             publishRuntimeFailure(
-                code: "sourceRemoveFailure",
-                category: .sourceRemove,
+                code: sourceWasRemoved ? "documentLoadFailure" : "sourceRemoveFailure",
+                category: sourceWasRemoved ? .documentLoad : .sourceRemove,
                 error: error
             )
         }
@@ -253,8 +277,7 @@ public final class AppModel: ObservableObject {
             else {
                 return
             }
-            selectedSourceID = id
-            publish(presentation)
+            publishSelection(id, presentation: presentation)
             lastErrorCode = nil
         } catch {
             guard generation == incrementalRefreshGeneration else { return }
@@ -341,6 +364,19 @@ public final class AppModel: ObservableObject {
     private func publish(_ presentation: DocumentPresentation) {
         documents = presentation.documents
         documentDNAAnalysisPhases = presentation.dnaAnalysisPhases
+    }
+
+    private func publishSelection(
+        _ sourceID: UUID?,
+        presentation: DocumentPresentation
+    ) {
+        selectedSourceID = sourceID
+        publish(presentation)
+    }
+
+    private func finishReload() async {
+        activeReloadCount -= 1
+        await processPendingRescanCompletions()
     }
 
     private func beginExclusiveSourceOperation() -> Bool {
@@ -483,17 +519,23 @@ public final class AppModel: ObservableObject {
             else {
                 return
             }
-            let previousSelection = selectedSourceID
-            sources = refreshedSources
-            if !sources.contains(where: { $0.id == selectedSourceID }) {
-                selectedSourceID = sources.first?.id
+            let targetSourceID = refreshedSources.contains(where: { $0.id == selectedSourceID })
+                ? selectedSourceID
+                : refreshedSources.first?.id
+            let selectionChanged = targetSourceID != selectedSourceID
+            let selectedSourceCompleted = targetSourceID.map(sourceIDs.contains) ?? false
+            guard selectionChanged || selectedSourceCompleted else {
+                sources = refreshedSources
+                return
             }
-            let selectionChanged = selectedSourceID != previousSelection
-            let selectedSourceCompleted = selectedSourceID.map(sourceIDs.contains) ?? false
-            guard selectionChanged || selectedSourceCompleted else { return }
-            _ = try await reloadDocuments(
-                expectedIncrementalRefreshGeneration: generation
-            )
+            let presentation = try await loadDocumentPresentation(sourceID: targetSourceID)
+            guard !Task.isCancelled,
+                  generation == incrementalRefreshGeneration
+            else {
+                return
+            }
+            sources = refreshedSources
+            publishSelection(targetSourceID, presentation: presentation)
         } catch {
             guard !Task.isCancelled,
                   generation == incrementalRefreshGeneration,
