@@ -43,6 +43,7 @@ public enum DocumentDNARepositoryError: Error, Sendable, Equatable {
     case invalidTarget
     case staleInput
     case invalidProvenance
+    case invalidStoredState
 }
 
 public actor DocumentDNARepository {
@@ -120,6 +121,82 @@ public actor DocumentDNARepository {
                     document: document,
                     extraction: extraction
                 )
+            }
+        }
+    }
+
+    public func currentAnalysisStatuses(
+        sourceRootID: UUID,
+        target: DocumentDNAAnalysisTarget
+    ) async throws -> [DocumentDNAAnalysisStatus] {
+        try await dbWriter.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT document.id AS documentID,
+                           analysisState.status AS analysisStatus,
+                           analysisState.failureCode AS analysisFailureCode,
+                           documentDNA.documentID AS snapshotDocumentID
+                    FROM document
+                    JOIN documentExtraction
+                        ON documentExtraction.documentID = document.id
+                    LEFT JOIN documentDNAAnalysisState AS analysisState
+                        ON analysisState.documentID = document.id
+                        AND analysisState.targetSchemaVersion = ?
+                        AND analysisState.targetAnalyzerIdentifier = ?
+                        AND analysisState.targetAnalyzerVersion = ?
+                        AND analysisState.inputContentHash = document.contentHash
+                        AND analysisState.inputExtractionVersion =
+                            documentExtraction.analysisVersion
+                    LEFT JOIN documentDNA
+                        ON documentDNA.documentID = document.id
+                        AND documentDNA.schemaVersion = ?
+                        AND documentDNA.analyzerIdentifier = ?
+                        AND documentDNA.analyzerVersion = ?
+                        AND documentDNA.inputContentHash = document.contentHash
+                        AND documentDNA.inputExtractionVersion =
+                            documentExtraction.analysisVersion
+                    WHERE document.sourceRootID = ?
+                        AND document.availability = ?
+                        AND document.status = ?
+                    ORDER BY document.relativePath, document.id
+                    """,
+                arguments: [
+                    target.schemaVersion,
+                    target.analyzerIdentifier,
+                    target.analyzerVersion,
+                    target.schemaVersion,
+                    target.analyzerIdentifier,
+                    target.analyzerVersion,
+                    sourceRootID,
+                    DocumentAvailability.available,
+                    DocumentStatus.ready,
+                ]
+            )
+            return try rows.map { row in
+                let documentID: UUID = row["documentID"]
+                let analysisStatus: String? = row["analysisStatus"]
+                let failureCodeValue: String? = row["analysisFailureCode"]
+                let snapshotDocumentID: UUID? = row["snapshotDocumentID"]
+                let phase: DocumentDNAAnalysisPhase
+                switch analysisStatus {
+                case "analyzing":
+                    phase = .analyzing
+                case "ready" where snapshotDocumentID != nil:
+                    phase = .ready
+                case "failed":
+                    guard let failureCodeValue,
+                          let failureCode = DocumentDNAAnalysisFailureCode(
+                              rawValue: failureCodeValue
+                          )
+                    else {
+                        throw DocumentDNARepositoryError.invalidStoredState
+                    }
+                    phase = .failed(failureCode)
+                default:
+                    phase = .pending
+                }
+                return DocumentDNAAnalysisStatus(documentID: documentID, phase: phase)
             }
         }
     }
