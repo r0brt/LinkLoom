@@ -366,10 +366,13 @@ public final class AppModel: ObservableObject {
             }
             documentDNADetailState = .unavailable(documentID: id)
         } catch {
-            guard !Task.isCancelled,
-                  generation == documentDNADetailGeneration,
+            guard generation == documentDNADetailGeneration,
                   selectedDocumentID == id
             else {
+                return
+            }
+            guard !Task.isCancelled else {
+                documentDNADetailState = .unavailable(documentID: id)
                 return
             }
             documentDNADetailState = .failed(documentID: id)

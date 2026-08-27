@@ -398,28 +398,33 @@ struct AppModelTests {
     }
 
     @Test @MainActor func cancelledBlockedDocumentDNALoadCannotStayLoading() async throws {
-        let fixture = try AppModelFixture()
-        let source = try await fixture.addSource(named: "Archive")
-        let document = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
-        try await fixture.documents.save(document)
-        let snapshot = try testDocumentDNA(document: document)
-        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
-            source.id: [DocumentDNAAnalysisStatus(documentID: document.id, phase: .ready)],
-        ])
-        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
-            document.id: [.blocked(.success(snapshot))],
-        ])
-        let model = fixture.model(dnaStatuses: dnaStatuses, dnaSnapshots: dnaSnapshots)
-        try await model.reload()
-        let selection = Task { await model.selectDocument(id: document.id) }
-        await dnaSnapshots.waitUntilBlockedLoadStarts()
+        for blockedLoadFails in [false, true] {
+            let fixture = try AppModelFixture()
+            let source = try await fixture.addSource(named: "Archive")
+            let document = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+            try await fixture.documents.save(document)
+            let snapshot = try testDocumentDNA(document: document)
+            let blockedResult: Result<DocumentDNA?, AppModelTestError> = blockedLoadFails
+                ? .failure(.documentDNASnapshotLoadFailed)
+                : .success(snapshot)
+            let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+                source.id: [DocumentDNAAnalysisStatus(documentID: document.id, phase: .ready)],
+            ])
+            let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                document.id: [.blocked(blockedResult)],
+            ])
+            let model = fixture.model(dnaStatuses: dnaStatuses, dnaSnapshots: dnaSnapshots)
+            try await model.reload()
+            let selection = Task { await model.selectDocument(id: document.id) }
+            await dnaSnapshots.waitUntilBlockedLoadStarts()
 
-        selection.cancel()
-        await dnaSnapshots.releaseBlockedLoad()
-        await selection.value
+            selection.cancel()
+            await dnaSnapshots.releaseBlockedLoad()
+            await selection.value
 
-        #expect(model.selectedDocumentID == document.id)
-        #expect(model.documentDNADetailState == .unavailable(documentID: document.id))
+            #expect(model.selectedDocumentID == document.id)
+            #expect(model.documentDNADetailState == .unavailable(documentID: document.id))
+        }
     }
 
     @Test @MainActor func newDocumentSelectionClearsPriorDNALoadFailure() async throws {
