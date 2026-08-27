@@ -59,6 +59,8 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireLabel("Extraktion: 0", for: element("status.extracting", in: app), timeout: 90)
             requireLabel("Bereit: 2", for: element("status.ready", in: app), timeout: 90)
             requireLabel("Fehler: 1", for: element("status.failed", in: app), timeout: 90)
+            requireLabel("Document DNA Bereit: 2", for: element("dna-status.ready", in: app), timeout: 90)
+            requireLabel("Document DNA Fehler: 0", for: element("dna-status.failed", in: app), timeout: 90)
             requireExists(element("documents.table", in: app), description: "documents.table")
             for text in ["selectable.pdf", "scan.png", "corrupt.pdf", "failed", "unreadableDocument"] {
                 requireExists(app.staticTexts[text], description: text)
@@ -81,6 +83,8 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireLabel("Extraktion: 0", for: element("status.extracting", in: relaunchedApp))
             requireLabel("Bereit: 2", for: element("status.ready", in: relaunchedApp))
             requireLabel("Fehler: 1", for: element("status.failed", in: relaunchedApp))
+            requireLabel("Document DNA Bereit: 2", for: element("dna-status.ready", in: relaunchedApp))
+            requireLabel("Document DNA Fehler: 0", for: element("dna-status.failed", in: relaunchedApp))
             requireExists(element("documents.table", in: relaunchedApp), description: "persisted table")
             for text in ["selectable.pdf", "scan.png", "corrupt.pdf", "unreadableDocument"] {
                 requireExists(relaunchedApp.staticTexts[text], description: "persisted \(text)")

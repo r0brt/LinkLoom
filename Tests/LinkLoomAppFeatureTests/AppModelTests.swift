@@ -188,6 +188,128 @@ struct AppModelTests {
         #expect(model.lastErrorCode == nil)
     }
 
+    @Test @MainActor func reloadPublishesDNAStatusesOnlyForVisibleDocuments() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let visible = fixture.document(sourceRootID: source.id, path: "visible.pdf")
+        try await fixture.documents.save(visible)
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [
+                DocumentDNAAnalysisStatus(documentID: visible.id, phase: .ready),
+                DocumentDNAAnalysisStatus(
+                    documentID: UUID(),
+                    phase: .ready
+                ),
+            ],
+        ])
+        let model = fixture.model(dnaStatuses: dnaStatuses)
+
+        try await model.reload()
+
+        #expect(model.documents == [visible])
+        #expect(model.documentDNAAnalysisPhases == [visible.id: .ready])
+    }
+
+    @Test @MainActor func selectingSourceReplacesDocumentDNAStatuses() async throws {
+        let fixture = try AppModelFixture()
+        let pair = try await TwoSourceDocuments.make(in: fixture)
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            pair.first.id: [
+                DocumentDNAAnalysisStatus(documentID: pair.firstDocument.id, phase: .pending),
+            ],
+            pair.second.id: [
+                DocumentDNAAnalysisStatus(
+                    documentID: pair.secondDocument.id,
+                    phase: .failed(.invalidFinding)
+                ),
+            ],
+        ])
+        let model = fixture.model(dnaStatuses: dnaStatuses)
+        try await model.reload()
+
+        await model.selectSource(id: pair.second.id)
+
+        #expect(model.documents == [pair.secondDocument])
+        #expect(
+            model.documentDNAAnalysisPhases
+                == [pair.secondDocument.id: .failed(.invalidFinding)]
+        )
+    }
+
+    @Test @MainActor func documentDNAStatusFailurePreservesVisibleSourceState() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "ready.pdf")
+        try await fixture.documents.save(document)
+        let dnaStatuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [source.id: [
+            .statuses([DocumentDNAAnalysisStatus(documentID: document.id, phase: .ready)]),
+            .failure,
+        ]])
+        let model = fixture.model(dnaStatuses: dnaStatuses)
+        try await model.reload()
+
+        await model.selectSource(id: source.id)
+
+        #expect(model.documents == [document])
+        #expect(model.documentDNAAnalysisPhases == [document.id: .ready])
+        #expect(model.lastErrorCode == "documentLoadFailure")
+    }
+
+    @Test @MainActor func staleABADNAStatusResultCannotOverwriteNewerSelection() async throws {
+        let staleResults: [Result<[DocumentDNAAnalysisStatus], AppModelTestError>] = [
+            .success([]),
+            .failure(.documentDNAStatusLoadFailed),
+        ]
+        for staleResult in staleResults {
+            let fixture = try AppModelFixture()
+            let pair = try await TwoSourceDocuments.make(in: fixture)
+            let current = DocumentDNAAnalysisStatus(
+                documentID: pair.secondDocument.id,
+                phase: .ready
+            )
+            let dnaStatuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [
+                pair.first.id: [.statuses([])],
+                pair.second.id: [.blocked(staleResult), .statuses([current])],
+            ])
+            let model = fixture.model(dnaStatuses: dnaStatuses)
+            try await model.reload()
+            let staleSelection = Task { await model.selectSource(id: pair.second.id) }
+            await dnaStatuses.waitUntilBlockedLoadStarts()
+
+            await model.selectSource(id: pair.first.id)
+            await model.selectSource(id: pair.second.id)
+            await dnaStatuses.releaseBlockedLoad()
+            await staleSelection.value
+
+            #expect(model.selectedSourceID == pair.second.id)
+            #expect(model.documents == [pair.secondDocument])
+            #expect(model.documentDNAAnalysisPhases == [current.documentID: current.phase])
+            #expect(model.lastErrorCode == nil)
+        }
+    }
+
+    @Test @MainActor func crossSourceDNAStatusFailureKeepsPresentedSelectionCoherent() async throws {
+        let fixture = try AppModelFixture()
+        let pair = try await TwoSourceDocuments.make(in: fixture)
+        let ready = DocumentDNAAnalysisStatus(
+            documentID: pair.firstDocument.id,
+            phase: .ready
+        )
+        let dnaStatuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [
+            pair.first.id: [.statuses([ready])],
+            pair.second.id: [.failure],
+        ])
+        let model = fixture.model(dnaStatuses: dnaStatuses)
+        try await model.reload()
+
+        await model.selectSource(id: pair.second.id)
+
+        #expect(model.selectedSourceID == pair.first.id)
+        #expect(model.documents == [pair.firstDocument])
+        #expect(model.documentDNAAnalysisPhases == [ready.documentID: ready.phase])
+        #expect(model.lastErrorCode == "documentLoadFailure")
+    }
+
     @Test @MainActor func overlappingScanDoesNotStartTwiceOrPublishIdleEarly() async throws {
         let fixture = try AppModelFixture()
         _ = try await fixture.addSource(named: "Archive")
@@ -568,18 +690,26 @@ struct AppModelTests {
         let fixture = try AppModelFixture()
         let source = try await fixture.addSource(named: "Archive")
         let scheduler = FakeSourceWatchScheduler()
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [],
+        ])
         let model = AppModel(
             sources: fixture.sources,
             documents: fixture.documents,
             sourceAccess: fixture.sourceAccess,
             catalog: FakeCatalogScanner(),
             ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses,
             watchScheduler: scheduler,
             sourceResolver: { _ in fixture.directory }
         )
         try await model.reload()
         let ready = fixture.document(sourceRootID: source.id, path: "new.pdf")
         try await fixture.documents.save(ready)
+        await dnaStatuses.setStatuses(
+            [DocumentDNAAnalysisStatus(documentID: ready.id, phase: .ready)],
+            sourceRootID: source.id
+        )
         try await fixture.sources.updateLastScan(
             id: source.id,
             at: Date(timeIntervalSince1970: 500)
@@ -587,7 +717,9 @@ struct AppModelTests {
 
         scheduler.completeRescan(sourceID: source.id)
         await waitUntil {
-            model.documents == [ready] && model.sources.first?.lastScanAt != nil
+            model.documents == [ready]
+                && model.documentDNAAnalysisPhases == [ready.id: .ready]
+                && model.sources.first?.lastScanAt != nil
         }
     }
 
@@ -1776,6 +1908,40 @@ private final class AppModelFixture: @unchecked Sendable {
             lastSeenAt: Date(timeIntervalSince1970: 200)
         )
     }
+
+    @MainActor
+    func model(dnaStatuses: any DocumentDNAStatusLoading) -> AppModel {
+        AppModel(
+            sources: sources,
+            documents: documents,
+            sourceAccess: sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses
+        )
+    }
+}
+
+private struct TwoSourceDocuments {
+    let first: SourceRootRecord
+    let second: SourceRootRecord
+    let firstDocument: DocumentRecord
+    let secondDocument: DocumentRecord
+
+    static func make(in fixture: AppModelFixture) async throws -> Self {
+        let first = try await fixture.addSource(named: "First")
+        let second = try await fixture.addSource(named: "Second")
+        let firstDocument = fixture.document(sourceRootID: first.id, path: "first.pdf")
+        let secondDocument = fixture.document(sourceRootID: second.id, path: "second.pdf")
+        try await fixture.documents.save(firstDocument)
+        try await fixture.documents.save(secondDocument)
+        return Self(
+            first: first,
+            second: second,
+            firstDocument: firstDocument,
+            secondDocument: secondDocument
+        )
+    }
 }
 
 private struct FakeCatalogScanner: CatalogScanning {
@@ -1792,6 +1958,74 @@ private struct FakeCatalogScanner: CatalogScanning {
 
 private struct FakePendingIngester: PendingIngesting {
     func processPending(source: SourceRootRecord) async throws {}
+}
+
+private actor MutableDocumentDNAStatusLoader: DocumentDNAStatusLoading {
+    private var statusesBySource: [UUID: [DocumentDNAAnalysisStatus]]
+
+    init(statusesBySource: [UUID: [DocumentDNAAnalysisStatus]]) {
+        self.statusesBySource = statusesBySource
+    }
+
+    func currentAnalysisStatuses(
+        sourceRootID: UUID
+    ) async throws -> [DocumentDNAAnalysisStatus] {
+        statusesBySource[sourceRootID] ?? []
+    }
+
+    func setStatuses(
+        _ statuses: [DocumentDNAAnalysisStatus],
+        sourceRootID: UUID
+    ) {
+        statusesBySource[sourceRootID] = statuses
+    }
+}
+
+private actor ScriptedDocumentDNAStatusLoader: DocumentDNAStatusLoading {
+    enum Step: Sendable {
+        case statuses([DocumentDNAAnalysisStatus])
+        case failure
+        case blocked(Result<[DocumentDNAAnalysisStatus], AppModelTestError>)
+    }
+
+    private var stepsBySource: [UUID: [Step]]
+    private var blockedLoadStarted = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(stepsBySource: [UUID: [Step]]) {
+        self.stepsBySource = stepsBySource
+    }
+
+    func currentAnalysisStatuses(
+        sourceRootID: UUID
+    ) async throws -> [DocumentDNAAnalysisStatus] {
+        var steps = stepsBySource[sourceRootID] ?? [.statuses([])]
+        let step = steps.count > 1 ? steps.removeFirst() : steps[0]
+        stepsBySource[sourceRootID] = steps
+        switch step {
+        case .statuses(let statuses):
+            return statuses
+        case .failure:
+            throw AppModelTestError.documentDNAStatusLoadFailed
+        case .blocked(let result):
+            blockedLoadStarted = true
+            startWaiters.forEach { $0.resume() }
+            startWaiters.removeAll()
+            await withCheckedContinuation { releaseWaiters.append($0) }
+            return try result.get()
+        }
+    }
+
+    func waitUntilBlockedLoadStarts() async {
+        guard !blockedLoadStarted else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func releaseBlockedLoad() {
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters.removeAll()
+    }
 }
 
 private struct FakeSourceAccess: SourceAccessing {
@@ -1911,9 +2145,10 @@ private actor AppSourceAccessGate {
     }
 }
 
-private enum AppModelTestError: Error {
+private enum AppModelTestError: Error, Sendable {
     case scanFailed
     case documentLoadFailed
+    case documentDNAStatusLoadFailed
     case unusedSourceResolution
     case timeout
 }

@@ -16,11 +16,18 @@ public protocol PendingIngesting: Sendable {
     func processPending(source: SourceRootRecord) async throws
 }
 
+public protocol DocumentDNAStatusLoading: Sendable {
+    func currentAnalysisStatuses(sourceRootID: UUID) async throws -> [DocumentDNAAnalysisStatus]
+}
+
 @MainActor
 public final class AppModel: ObservableObject {
     @Published public private(set) var sources: [SourceRootRecord] = []
     @Published public var selectedSourceID: UUID?
     @Published public private(set) var documents: [DocumentRecord] = []
+    @Published public private(set) var documentDNAAnalysisPhases: [
+        UUID: DocumentDNAAnalysisPhase
+    ] = [:]
     @Published public private(set) var scanState: AppScanState = .idle
     @Published public private(set) var lastErrorCode: String?
     @Published public private(set) var unavailableSourceIDs = Set<UUID>()
@@ -45,10 +52,10 @@ public final class AppModel: ObservableObject {
     }
 
     private let sourceRepository: SourceRootRepository
-    private let documentRepository: DocumentRepository
     private let sourceAccess: any SourceAccessing
     private let catalog: any CatalogScanning
     private let ingestion: any PendingIngesting
+    private let dnaStatuses: (any DocumentDNAStatusLoading)?
     private let sourceLoader: @Sendable () async throws -> [SourceRootRecord]
     private let documentLoader: @Sendable (UUID) async throws -> [DocumentRecord]
     private let watchScheduler: (any SourceWatchScheduling)?
@@ -71,14 +78,15 @@ public final class AppModel: ObservableObject {
         sourceAccess: any SourceAccessing,
         catalog: any CatalogScanning,
         ingestion: any PendingIngesting,
+        dnaStatuses: (any DocumentDNAStatusLoading)? = nil,
         watchScheduler: (any SourceWatchScheduling)? = nil,
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
         sourceRepository = sources
-        documentRepository = documents
         self.sourceAccess = sourceAccess
         self.catalog = catalog
         self.ingestion = ingestion
+        self.dnaStatuses = dnaStatuses
         sourceLoader = { try await sources.all() }
         self.watchScheduler = watchScheduler
         self.reportRuntimeFailure = reportRuntimeFailure
@@ -96,14 +104,15 @@ public final class AppModel: ObservableObject {
         sourceAccess: any SourceAccessing,
         catalog: any CatalogScanning,
         ingestion: any PendingIngesting,
+        dnaStatuses: (any DocumentDNAStatusLoading)? = nil,
         documentLoader: @escaping @Sendable (UUID) async throws -> [DocumentRecord],
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
         sourceRepository = sources
-        documentRepository = documents
         self.sourceAccess = sourceAccess
         self.catalog = catalog
         self.ingestion = ingestion
+        self.dnaStatuses = dnaStatuses
         sourceLoader = { try await sources.all() }
         self.documentLoader = documentLoader
         watchScheduler = nil
@@ -117,6 +126,7 @@ public final class AppModel: ObservableObject {
         sourceAccess: any SourceAccessing,
         catalog: any CatalogScanning,
         ingestion: any PendingIngesting,
+        dnaStatuses: (any DocumentDNAStatusLoading)? = nil,
         watchScheduler: any SourceWatchScheduling,
         sourceResolver: @escaping @Sendable (SourceRootRecord) throws -> URL,
         sourceLoader: (@Sendable () async throws -> [SourceRootRecord])? = nil,
@@ -124,10 +134,10 @@ public final class AppModel: ObservableObject {
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
         sourceRepository = sources
-        documentRepository = documents
         self.sourceAccess = sourceAccess
         self.catalog = catalog
         self.ingestion = ingestion
+        self.dnaStatuses = dnaStatuses
         self.sourceLoader = sourceLoader ?? { try await sources.all() }
         self.documentLoader = documentLoader ?? { sourceID in
             try await documents.all(sourceRootID: sourceID)
@@ -168,7 +178,7 @@ public final class AppModel: ObservableObject {
             )
             sources = try await sourceRepository.all()
             selectedSourceID = source.id
-            documents = try await documentRepository.all(sourceRootID: source.id)
+            _ = try await reloadDocuments()
             await startWatching(source)
             lastErrorCode = nil
         } catch {
@@ -235,12 +245,19 @@ public final class AppModel: ObservableObject {
     public func selectSource(id: UUID?) async {
         guard !isExclusiveSourceOperationActive else { return }
         invalidateIncrementalRefreshes()
-        selectedSourceID = id
+        let generation = incrementalRefreshGeneration
         do {
-            if try await reloadDocuments() {
-                lastErrorCode = nil
+            let presentation = try await loadDocumentPresentation(sourceID: id)
+            guard !Task.isCancelled,
+                  generation == incrementalRefreshGeneration
+            else {
+                return
             }
+            selectedSourceID = id
+            publish(presentation)
+            lastErrorCode = nil
         } catch {
+            guard generation == incrementalRefreshGeneration else { return }
             publishRuntimeFailure(
                 code: "documentLoadFailure",
                 category: .documentLoad,
@@ -274,26 +291,56 @@ public final class AppModel: ObservableObject {
     private func reloadDocuments(
         expectedIncrementalRefreshGeneration: Int? = nil
     ) async throws -> Bool {
-        guard let selectedSourceID else {
-            documents = []
-            return true
-        }
+        let sourceID = selectedSourceID
+        let generation = expectedIncrementalRefreshGeneration
+            ?? incrementalRefreshGeneration
         do {
-            let loadedDocuments = try await documentLoader(selectedSourceID)
+            let presentation = try await loadDocumentPresentation(sourceID: sourceID)
             guard !Task.isCancelled,
-                  self.selectedSourceID == selectedSourceID,
-                  expectedIncrementalRefreshGeneration.map({
-                      $0 == incrementalRefreshGeneration
-                  }) ?? true
+                  selectedSourceID == sourceID,
+                  generation == incrementalRefreshGeneration
             else {
                 return false
             }
-            documents = loadedDocuments
+            publish(presentation)
             return true
         } catch {
-            guard self.selectedSourceID == selectedSourceID else { return false }
+            guard selectedSourceID == sourceID,
+                  generation == incrementalRefreshGeneration
+            else {
+                return false
+            }
             throw error
         }
+    }
+
+    private func loadDocumentPresentation(
+        sourceID: UUID?
+    ) async throws -> DocumentPresentation {
+        guard let sourceID else {
+            return DocumentPresentation(documents: [], dnaAnalysisPhases: [:])
+        }
+        let loadedDocuments = try await documentLoader(sourceID)
+        let loadedDNAStatuses = try await dnaStatuses?.currentAnalysisStatuses(
+            sourceRootID: sourceID
+        ) ?? []
+        let visibleDocumentIDs = Set(loadedDocuments.map(\.id))
+        let phases: [UUID: DocumentDNAAnalysisPhase] = loadedDNAStatuses.reduce(
+            into: [:]
+        ) { phases, status in
+            if visibleDocumentIDs.contains(status.documentID) {
+                phases[status.documentID] = status.phase
+            }
+        }
+        return DocumentPresentation(
+            documents: loadedDocuments,
+            dnaAnalysisPhases: phases
+        )
+    }
+
+    private func publish(_ presentation: DocumentPresentation) {
+        documents = presentation.documents
+        documentDNAAnalysisPhases = presentation.dnaAnalysisPhases
     }
 
     private func beginExclusiveSourceOperation() -> Bool {
@@ -493,4 +540,9 @@ public final class AppModel: ObservableObject {
             break
         }
     }
+}
+
+private struct DocumentPresentation {
+    let documents: [DocumentRecord]
+    let dnaAnalysisPhases: [UUID: DocumentDNAAnalysisPhase]
 }
