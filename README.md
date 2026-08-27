@@ -1,6 +1,6 @@
 # LinkLoom
 
-LinkLoom builds a local-first catalog and text index over documents that already exist on a Mac or an available mounted source. The SwiftPM vertical slice scans supported files, extracts text locally, and persists only catalog and extraction data. Original files remain in place and are never renamed, moved, or intentionally modified.
+LinkLoom builds a local-first catalog, text index, and structured Document DNA over documents that already exist on a Mac or an available mounted source. The SwiftPM vertical slice scans supported files, extracts text, classifies documents, and persists evidence-backed facts locally. Original files remain in place and are never renamed, moved, or intentionally modified.
 
 ## Prerequisites
 
@@ -55,7 +55,7 @@ The current catalog acceptance boundary is 10,000 documents in one selected sour
 2. Copy a few non-sensitive test documents into it.
 3. Run `swift run LinkLoomApp`.
 4. Select the temporary folder in the source picker.
-5. Start a scan and inspect the local status shown for each document.
+5. Start a scan, select a ready document, and inspect its local Document DNA and source-backed evidence.
 
 LinkLoom reads selected originals in place. It does not import them into a proprietary archive. Cataloging and text extraction run locally, and removing LinkLoom's rebuildable database does not remove source documents.
 

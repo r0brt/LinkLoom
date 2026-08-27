@@ -36,7 +36,7 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
             && corruptFailureMatchCount == 1
             && dnaSnapshotCount == 2
             && dnaFindingCount == 2
-            && dnaEvidenceCount == 0
+            && dnaEvidenceCount == 1
             && dnaAnalysisStateCount == 2
             && dnaReadyStateCount == 2
             && dnaClassificationCount == 2
@@ -115,7 +115,7 @@ final class SQLiteProbe {
                 FROM document AS d
                 JOIN documentExtraction AS e ON e.documentID = d.id
                 WHERE d.relativePath = 'selectable.pdf'
-                  AND instr(e.joinedText, 'Selectable LinkLoom smoke text') > 0
+                  AND instr(e.joinedText, 'Rechnung') > 0
                 """),
             ocrTextMatchCount: try scalar("""
                 SELECT COUNT(*)

@@ -236,6 +236,270 @@ struct AppModelTests {
         )
     }
 
+    @Test @MainActor func selectingReadyDocumentLoadsItsCurrentDNASnapshot() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        try await fixture.documents.save(document)
+        let snapshot = try testDocumentDNA(document: document)
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [DocumentDNAAnalysisStatus(documentID: document.id, phase: .ready)],
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            document.id: [.snapshot(snapshot)],
+        ])
+        let model = fixture.model(dnaStatuses: dnaStatuses, dnaSnapshots: dnaSnapshots)
+        try await model.reload()
+
+        await model.selectDocument(id: document.id)
+
+        #expect(model.selectedDocumentID == document.id)
+        #expect(model.documentDNADetailState == .available(snapshot))
+    }
+
+    @Test @MainActor func staleDocumentDNAResultCannotReplaceOrFailNewerSelection() async throws {
+        for staleLoadFails in [false, true] {
+            let fixture = try AppModelFixture()
+            let source = try await fixture.addSource(named: "Archive")
+            let first = fixture.document(sourceRootID: source.id, path: "first.pdf")
+            let second = fixture.document(sourceRootID: source.id, path: "second.pdf")
+            try await fixture.documents.save(first)
+            try await fixture.documents.save(second)
+            let firstSnapshot = try testDocumentDNA(document: first)
+            let secondSnapshot = try testDocumentDNA(document: second)
+            let staleResult: Result<DocumentDNA?, AppModelTestError> = staleLoadFails
+                ? .failure(.documentDNASnapshotLoadFailed)
+                : .success(firstSnapshot)
+            let statuses = [first, second].map {
+                DocumentDNAAnalysisStatus(documentID: $0.id, phase: .ready)
+            }
+            let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+                source.id: statuses,
+            ])
+            let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                first.id: [.blocked(staleResult)],
+                second.id: [.snapshot(secondSnapshot)],
+            ])
+            let diagnostics = RuntimeDiagnosticRecorder()
+            let model = AppModel(
+                sources: fixture.sources,
+                documents: fixture.documents,
+                sourceAccess: fixture.sourceAccess,
+                catalog: FakeCatalogScanner(),
+                ingestion: FakePendingIngester(),
+                dnaStatuses: dnaStatuses,
+                dnaSnapshots: dnaSnapshots,
+                reportRuntimeFailure: { diagnostics.record($0) }
+            )
+            try await model.reload()
+            let staleSelection = Task { await model.selectDocument(id: first.id) }
+            await dnaSnapshots.waitUntilBlockedLoadStarts()
+
+            await model.selectDocument(id: second.id)
+            await dnaSnapshots.releaseBlockedLoad()
+            await staleSelection.value
+
+            #expect(model.selectedDocumentID == second.id)
+            #expect(model.documentDNADetailState == .available(secondSnapshot))
+            #expect(diagnostics.values.isEmpty)
+        }
+    }
+
+    @Test @MainActor func nonReadyDocumentDoesNotExposeStoredDNASnapshot() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "failed.pdf")
+        try await fixture.documents.save(document)
+        let snapshot = try testDocumentDNA(document: document)
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [
+                DocumentDNAAnalysisStatus(
+                    documentID: document.id,
+                    phase: .failed(.analysisFailure)
+                ),
+            ],
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            document.id: [.snapshot(snapshot)],
+        ])
+        let model = fixture.model(dnaStatuses: dnaStatuses, dnaSnapshots: dnaSnapshots)
+        try await model.reload()
+
+        await model.selectDocument(id: document.id)
+
+        #expect(model.selectedDocumentID == document.id)
+        #expect(model.documentDNADetailState == .unavailable(documentID: document.id))
+    }
+
+    @Test @MainActor func currentDocumentDNALoadFailurePreservesSourcePresentation() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        try await fixture.documents.save(document)
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [DocumentDNAAnalysisStatus(documentID: document.id, phase: .ready)],
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            document.id: [.failure],
+        ])
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses,
+            dnaSnapshots: dnaSnapshots,
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+
+        await model.selectDocument(id: document.id)
+
+        #expect(model.selectedSourceID == source.id)
+        #expect(model.documents == [document])
+        #expect(model.selectedDocumentID == document.id)
+        #expect(model.documentDNADetailState == .failed(documentID: document.id))
+        #expect(model.lastErrorCode == "documentDNADetailLoadFailure")
+        #expect(diagnostics.values.map(\.category) == [.documentDNADetailLoad])
+        #expect(diagnostics.values.map(\.reason) == [.unexpected])
+    }
+
+    @Test @MainActor func cancelledDocumentDNALoadDoesNotLeaveInspectorLoading() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        try await fixture.documents.save(document)
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [DocumentDNAAnalysisStatus(documentID: document.id, phase: .ready)],
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            document.id: [.cancellation],
+        ])
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses,
+            dnaSnapshots: dnaSnapshots,
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+
+        await model.selectDocument(id: document.id)
+
+        #expect(model.selectedDocumentID == document.id)
+        #expect(model.documentDNADetailState == .unavailable(documentID: document.id))
+        #expect(diagnostics.values.isEmpty)
+    }
+
+    @Test @MainActor func cancelledBlockedDocumentDNALoadCannotStayLoading() async throws {
+        for blockedLoadFails in [false, true] {
+            let fixture = try AppModelFixture()
+            let source = try await fixture.addSource(named: "Archive")
+            let document = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+            try await fixture.documents.save(document)
+            let snapshot = try testDocumentDNA(document: document)
+            let blockedResult: Result<DocumentDNA?, AppModelTestError> = blockedLoadFails
+                ? .failure(.documentDNASnapshotLoadFailed)
+                : .success(snapshot)
+            let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+                source.id: [DocumentDNAAnalysisStatus(documentID: document.id, phase: .ready)],
+            ])
+            let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                document.id: [.blocked(blockedResult)],
+            ])
+            let model = fixture.model(dnaStatuses: dnaStatuses, dnaSnapshots: dnaSnapshots)
+            try await model.reload()
+            let selection = Task { await model.selectDocument(id: document.id) }
+            await dnaSnapshots.waitUntilBlockedLoadStarts()
+
+            selection.cancel()
+            await dnaSnapshots.releaseBlockedLoad()
+            await selection.value
+
+            #expect(model.selectedDocumentID == document.id)
+            #expect(model.documentDNADetailState == .unavailable(documentID: document.id))
+        }
+    }
+
+    @Test @MainActor func newDocumentSelectionClearsPriorDNALoadFailure() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let first = fixture.document(sourceRootID: source.id, path: "first.pdf")
+        let second = fixture.document(sourceRootID: source.id, path: "second.pdf")
+        try await fixture.documents.save(first)
+        try await fixture.documents.save(second)
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [
+                DocumentDNAAnalysisStatus(documentID: first.id, phase: .ready),
+                DocumentDNAAnalysisStatus(documentID: second.id, phase: .pending),
+            ],
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            first.id: [.failure],
+        ])
+        let model = fixture.model(dnaStatuses: dnaStatuses, dnaSnapshots: dnaSnapshots)
+        try await model.reload()
+        await model.selectDocument(id: first.id)
+        #expect(model.lastErrorCode == "documentDNADetailLoadFailure")
+
+        await model.selectDocument(id: second.id)
+
+        #expect(model.selectedDocumentID == second.id)
+        #expect(model.documentDNADetailState == .unavailable(documentID: second.id))
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func sourcePresentationRefreshClearsSelectedDocumentDNA() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        try await fixture.documents.save(document)
+        let snapshot = try testDocumentDNA(document: document)
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [DocumentDNAAnalysisStatus(documentID: document.id, phase: .ready)],
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            document.id: [.snapshot(snapshot)],
+        ])
+        let model = fixture.model(dnaStatuses: dnaStatuses, dnaSnapshots: dnaSnapshots)
+        try await model.reload()
+        await model.selectDocument(id: document.id)
+
+        await model.selectSource(id: source.id)
+
+        #expect(model.selectedDocumentID == nil)
+        #expect(model.documentDNADetailState == .none)
+    }
+
+    @Test @MainActor func reloadClearsObsoleteDocumentDNALoadFailure() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        try await fixture.documents.save(document)
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [DocumentDNAAnalysisStatus(documentID: document.id, phase: .ready)],
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            document.id: [.failure],
+        ])
+        let model = fixture.model(dnaStatuses: dnaStatuses, dnaSnapshots: dnaSnapshots)
+        try await model.reload()
+        await model.selectDocument(id: document.id)
+        #expect(model.lastErrorCode == "documentDNADetailLoadFailure")
+
+        try await model.reload()
+
+        #expect(model.selectedDocumentID == nil)
+        #expect(model.documentDNADetailState == .none)
+        #expect(model.lastErrorCode == nil)
+    }
+
     @Test @MainActor func documentDNAStatusFailurePreservesVisibleSourceState() async throws {
         let fixture = try AppModelFixture()
         let source = try await fixture.addSource(named: "Archive")
@@ -2119,14 +2383,18 @@ private final class AppModelFixture: @unchecked Sendable {
     }
 
     @MainActor
-    func model(dnaStatuses: any DocumentDNAStatusLoading) -> AppModel {
+    func model(
+        dnaStatuses: any DocumentDNAStatusLoading,
+        dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil
+    ) -> AppModel {
         AppModel(
             sources: sources,
             documents: documents,
             sourceAccess: sourceAccess,
             catalog: FakeCatalogScanner(),
             ingestion: FakePendingIngester(),
-            dnaStatuses: dnaStatuses
+            dnaStatuses: dnaStatuses,
+            dnaSnapshots: dnaSnapshots
         )
     }
 }
@@ -2250,6 +2518,76 @@ private actor ScriptedDocumentDNAStatusLoader: DocumentDNAStatusLoading {
     }
 }
 
+private actor ScriptedDocumentDNASnapshotLoader: DocumentDNASnapshotLoading {
+    enum Step: Sendable {
+        case snapshot(DocumentDNA?)
+        case failure
+        case cancellation
+        case blocked(Result<DocumentDNA?, AppModelTestError>)
+    }
+
+    private var stepsByDocument: [UUID: [Step]]
+    private var blockedLoadStarted = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(stepsByDocument: [UUID: [Step]]) {
+        self.stepsByDocument = stepsByDocument
+    }
+
+    func currentSnapshot(documentID: UUID) async throws -> DocumentDNA? {
+        var steps = stepsByDocument[documentID] ?? [.snapshot(nil)]
+        let step = steps.count > 1 ? steps.removeFirst() : steps[0]
+        stepsByDocument[documentID] = steps
+        switch step {
+        case .snapshot(let snapshot):
+            return snapshot
+        case .failure:
+            throw AppModelTestError.documentDNASnapshotLoadFailed
+        case .cancellation:
+            throw CancellationError()
+        case .blocked(let result):
+            blockedLoadStarted = true
+            startWaiters.forEach { $0.resume() }
+            startWaiters.removeAll()
+            await withCheckedContinuation { releaseWaiters.append($0) }
+            return try result.get()
+        }
+    }
+
+    func waitUntilBlockedLoadStarts() async {
+        guard !blockedLoadStarted else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func releaseBlockedLoad() {
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters.removeAll()
+    }
+}
+
+private func testDocumentDNA(document: DocumentRecord) throws -> DocumentDNA {
+    let classification = try DocumentDNAFinding(
+        kind: .documentType,
+        qualifier: nil,
+        displayValue: "",
+        normalizedValue: DocumentType.unknown.rawValue,
+        secondaryNormalizedValue: nil,
+        confidence: 0,
+        evidence: []
+    )
+    return try DocumentDNA(
+        documentID: document.id,
+        schemaVersion: 1,
+        analyzerIdentifier: "local-rules",
+        analyzerVersion: "1",
+        inputContentHash: document.contentHash,
+        inputExtractionVersion: "text-v1",
+        findings: [classification],
+        analyzedAt: Date(timeIntervalSince1970: 300)
+    )
+}
+
 private struct FakeSourceAccess: SourceAccessing {
     func createBookmark(for url: URL) throws -> Data {
         Data(url.path.utf8)
@@ -2371,6 +2709,7 @@ private enum AppModelTestError: Error, Sendable {
     case scanFailed
     case documentLoadFailed
     case documentDNAStatusLoadFailed
+    case documentDNASnapshotLoadFailed
     case unusedSourceResolution
     case timeout
 }

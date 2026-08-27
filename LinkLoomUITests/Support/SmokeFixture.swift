@@ -54,7 +54,7 @@ struct SmokeFixture {
 
     private static func prepareDefaultSource(_ source: URL) throws {
         let selectablePDF = source.appendingPathComponent("selectable.pdf", isDirectory: false)
-        try Self.writeTextPDF("Selectable LinkLoom smoke text", to: selectablePDF)
+        try Self.writeTextPDF("Rechnung", to: selectablePDF)
 
         let scanImage = source.appendingPathComponent("scan.png", isDirectory: false)
         try Self.writeScanImage("Scanned LinkLoom smoke 2026", to: scanImage)

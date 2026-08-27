@@ -20,6 +20,18 @@ public protocol DocumentDNAStatusLoading: Sendable {
     func currentAnalysisStatuses(sourceRootID: UUID) async throws -> [DocumentDNAAnalysisStatus]
 }
 
+public protocol DocumentDNASnapshotLoading: Sendable {
+    func currentSnapshot(documentID: UUID) async throws -> DocumentDNA?
+}
+
+public enum DocumentDNADetailState: Sendable, Equatable {
+    case none
+    case loading(documentID: UUID)
+    case available(DocumentDNA)
+    case unavailable(documentID: UUID)
+    case failed(documentID: UUID)
+}
+
 @MainActor
 public final class AppModel: ObservableObject {
     @Published public private(set) var sources: [SourceRootRecord] = []
@@ -28,6 +40,8 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var documentDNAAnalysisPhases: [
         UUID: DocumentDNAAnalysisPhase
     ] = [:]
+    @Published public private(set) var selectedDocumentID: UUID?
+    @Published public private(set) var documentDNADetailState: DocumentDNADetailState = .none
     @Published public private(set) var scanState: AppScanState = .idle
     @Published public private(set) var lastErrorCode: String?
     @Published public private(set) var unavailableSourceIDs = Set<UUID>()
@@ -42,6 +56,8 @@ public final class AppModel: ObservableObject {
             "Die Quelle konnte nicht entfernt werden. Bitte versuche es erneut."
         case "documentLoadFailure":
             "Die Dokumente konnten nicht geladen werden. Bitte versuche es erneut."
+        case "documentDNADetailLoadFailure":
+            "Document DNA konnte nicht geladen werden. Bitte versuche es erneut."
         case "incrementalRefreshFailure":
             "Die Ansicht konnte nach der Analyse nicht aktualisiert werden. Bitte versuche es erneut."
         case .some:
@@ -56,6 +72,7 @@ public final class AppModel: ObservableObject {
     private let catalog: any CatalogScanning
     private let ingestion: any PendingIngesting
     private let dnaStatuses: (any DocumentDNAStatusLoading)?
+    private let dnaSnapshots: (any DocumentDNASnapshotLoading)?
     private let sourceLoader: @Sendable () async throws -> [SourceRootRecord]
     private let documentLoader: @Sendable (UUID) async throws -> [DocumentRecord]
     private let watchScheduler: (any SourceWatchScheduling)?
@@ -71,6 +88,7 @@ public final class AppModel: ObservableObject {
     private var pendingRescanSourceIDs = Set<UUID>()
     private var isProcessingRescanCompletions = false
     private var watchLifecycleGeneration = 0
+    private var documentDNADetailGeneration = 0
 
     public init(
         sources: SourceRootRepository,
@@ -79,6 +97,7 @@ public final class AppModel: ObservableObject {
         catalog: any CatalogScanning,
         ingestion: any PendingIngesting,
         dnaStatuses: (any DocumentDNAStatusLoading)? = nil,
+        dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil,
         watchScheduler: (any SourceWatchScheduling)? = nil,
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
@@ -87,6 +106,7 @@ public final class AppModel: ObservableObject {
         self.catalog = catalog
         self.ingestion = ingestion
         self.dnaStatuses = dnaStatuses
+        self.dnaSnapshots = dnaSnapshots
         sourceLoader = { try await sources.all() }
         self.watchScheduler = watchScheduler
         self.reportRuntimeFailure = reportRuntimeFailure
@@ -105,6 +125,7 @@ public final class AppModel: ObservableObject {
         catalog: any CatalogScanning,
         ingestion: any PendingIngesting,
         dnaStatuses: (any DocumentDNAStatusLoading)? = nil,
+        dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil,
         documentLoader: @escaping @Sendable (UUID) async throws -> [DocumentRecord],
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
@@ -113,6 +134,7 @@ public final class AppModel: ObservableObject {
         self.catalog = catalog
         self.ingestion = ingestion
         self.dnaStatuses = dnaStatuses
+        self.dnaSnapshots = dnaSnapshots
         sourceLoader = { try await sources.all() }
         self.documentLoader = documentLoader
         watchScheduler = nil
@@ -127,6 +149,7 @@ public final class AppModel: ObservableObject {
         catalog: any CatalogScanning,
         ingestion: any PendingIngesting,
         dnaStatuses: (any DocumentDNAStatusLoading)? = nil,
+        dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil,
         watchScheduler: any SourceWatchScheduling,
         sourceResolver: @escaping @Sendable (SourceRootRecord) throws -> URL,
         sourceLoader: (@Sendable () async throws -> [SourceRootRecord])? = nil,
@@ -138,6 +161,7 @@ public final class AppModel: ObservableObject {
         self.catalog = catalog
         self.ingestion = ingestion
         self.dnaStatuses = dnaStatuses
+        self.dnaSnapshots = dnaSnapshots
         self.sourceLoader = sourceLoader ?? { try await sources.all() }
         self.documentLoader = documentLoader ?? { sourceID in
             try await documents.all(sourceRootID: sourceID)
@@ -289,6 +313,77 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    public func selectDocument(id: UUID?) async {
+        documentDNADetailGeneration += 1
+        let generation = documentDNADetailGeneration
+        if lastErrorCode == "documentDNADetailLoadFailure" {
+            lastErrorCode = nil
+        }
+        guard let id else {
+            selectedDocumentID = nil
+            documentDNADetailState = .none
+            return
+        }
+        guard documents.contains(where: { $0.id == id }) else {
+            selectedDocumentID = nil
+            documentDNADetailState = .none
+            return
+        }
+        selectedDocumentID = id
+        guard documentDNAAnalysisPhases[id] == .ready,
+              let dnaSnapshots
+        else {
+            documentDNADetailState = .unavailable(documentID: id)
+            return
+        }
+        documentDNADetailState = .loading(documentID: id)
+        do {
+            let snapshot = try await dnaSnapshots.currentSnapshot(documentID: id)
+            guard generation == documentDNADetailGeneration,
+                  selectedDocumentID == id
+            else {
+                return
+            }
+            guard !Task.isCancelled else {
+                documentDNADetailState = .unavailable(documentID: id)
+                return
+            }
+            guard let snapshot,
+                  snapshot.documentID == id
+            else {
+                documentDNADetailState = .unavailable(documentID: id)
+                return
+            }
+            documentDNADetailState = .available(snapshot)
+            if lastErrorCode == "documentDNADetailLoadFailure" {
+                lastErrorCode = nil
+            }
+        } catch is CancellationError {
+            guard generation == documentDNADetailGeneration,
+                  selectedDocumentID == id
+            else {
+                return
+            }
+            documentDNADetailState = .unavailable(documentID: id)
+        } catch {
+            guard generation == documentDNADetailGeneration,
+                  selectedDocumentID == id
+            else {
+                return
+            }
+            guard !Task.isCancelled else {
+                documentDNADetailState = .unavailable(documentID: id)
+                return
+            }
+            documentDNADetailState = .failed(documentID: id)
+            publishRuntimeFailure(
+                code: "documentDNADetailLoadFailure",
+                category: .documentDNADetailLoad,
+                error: error
+            )
+        }
+    }
+
     public func stopWatching() async {
         invalidateIncrementalRefreshes()
         watchLifecycleGeneration &+= 1
@@ -362,8 +457,18 @@ public final class AppModel: ObservableObject {
     }
 
     private func publish(_ presentation: DocumentPresentation) {
+        clearDocumentSelection()
         documents = presentation.documents
         documentDNAAnalysisPhases = presentation.dnaAnalysisPhases
+    }
+
+    private func clearDocumentSelection() {
+        documentDNADetailGeneration += 1
+        selectedDocumentID = nil
+        documentDNADetailState = .none
+        if lastErrorCode == "documentDNADetailLoadFailure" {
+            lastErrorCode = nil
+        }
     }
 
     private func publishSelection(
