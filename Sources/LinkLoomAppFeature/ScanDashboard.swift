@@ -228,6 +228,7 @@ public struct ScanDashboard: View {
                     )
                     Text("Fehlergrund: \(DocumentDNAFailurePresentation.title(for: failureCode))")
                         .foregroundStyle(.secondary)
+                        .accessibilityElement(children: .ignore)
                         .accessibilityLabel(
                             "Fehlergrund: \(DocumentDNAFailurePresentation.title(for: failureCode))"
                         )
