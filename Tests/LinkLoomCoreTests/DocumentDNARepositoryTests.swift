@@ -778,6 +778,68 @@ struct DocumentDNARepositoryTests {
         #expect(try await fixture.repository.storedSnapshot(documentID: snapshot.documentID) == snapshot)
     }
 
+    @Test func currentFindingsReturnCompleteCatalogMatchesInStableOrder() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.makeWithCurrentFindingSearchCases()
+        let countsBefore = try await fixture.rowCounts()
+        let expectedEvidence = try DocumentDNAEvidence(
+            pageIndex: 0,
+            startUTF16: 21,
+            lengthUTF16: 12,
+            exactText: "Elise Muster",
+            ocrRegionIndexes: [1]
+        )
+        let expectedFinding = try DocumentDNAFinding(
+            kind: .person,
+            qualifier: nil,
+            displayValue: "Elise Muster",
+            normalizedValue: "elise muster",
+            secondaryNormalizedValue: nil,
+            confidence: 0.9,
+            evidence: [expectedEvidence]
+        )
+
+        let matches = try await fixture.repository.currentFindings(
+            kind: DocumentDNAFindingKind.person,
+            normalizedValue: "elise muster",
+            target: fixture.target
+        )
+
+        #expect(matches.map(\.document.sourceRootID) == [
+            fixture.source.id,
+            fixture.source.id,
+            fixture.otherSource.id,
+        ])
+        #expect(matches.map(\.document.relativePath) == [
+            "a-unavailable.pdf",
+            "b-current.pdf",
+            "a-other-source.pdf",
+        ])
+        #expect(matches.map(\.document.availability) == [
+            .unavailable,
+            .available,
+            .available,
+        ])
+        #expect(matches.map(\.finding) == Array(repeating: expectedFinding, count: 3))
+        #expect(try await fixture.rowCounts() == countsBefore)
+    }
+
+    @Test func currentFindingsRequireAnExactKindAndNormalizedValue() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.makeWithCurrentFindingSearchCases()
+
+        for (kind, normalizedValue) in [
+            (DocumentDNAFindingKind.person, "Elise Muster"),
+            (.person, "invoice"),
+            (.documentType, "elise muster"),
+            (.organization, "elise muster"),
+        ] {
+            #expect(try await fixture.repository.currentFindings(
+                kind: kind,
+                normalizedValue: normalizedValue,
+                target: fixture.target
+            ).isEmpty)
+        }
+    }
+
     @Test func staleContentHashRejectsFirstAndReplacementWrites() async throws {
         let replacementFixture = try await DocumentDNARepositoryFixture.make()
         let original = try await replacementFixture.snapshot()
@@ -978,6 +1040,84 @@ private struct DocumentDNARepositoryFixture {
             relativePath: "0-other.pdf",
             contentHash: "hash-other"
         )
+        return fixture
+    }
+
+    static func makeWithCurrentFindingSearchCases() async throws -> Self {
+        var fixture = try await makeEmpty()
+        let unavailable = try await fixture.insertDocument(
+            relativePath: "a-unavailable.pdf",
+            contentHash: "hash-unavailable"
+        )
+        let current = try await fixture.insertDocument(
+            relativePath: "b-current.pdf",
+            contentHash: "hash-current"
+        )
+        let otherSource = try await fixture.insertDocument(
+            sourceRootID: fixture.otherSource.id,
+            relativePath: "a-other-source.pdf",
+            contentHash: "hash-other-source"
+        )
+        let staleSchema = try await fixture.insertDocument(
+            relativePath: "stale-schema.pdf",
+            contentHash: "hash-stale-schema"
+        )
+        let staleAnalyzerIdentifier = try await fixture.insertDocument(
+            relativePath: "stale-analyzer-identifier.pdf",
+            contentHash: "hash-stale-analyzer-identifier"
+        )
+        let staleAnalyzerVersion = try await fixture.insertDocument(
+            relativePath: "stale-analyzer-version.pdf",
+            contentHash: "hash-stale-analyzer-version"
+        )
+        let staleContent = try await fixture.insertDocument(
+            relativePath: "stale-content.pdf",
+            contentHash: "hash-stale-content"
+        )
+        let staleExtraction = try await fixture.insertDocument(
+            relativePath: "stale-extraction.pdf",
+            contentHash: "hash-stale-extraction"
+        )
+
+        for document in [
+            unavailable,
+            current,
+            otherSource,
+            staleSchema,
+            staleAnalyzerIdentifier,
+            staleAnalyzerVersion,
+            staleContent,
+            staleExtraction,
+        ] {
+            try await fixture.repository.replace(try await fixture.snapshot(document: document))
+        }
+
+        try await fixture.db.write { database in
+            try database.execute(
+                sql: "UPDATE document SET availability = ? WHERE id = ?",
+                arguments: [DocumentAvailability.unavailable, unavailable.id]
+            )
+            try database.execute(
+                sql: "UPDATE documentDNA SET schemaVersion = 2 WHERE documentID = ?",
+                arguments: [staleSchema.id]
+            )
+            try database.execute(
+                sql: "UPDATE documentDNA SET analyzerIdentifier = 'other-rules' WHERE documentID = ?",
+                arguments: [staleAnalyzerIdentifier.id]
+            )
+            try database.execute(
+                sql: "UPDATE documentDNA SET analyzerVersion = '2' WHERE documentID = ?",
+                arguments: [staleAnalyzerVersion.id]
+            )
+            try database.execute(
+                sql: "UPDATE document SET contentHash = 'hash-changed' WHERE id = ?",
+                arguments: [staleContent.id]
+            )
+            try database.execute(
+                sql: "UPDATE documentExtraction SET analysisVersion = 'text-v2' WHERE documentID = ?",
+                arguments: [staleExtraction.id]
+            )
+        }
         return fixture
     }
 
@@ -1255,12 +1395,14 @@ private struct DocumentDNARepositoryFixture {
     private static func makeEmpty() async throws -> Self {
         let db = try TestDatabase.make()
         let source = SourceRootRecord(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
             displayName: "Synthetic care documents",
             pathHint: "/synthetic/care",
             bookmarkData: Data("bookmark-care".utf8),
             createdAt: date
         )
         let otherSource = SourceRootRecord(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!,
             displayName: "Other synthetic documents",
             pathHint: "/synthetic/other",
             bookmarkData: Data("bookmark-other".utf8),
