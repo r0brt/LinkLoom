@@ -43,6 +43,46 @@ public struct DocumentDNAFindingMatch: Sendable, Equatable {
     }
 }
 
+private struct DocumentDNAFindingMatchAccumulator {
+    let document: DocumentRecord
+    let kind: DocumentDNAFindingKind
+    let qualifier: String?
+    let displayValue: String
+    let normalizedValue: String
+    let secondaryNormalizedValue: String?
+    let confidence: Double
+    var evidence: [DocumentDNAEvidence] = []
+
+    init(document: DocumentRecord, row: Row) throws {
+        let kindValue: String = row["kind"]
+        guard let kind = DocumentDNAFindingKind(rawValue: kindValue) else {
+            throw DocumentDNAValidationError.invalidFinding
+        }
+        self.document = document
+        self.kind = kind
+        qualifier = row["qualifier"]
+        displayValue = row["displayValue"]
+        normalizedValue = row["normalizedValue"]
+        secondaryNormalizedValue = row["secondaryNormalizedValue"]
+        confidence = row["confidence"]
+    }
+
+    func match() throws -> DocumentDNAFindingMatch {
+        DocumentDNAFindingMatch(
+            document: document,
+            finding: try DocumentDNAFinding(
+                kind: kind,
+                qualifier: qualifier,
+                displayValue: displayValue,
+                normalizedValue: normalizedValue,
+                secondaryNormalizedValue: secondaryNormalizedValue,
+                confidence: confidence,
+                evidence: evidence
+            )
+        )
+    }
+}
+
 public enum DocumentDNAAnalysisFailureCode: String, Sendable, Equatable, CaseIterable {
     case analysisFailure
     case invalidFinding
@@ -521,10 +561,15 @@ public actor DocumentDNARepository {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT finding.id, finding.documentID, finding.kind,
+                    SELECT document.*, finding.id AS findingID, finding.kind,
                            finding.qualifier, finding.displayValue,
                            finding.normalizedValue, finding.secondaryNormalizedValue,
-                           finding.confidence
+                           finding.confidence,
+                           evidence.pageIndex AS evidencePageIndex,
+                           evidence.startUTF16 AS evidenceStartUTF16,
+                           evidence.lengthUTF16 AS evidenceLengthUTF16,
+                           evidence.exactText AS evidenceExactText,
+                           evidence.ocrRegionIndexesJSON AS evidenceOCRRegionIndexesJSON
                     FROM documentDNAFinding AS finding
                         INDEXED BY document_dna_finding_kind_value
                     JOIN documentDNA
@@ -533,6 +578,8 @@ public actor DocumentDNARepository {
                         ON document.id = documentDNA.documentID
                     JOIN documentExtraction
                         ON documentExtraction.documentID = document.id
+                    LEFT JOIN documentDNAEvidence AS evidence
+                        ON evidence.findingID = finding.id
                     WHERE finding.kind = ?
                         AND finding.normalizedValue = ?
                         AND documentDNA.schemaVersion = ?
@@ -542,7 +589,8 @@ public actor DocumentDNARepository {
                         AND documentDNA.inputExtractionVersion =
                             documentExtraction.analysisVersion
                     ORDER BY document.sourceRootID, document.relativePath,
-                             document.id, finding.sortOrder, finding.id
+                             document.id, finding.sortOrder, finding.id,
+                             evidence.evidenceOrder
                     """,
                 arguments: [
                     kind.rawValue,
@@ -552,16 +600,32 @@ public actor DocumentDNARepository {
                     target.analyzerVersion,
                 ]
             )
-            return try rows.map { row in
-                let documentID: UUID = row["documentID"]
-                guard let document = try DocumentRecord.fetchOne(db, key: documentID) else {
-                    throw DocumentDNARepositoryError.staleInput
+            var positionsByFindingID: [Int64: Int] = [:]
+            var accumulators: [DocumentDNAFindingMatchAccumulator] = []
+            for row in rows {
+                let findingID: Int64 = row["findingID"]
+                let position: Int
+                if let existingPosition = positionsByFindingID[findingID] {
+                    position = existingPosition
+                } else {
+                    position = accumulators.endIndex
+                    positionsByFindingID[findingID] = position
+                    accumulators.append(try DocumentDNAFindingMatchAccumulator(
+                        document: DocumentRecord(row: row),
+                        row: row
+                    ))
                 }
-                return DocumentDNAFindingMatch(
-                    document: document,
-                    finding: try Self.finding(in: db, row: row)
-                )
+                guard let pageIndex: Int = row["evidencePageIndex"] else { continue }
+                let indexesJSON: Data = row["evidenceOCRRegionIndexesJSON"]
+                accumulators[position].evidence.append(try DocumentDNAEvidence(
+                    pageIndex: pageIndex,
+                    startUTF16: row["evidenceStartUTF16"],
+                    lengthUTF16: row["evidenceLengthUTF16"],
+                    exactText: row["evidenceExactText"],
+                    ocrRegionIndexes: try JSONDecoder().decode([Int].self, from: indexesJSON)
+                ))
             }
+            return try accumulators.map { try $0.match() }
         }
     }
 

@@ -797,6 +797,24 @@ struct DocumentDNARepositoryTests {
             confidence: 0.9,
             evidence: [expectedEvidence]
         )
+        let qualifiedFinding = try DocumentDNAFinding(
+            kind: .person,
+            qualifier: "resident",
+            displayValue: "Elise Muster",
+            normalizedValue: "elise muster",
+            secondaryNormalizedValue: nil,
+            confidence: 0.85,
+            evidence: [
+                DocumentDNAEvidence(
+                    pageIndex: 0,
+                    startUTF16: 9,
+                    lengthUTF16: 24,
+                    exactText: "Bewohnerin: Elise Muster",
+                    ocrRegionIndexes: [1]
+                ),
+                expectedEvidence,
+            ]
+        )
 
         let matches = try await fixture.repository.currentFindings(
             kind: DocumentDNAFindingKind.person,
@@ -807,10 +825,12 @@ struct DocumentDNARepositoryTests {
         #expect(matches.map(\.document.sourceRootID) == [
             fixture.source.id,
             fixture.source.id,
+            fixture.source.id,
             fixture.otherSource.id,
         ])
         #expect(matches.map(\.document.relativePath) == [
             "a-unavailable.pdf",
+            "b-current.pdf",
             "b-current.pdf",
             "a-other-source.pdf",
         ])
@@ -818,9 +838,44 @@ struct DocumentDNARepositoryTests {
             .unavailable,
             .available,
             .available,
+            .available,
         ])
-        #expect(matches.map(\.finding) == Array(repeating: expectedFinding, count: 3))
+        #expect(matches.map(\.document.status) == [
+            .ready,
+            .failed,
+            .failed,
+            .ready,
+        ])
+        #expect(matches.map(\.finding) == [
+            expectedFinding,
+            expectedFinding,
+            qualifiedFinding,
+            expectedFinding,
+        ])
         #expect(try await fixture.rowCounts() == countsBefore)
+    }
+
+    @Test func currentFindingsUseOneIndexedStatementForAllMatches() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.makeWithCurrentFindingSearchCases()
+        let counter = SQLSelectCounter()
+        try await fixture.db.write { database in
+            database.trace(options: .statement) { event in
+                counter.record(event)
+            }
+        }
+        counter.reset()
+
+        _ = try await fixture.repository.currentFindings(
+            kind: .person,
+            normalizedValue: "elise muster",
+            target: fixture.target
+        )
+        let selectCount = counter.value
+        try await fixture.db.write { database in
+            database.trace(options: [])
+        }
+
+        #expect(selectCount == 1)
     }
 
     @Test func currentFindingsRequireAnExactKindAndNormalizedValue() async throws {
@@ -988,6 +1043,28 @@ private struct DNARowCounts: Equatable {
     let states: Int
 }
 
+private final class SQLSelectCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.withLock { count }
+    }
+
+    func reset() {
+        lock.withLock { count = 0 }
+    }
+
+    func record(_ event: Database.TraceEvent) {
+        guard case let .statement(statement) = event,
+              statement.sql.hasPrefix("SELECT")
+        else {
+            return
+        }
+        lock.withLock { count += 1 }
+    }
+}
+
 private struct DocumentDNARepositoryFixture {
     static let pageText = "Rechnung\nBewohnerin: Elise Muster"
     static let date = Date(timeIntervalSince1970: 1_800_000_000)
@@ -1079,9 +1156,36 @@ private struct DocumentDNARepositoryFixture {
             contentHash: "hash-stale-extraction"
         )
 
+        let qualifiedFinding = try DocumentDNAFinding(
+            kind: .person,
+            qualifier: "resident",
+            displayValue: "Elise Muster",
+            normalizedValue: "elise muster",
+            secondaryNormalizedValue: nil,
+            confidence: 0.85,
+            evidence: [
+                DocumentDNAEvidence(
+                    pageIndex: 0,
+                    startUTF16: 9,
+                    lengthUTF16: 24,
+                    exactText: "Bewohnerin: Elise Muster",
+                    ocrRegionIndexes: [1]
+                ),
+                DocumentDNAEvidence(
+                    pageIndex: 0,
+                    startUTF16: 21,
+                    lengthUTF16: 12,
+                    exactText: "Elise Muster",
+                    ocrRegionIndexes: [1]
+                ),
+            ]
+        )
+        try await fixture.repository.replace(try await fixture.snapshot(
+            document: current,
+            additionalFindings: [qualifiedFinding]
+        ))
         for document in [
             unavailable,
-            current,
             otherSource,
             staleSchema,
             staleAnalyzerIdentifier,
@@ -1096,6 +1200,10 @@ private struct DocumentDNARepositoryFixture {
             try database.execute(
                 sql: "UPDATE document SET availability = ? WHERE id = ?",
                 arguments: [DocumentAvailability.unavailable, unavailable.id]
+            )
+            try database.execute(
+                sql: "UPDATE document SET status = ? WHERE id = ?",
+                arguments: [DocumentStatus.failed, current.id]
             )
             try database.execute(
                 sql: "UPDATE documentDNA SET schemaVersion = 2 WHERE documentID = ?",
@@ -1534,14 +1642,16 @@ private struct DocumentDNARepositoryFixture {
     func snapshot(
         analyzerVersion: String = "1",
         classificationEvidence: DocumentDNAEvidence? = nil,
-        analyzedAt: Date? = nil
+        analyzedAt: Date? = nil,
+        additionalFindings: [DocumentDNAFinding] = []
     ) async throws -> DocumentDNA {
         let document = try await readyDocument()
         return try await snapshot(
             document: document,
             analyzerVersion: analyzerVersion,
             classificationEvidence: classificationEvidence,
-            analyzedAt: analyzedAt
+            analyzedAt: analyzedAt,
+            additionalFindings: additionalFindings
         )
     }
 
@@ -1549,7 +1659,8 @@ private struct DocumentDNARepositoryFixture {
         document: DocumentRecord,
         analyzerVersion: String = "1",
         classificationEvidence: DocumentDNAEvidence? = nil,
-        analyzedAt: Date? = nil
+        analyzedAt: Date? = nil,
+        additionalFindings: [DocumentDNAFinding] = []
     ) async throws -> DocumentDNA {
         let classificationEvidence = try classificationEvidence ?? DocumentDNAEvidence(
             pageIndex: 0,
@@ -1590,7 +1701,7 @@ private struct DocumentDNARepositoryFixture {
                         ocrRegionIndexes: [1]
                     )]
                 ),
-            ],
+            ] + additionalFindings,
             analyzedAt: analyzedAt
                 ?? Self.date.addingTimeInterval(analyzerVersion == "1" ? 0 : 1)
         )
