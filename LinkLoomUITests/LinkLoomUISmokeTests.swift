@@ -88,6 +88,13 @@ final class LinkLoomUISmokeTests: XCTestCase {
             XCTAssertTrue(evidence.matchesCompletedWorkflow, "Unexpected database evidence: \(evidence)")
         }
 
+        try XCTContext.runActivity(named: "Prepare a retryable DNA failure in the test database") { _ in
+            try SQLiteTestDatabaseMutator.makeSelectableDocumentDNAFailureRetryable(
+                databaseURL: fixture.databaseURL
+            )
+            XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
+        }
+
         let relaunchedApp = launch(fixture: fixture)
 
         XCTContext.runActivity(named: "Verify persistence after process restart") { _ in
@@ -96,8 +103,8 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireLabel("Extraktion: 0", for: element("status.extracting", in: relaunchedApp))
             requireLabel("Bereit: 2", for: element("status.ready", in: relaunchedApp))
             requireLabel("Fehler: 1", for: element("status.failed", in: relaunchedApp))
-            requireLabel("Document DNA Bereit: 2", for: element("dna-status.ready", in: relaunchedApp))
-            requireLabel("Document DNA Fehler: 0", for: element("dna-status.failed", in: relaunchedApp))
+            requireLabel("Document DNA Bereit: 1", for: element("dna-status.ready", in: relaunchedApp))
+            requireLabel("Document DNA Fehler: 1", for: element("dna-status.failed", in: relaunchedApp))
             requireExists(element("documents.table", in: relaunchedApp), description: "persisted table")
             for text in ["selectable.pdf", "scan.png", "corrupt.pdf", "unreadableDocument"] {
                 requireExists(relaunchedApp.staticTexts[text], description: "persisted \(text)")
@@ -108,6 +115,28 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 description: "persisted document-dna.inspector"
             )
             requireLabel(
+                "Fehlergrund: Lokale Analyse fehlgeschlagen",
+                for: element("document-dna.failure-reason", in: relaunchedApp)
+            )
+            let retry = element("document-dna.retry", in: relaunchedApp)
+            requireExists(retry, description: "document-dna.retry")
+            retry.click()
+            requireLabel(
+                "Document DNA Bereit: 2",
+                for: element("dna-status.ready", in: relaunchedApp),
+                timeout: 90
+            )
+            requireLabel(
+                "Document DNA Fehler: 0",
+                for: element("dna-status.failed", in: relaunchedApp),
+                timeout: 90
+            )
+            requireDisappearance(
+                retry,
+                timeout: 20,
+                description: "document-dna.retry"
+            )
+            requireLabel(
                 "Dokumenttyp: Rechnung",
                 for: element("document-dna.document-type", in: relaunchedApp)
             )
@@ -115,6 +144,12 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 "Seite 1: Rechnung",
                 for: element("document-dna.document-type.evidence.0", in: relaunchedApp)
             )
+        }
+
+        try XCTContext.runActivity(named: "Verify retry restored coherent DNA state") { _ in
+            let evidence = try SQLiteProbe(databaseURL: fixture.databaseURL).collectEvidence()
+            XCTAssertTrue(evidence.matchesCompletedWorkflow, "Retry left incoherent DNA: \(evidence)")
+            XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
         }
 
         XCTContext.runActivity(named: "Remove source through its context menu") { _ in

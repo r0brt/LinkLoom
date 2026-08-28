@@ -24,6 +24,10 @@ public protocol DocumentDNASnapshotLoading: Sendable {
     func currentSnapshot(documentID: UUID) async throws -> DocumentDNA?
 }
 
+public protocol DocumentDNAFailureRetrying: Sendable {
+    func retryFailedAnalysis(documentID: UUID, sourceRootID: UUID) async throws
+}
+
 public enum DocumentDNADetailState: Sendable, Equatable {
     case none
     case loading(documentID: UUID)
@@ -42,6 +46,7 @@ public final class AppModel: ObservableObject {
     ] = [:]
     @Published public private(set) var selectedDocumentID: UUID?
     @Published public private(set) var documentDNADetailState: DocumentDNADetailState = .none
+    @Published public private(set) var documentDNARetryingDocumentID: UUID?
     @Published public private(set) var scanState: AppScanState = .idle
     @Published public private(set) var lastErrorCode: String?
     @Published public private(set) var unavailableSourceIDs = Set<UUID>()
@@ -58,6 +63,8 @@ public final class AppModel: ObservableObject {
             "Die Dokumente konnten nicht geladen werden. Bitte versuche es erneut."
         case "documentDNADetailLoadFailure":
             "Document DNA konnte nicht geladen werden. Bitte versuche es erneut."
+        case "documentDNARetryFailure":
+            "Document DNA konnte nicht erneut analysiert werden. Bitte versuche es erneut."
         case "incrementalRefreshFailure":
             "Die Ansicht konnte nach der Analyse nicht aktualisiert werden. Bitte versuche es erneut."
         case .some:
@@ -73,6 +80,7 @@ public final class AppModel: ObservableObject {
     private let ingestion: any PendingIngesting
     private let dnaStatuses: (any DocumentDNAStatusLoading)?
     private let dnaSnapshots: (any DocumentDNASnapshotLoading)?
+    private let dnaRetryer: (any DocumentDNAFailureRetrying)?
     private let sourceLoader: @Sendable () async throws -> [SourceRootRecord]
     private let documentLoader: @Sendable (UUID) async throws -> [DocumentRecord]
     private let watchScheduler: (any SourceWatchScheduling)?
@@ -98,6 +106,7 @@ public final class AppModel: ObservableObject {
         ingestion: any PendingIngesting,
         dnaStatuses: (any DocumentDNAStatusLoading)? = nil,
         dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil,
+        dnaRetryer: (any DocumentDNAFailureRetrying)? = nil,
         watchScheduler: (any SourceWatchScheduling)? = nil,
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
@@ -107,6 +116,7 @@ public final class AppModel: ObservableObject {
         self.ingestion = ingestion
         self.dnaStatuses = dnaStatuses
         self.dnaSnapshots = dnaSnapshots
+        self.dnaRetryer = dnaRetryer
         sourceLoader = { try await sources.all() }
         self.watchScheduler = watchScheduler
         self.reportRuntimeFailure = reportRuntimeFailure
@@ -126,6 +136,7 @@ public final class AppModel: ObservableObject {
         ingestion: any PendingIngesting,
         dnaStatuses: (any DocumentDNAStatusLoading)? = nil,
         dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil,
+        dnaRetryer: (any DocumentDNAFailureRetrying)? = nil,
         documentLoader: @escaping @Sendable (UUID) async throws -> [DocumentRecord],
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
@@ -135,6 +146,7 @@ public final class AppModel: ObservableObject {
         self.ingestion = ingestion
         self.dnaStatuses = dnaStatuses
         self.dnaSnapshots = dnaSnapshots
+        self.dnaRetryer = dnaRetryer
         sourceLoader = { try await sources.all() }
         self.documentLoader = documentLoader
         watchScheduler = nil
@@ -150,6 +162,7 @@ public final class AppModel: ObservableObject {
         ingestion: any PendingIngesting,
         dnaStatuses: (any DocumentDNAStatusLoading)? = nil,
         dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil,
+        dnaRetryer: (any DocumentDNAFailureRetrying)? = nil,
         watchScheduler: any SourceWatchScheduling,
         sourceResolver: @escaping @Sendable (SourceRootRecord) throws -> URL,
         sourceLoader: (@Sendable () async throws -> [SourceRootRecord])? = nil,
@@ -162,6 +175,7 @@ public final class AppModel: ObservableObject {
         self.ingestion = ingestion
         self.dnaStatuses = dnaStatuses
         self.dnaSnapshots = dnaSnapshots
+        self.dnaRetryer = dnaRetryer
         self.sourceLoader = sourceLoader ?? { try await sources.all() }
         self.documentLoader = documentLoader ?? { sourceID in
             try await documents.all(sourceRootID: sourceID)
@@ -316,9 +330,7 @@ public final class AppModel: ObservableObject {
     public func selectDocument(id: UUID?) async {
         documentDNADetailGeneration += 1
         let generation = documentDNADetailGeneration
-        if lastErrorCode == "documentDNADetailLoadFailure" {
-            lastErrorCode = nil
-        }
+        clearDocumentScopedFailure()
         guard let id else {
             selectedDocumentID = nil
             documentDNADetailState = .none
@@ -379,6 +391,89 @@ public final class AppModel: ObservableObject {
             publishRuntimeFailure(
                 code: "documentDNADetailLoadFailure",
                 category: .documentDNADetailLoad,
+                error: error
+            )
+        }
+    }
+
+    public func retrySelectedDocumentDNA() async {
+        guard let dnaRetryer,
+              let documentID = selectedDocumentID,
+              let sourceRootID = selectedSourceID,
+              documentDNARetryingDocumentID == nil,
+              let analysisPhase = documentDNAAnalysisPhases[documentID],
+              case .failed = analysisPhase,
+              documents.contains(where: {
+                  $0.id == documentID && $0.sourceRootID == sourceRootID
+              }),
+              beginExclusiveSourceOperation()
+        else {
+            return
+        }
+        documentDNARetryingDocumentID = documentID
+        let selectionGeneration = documentDNADetailGeneration
+        if lastErrorCode == "documentDNARetryFailure"
+            || lastErrorCode == "incrementalRefreshFailure" {
+            lastErrorCode = nil
+        }
+        defer {
+            documentDNARetryingDocumentID = nil
+            endExclusiveSourceOperation()
+        }
+
+        do {
+            try await dnaRetryer.retryFailedAnalysis(
+                documentID: documentID,
+                sourceRootID: sourceRootID
+            )
+        } catch {
+            guard !Self.isDocumentDNACancellation(error) else { return }
+            guard !Task.isCancelled,
+                  selectionGeneration == documentDNADetailGeneration,
+                  selectedSourceID == sourceRootID,
+                  selectedDocumentID == documentID
+            else {
+                return
+            }
+            publishRuntimeFailure(
+                code: "documentDNARetryFailure",
+                category: .documentDNARetry,
+                error: error
+            )
+            return
+        }
+
+        guard !Task.isCancelled,
+              selectionGeneration == documentDNADetailGeneration,
+              selectedSourceID == sourceRootID,
+              selectedDocumentID == documentID
+        else {
+            return
+        }
+        do {
+            let presentation = try await loadDocumentPresentation(sourceID: sourceRootID)
+            guard !Task.isCancelled,
+                  selectionGeneration == documentDNADetailGeneration,
+                  selectedSourceID == sourceRootID,
+                  selectedDocumentID == documentID
+            else {
+                return
+            }
+            publish(presentation)
+            await selectDocument(id: documentID)
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled,
+                  selectionGeneration == documentDNADetailGeneration,
+                  selectedSourceID == sourceRootID,
+                  selectedDocumentID == documentID
+            else {
+                return
+            }
+            publishRuntimeFailure(
+                code: "incrementalRefreshFailure",
+                category: .incrementalRefresh,
                 error: error
             )
         }
@@ -466,9 +561,21 @@ public final class AppModel: ObservableObject {
         documentDNADetailGeneration += 1
         selectedDocumentID = nil
         documentDNADetailState = .none
-        if lastErrorCode == "documentDNADetailLoadFailure" {
+        clearDocumentScopedFailure()
+    }
+
+    private func clearDocumentScopedFailure() {
+        if lastErrorCode == "documentDNADetailLoadFailure"
+            || lastErrorCode == "documentDNARetryFailure" {
             lastErrorCode = nil
         }
+    }
+
+    private static func isDocumentDNACancellation(_ error: any Error) -> Bool {
+        if error is CancellationError {
+            return true
+        }
+        return (error as? DocumentDNAAnalysisRunError)?.reason == .cancelled
     }
 
     private func publishSelection(

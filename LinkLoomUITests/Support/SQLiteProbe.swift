@@ -206,8 +206,73 @@ final class SQLiteProbe {
     }
 }
 
+enum SQLiteTestDatabaseMutator {
+    static func makeSelectableDocumentDNAFailureRetryable(databaseURL: URL) throws {
+        var database: OpaquePointer?
+        let openResult = sqlite3_open_v2(
+            databaseURL.path,
+            &database,
+            SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+            nil
+        )
+        guard openResult == SQLITE_OK, let database else {
+            let message = database.map { String(cString: sqlite3_errmsg($0)) } ?? "unknown"
+            if let database {
+                sqlite3_close(database)
+            }
+            throw SQLiteProbeError.open(message)
+        }
+        defer { sqlite3_close(database) }
+
+        try execute("PRAGMA foreign_keys = ON", in: database)
+        try execute("BEGIN IMMEDIATE TRANSACTION", in: database)
+        do {
+            try execute(
+                """
+                DELETE FROM documentDNA
+                WHERE documentID = (
+                    SELECT id FROM document WHERE relativePath = 'selectable.pdf'
+                )
+                """,
+                in: database
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw SQLiteProbeError.mutation("Expected one selectable DNA snapshot")
+            }
+            try execute(
+                """
+                UPDATE documentDNAAnalysisState
+                SET status = 'failed', failureCode = 'analysisFailure'
+                WHERE documentID = (
+                    SELECT id FROM document WHERE relativePath = 'selectable.pdf'
+                )
+                """,
+                in: database
+            )
+            guard sqlite3_changes(database) == 1 else {
+                throw SQLiteProbeError.mutation("Expected one selectable DNA analysis state")
+            }
+            try execute("COMMIT", in: database)
+        } catch {
+            try? execute("ROLLBACK", in: database)
+            throw error
+        }
+    }
+
+    private static func execute(_ sql: String, in database: OpaquePointer) throws {
+        var errorMessage: UnsafeMutablePointer<CChar>?
+        guard sqlite3_exec(database, sql, nil, nil, &errorMessage) == SQLITE_OK else {
+            let message = errorMessage.map { String(cString: $0) }
+                ?? String(cString: sqlite3_errmsg(database))
+            sqlite3_free(errorMessage)
+            throw SQLiteProbeError.query(message)
+        }
+    }
+}
+
 private enum SQLiteProbeError: Error {
     case open(String)
     case query(String)
     case closed
+    case mutation(String)
 }
