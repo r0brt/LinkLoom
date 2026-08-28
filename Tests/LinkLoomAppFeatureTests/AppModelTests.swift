@@ -331,6 +331,435 @@ struct AppModelTests {
         #expect(model.documentDNADetailState == .unavailable(documentID: document.id))
     }
 
+    @Test @MainActor func retryingSelectedFailedDocumentRefreshesItsReadyDNA() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "failed.pdf")
+        try await fixture.documents.save(document)
+        let snapshot = try testDocumentDNA(document: document)
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [
+                DocumentDNAAnalysisStatus(
+                    documentID: document.id,
+                    phase: .failed(.analysisFailure)
+                ),
+            ],
+        ])
+        let retryer = RecordingDocumentDNAFailureRetryer { documentID, sourceRootID in
+            await dnaStatuses.setStatuses(
+                [DocumentDNAAnalysisStatus(documentID: documentID, phase: .ready)],
+                sourceRootID: sourceRootID
+            )
+        }
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            document.id: [.snapshot(snapshot)],
+        ])
+        let model = fixture.model(
+            dnaStatuses: dnaStatuses,
+            dnaSnapshots: dnaSnapshots,
+            dnaRetryer: retryer
+        )
+        try await model.reload()
+        await model.selectDocument(id: document.id)
+
+        await model.retrySelectedDocumentDNA()
+
+        #expect(await retryer.requests == [
+            DocumentDNARetryRequest(documentID: document.id, sourceRootID: source.id),
+        ])
+        #expect(model.documentDNARetryingDocumentID == nil)
+        #expect(model.documentDNAAnalysisPhases == [document.id: .ready])
+        #expect(model.selectedDocumentID == document.id)
+        #expect(model.documentDNADetailState == .available(snapshot))
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func retryIgnoresMissingNonVisibleOrNonFailedSelection() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let pending = fixture.document(sourceRootID: source.id, path: "pending.pdf")
+        try await fixture.documents.save(pending)
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [DocumentDNAAnalysisStatus(documentID: pending.id, phase: .pending)],
+        ])
+        let retryer = RecordingDocumentDNAFailureRetryer()
+        let model = fixture.model(dnaStatuses: dnaStatuses, dnaRetryer: retryer)
+        try await model.reload()
+
+        await model.retrySelectedDocumentDNA()
+        await model.selectDocument(id: UUID())
+        await model.retrySelectedDocumentDNA()
+        await model.selectDocument(id: pending.id)
+        await model.retrySelectedDocumentDNA()
+
+        #expect(await retryer.requests.isEmpty)
+        #expect(model.documentDNARetryingDocumentID == nil)
+    }
+
+    @Test @MainActor func duplicateDocumentDNARetryIsSuppressed() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "failed.pdf")
+        try await fixture.documents.save(document)
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [
+                DocumentDNAAnalysisStatus(
+                    documentID: document.id,
+                    phase: .failed(.analysisFailure)
+                ),
+            ],
+        ])
+        let retryer = BlockingDocumentDNAFailureRetryer()
+        let model = fixture.model(dnaStatuses: dnaStatuses, dnaRetryer: retryer)
+        try await model.reload()
+        await model.selectDocument(id: document.id)
+
+        let firstRetry = Task { await model.retrySelectedDocumentDNA() }
+        await retryer.waitUntilRetryStarts()
+        #expect(model.documentDNARetryingDocumentID == document.id)
+        await model.retrySelectedDocumentDNA()
+        await retryer.release()
+        await firstRetry.value
+
+        #expect(await retryer.requests.count == 1)
+        #expect(model.documentDNARetryingDocumentID == nil)
+    }
+
+    @Test @MainActor func deterministicDocumentDNARetryFailureRemainsRetryable() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "failed.pdf")
+        try await fixture.documents.save(document)
+        let failedStatus = DocumentDNAAnalysisStatus(
+            documentID: document.id,
+            phase: .failed(.analysisFailure)
+        )
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [failedStatus],
+        ])
+        let retryer = RecordingDocumentDNAFailureRetryer()
+        let model = fixture.model(dnaStatuses: dnaStatuses, dnaRetryer: retryer)
+        try await model.reload()
+        await model.selectDocument(id: document.id)
+
+        await model.retrySelectedDocumentDNA()
+        await model.retrySelectedDocumentDNA()
+
+        #expect(await retryer.requests.count == 2)
+        #expect(model.documentDNAAnalysisPhases == [document.id: failedStatus.phase])
+        #expect(model.selectedDocumentID == document.id)
+        #expect(model.documentDNADetailState == .unavailable(documentID: document.id))
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func documentDNARetryFailurePreservesPresentationAndReportsSafeReason() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "failed.pdf")
+        try await fixture.documents.save(document)
+        let failedStatus = DocumentDNAAnalysisStatus(
+            documentID: document.id,
+            phase: .failed(.analysisFailure)
+        )
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [failedStatus],
+        ])
+        let retryer = RecordingDocumentDNAFailureRetryer { _, _ in
+            throw DocumentDNAAnalysisRunError(
+                reason: .persistence,
+                partialReport: DocumentDNAAnalysisReport(completed: 0, failed: 0)
+            )
+        }
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses,
+            dnaRetryer: retryer,
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        await model.selectDocument(id: document.id)
+
+        await model.retrySelectedDocumentDNA()
+
+        #expect(model.documents == [document])
+        #expect(model.documentDNAAnalysisPhases == [document.id: failedStatus.phase])
+        #expect(model.selectedDocumentID == document.id)
+        #expect(model.documentDNADetailState == .unavailable(documentID: document.id))
+        #expect(model.lastErrorCode == "documentDNARetryFailure")
+        #expect(
+            model.lastErrorMessage
+                == "Document DNA konnte nicht erneut analysiert werden. Bitte versuche es erneut."
+        )
+        #expect(diagnostics.values.map(\.category) == [.documentDNARetry])
+        #expect(diagnostics.values.map(\.reason) == [.persistence])
+    }
+
+    @Test @MainActor func refreshFailureAfterSuccessfulDocumentDNARetryIsNotMutationFailure() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "failed.pdf")
+        try await fixture.documents.save(document)
+        let failedStatus = DocumentDNAAnalysisStatus(
+            documentID: document.id,
+            phase: .failed(.analysisFailure)
+        )
+        let dnaStatuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [source.id: [
+            .statuses([failedStatus]),
+            .failure,
+        ]])
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses,
+            dnaRetryer: RecordingDocumentDNAFailureRetryer(),
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        await model.selectDocument(id: document.id)
+
+        await model.retrySelectedDocumentDNA()
+
+        #expect(model.documents == [document])
+        #expect(model.documentDNAAnalysisPhases == [document.id: failedStatus.phase])
+        #expect(model.selectedDocumentID == document.id)
+        #expect(model.lastErrorCode == "incrementalRefreshFailure")
+        #expect(diagnostics.values.map(\.category) == [.incrementalRefresh])
+    }
+
+    @Test @MainActor func cancelledDocumentDNARetryClearsProgressWithoutDiagnostic() async throws {
+        for usesTypedRunError in [false, true] {
+            let fixture = try AppModelFixture()
+            let source = try await fixture.addSource(named: "Archive")
+            let document = fixture.document(sourceRootID: source.id, path: "failed.pdf")
+            try await fixture.documents.save(document)
+            let failedStatus = DocumentDNAAnalysisStatus(
+                documentID: document.id,
+                phase: .failed(.analysisFailure)
+            )
+            let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+                source.id: [failedStatus],
+            ])
+            let diagnostics = RuntimeDiagnosticRecorder()
+            let model = AppModel(
+                sources: fixture.sources,
+                documents: fixture.documents,
+                sourceAccess: fixture.sourceAccess,
+                catalog: FakeCatalogScanner(),
+                ingestion: FakePendingIngester(),
+                dnaStatuses: dnaStatuses,
+                dnaRetryer: RecordingDocumentDNAFailureRetryer { _, _ in
+                    if usesTypedRunError {
+                        throw DocumentDNAAnalysisRunError(
+                            reason: .cancelled,
+                            partialReport: DocumentDNAAnalysisReport(completed: 0, failed: 0)
+                        )
+                    }
+                    throw CancellationError()
+                },
+                reportRuntimeFailure: { diagnostics.record($0) }
+            )
+            try await model.reload()
+            await model.selectDocument(id: document.id)
+
+            await model.retrySelectedDocumentDNA()
+
+            #expect(model.documentDNARetryingDocumentID == nil)
+            #expect(model.documentDNAAnalysisPhases == [document.id: failedStatus.phase])
+            #expect(model.selectedDocumentID == document.id)
+            #expect(model.lastErrorCode == nil)
+            #expect(diagnostics.values.isEmpty)
+        }
+    }
+
+    @Test @MainActor func cancellingRetryAtSameSelectionCannotRefreshPresentation() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "failed.pdf")
+        try await fixture.documents.save(document)
+        let failedStatus = DocumentDNAAnalysisStatus(
+            documentID: document.id,
+            phase: .failed(.analysisFailure)
+        )
+        let dnaStatuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [source.id: [
+            .statuses([failedStatus]),
+            .statuses([DocumentDNAAnalysisStatus(documentID: document.id, phase: .ready)]),
+        ]])
+        let retryer = BlockingDocumentDNAFailureRetryer()
+        let model = fixture.model(dnaStatuses: dnaStatuses, dnaRetryer: retryer)
+        try await model.reload()
+        await model.selectDocument(id: document.id)
+        let retry = Task { await model.retrySelectedDocumentDNA() }
+        await retryer.waitUntilRetryStarts()
+
+        retry.cancel()
+        await retryer.release()
+        await retry.value
+
+        #expect(model.documentDNAAnalysisPhases == [document.id: failedStatus.phase])
+        #expect(model.selectedDocumentID == document.id)
+        #expect(model.documentDNADetailState == .unavailable(documentID: document.id))
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func staleABADocumentDNARetryCannotPublishSuccessOrFailure() async throws {
+        for retryFails in [false, true] {
+            let fixture = try AppModelFixture()
+            let source = try await fixture.addSource(named: "Archive")
+            let first = fixture.document(sourceRootID: source.id, path: "first.pdf")
+            let second = fixture.document(sourceRootID: source.id, path: "second.pdf")
+            try await fixture.documents.save(first)
+            try await fixture.documents.save(second)
+            let firstFailed = DocumentDNAAnalysisStatus(
+                documentID: first.id,
+                phase: .failed(.analysisFailure)
+            )
+            let secondReady = DocumentDNAAnalysisStatus(documentID: second.id, phase: .ready)
+            let dnaStatuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [source.id: [
+                .statuses([firstFailed, secondReady]),
+                .statuses([
+                    DocumentDNAAnalysisStatus(documentID: first.id, phase: .ready),
+                    secondReady,
+                ]),
+            ]])
+            let retryer = BlockingDocumentDNAFailureRetryer(
+                result: retryFails
+                    ? .failure(.documentDNASnapshotLoadFailed)
+                    : .success(())
+            )
+            let secondSnapshot = try testDocumentDNA(document: second)
+            let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                second.id: [.snapshot(secondSnapshot)],
+            ])
+            let diagnostics = RuntimeDiagnosticRecorder()
+            let model = AppModel(
+                sources: fixture.sources,
+                documents: fixture.documents,
+                sourceAccess: fixture.sourceAccess,
+                catalog: FakeCatalogScanner(),
+                ingestion: FakePendingIngester(),
+                dnaStatuses: dnaStatuses,
+                dnaSnapshots: dnaSnapshots,
+                dnaRetryer: retryer,
+                reportRuntimeFailure: { diagnostics.record($0) }
+            )
+            try await model.reload()
+            await model.selectDocument(id: first.id)
+            let retry = Task { await model.retrySelectedDocumentDNA() }
+            await retryer.waitUntilRetryStarts()
+
+            await model.selectDocument(id: second.id)
+            await model.selectDocument(id: first.id)
+            await retryer.release()
+            await retry.value
+
+            #expect(model.documentDNAAnalysisPhases == [
+                first.id: firstFailed.phase,
+                second.id: secondReady.phase,
+            ])
+            #expect(model.selectedDocumentID == first.id)
+            #expect(model.documentDNADetailState == .unavailable(documentID: first.id))
+            #expect(diagnostics.values.isEmpty)
+        }
+    }
+
+    @Test @MainActor func changingDocumentClearsDocumentDNARetryFailure() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let failed = fixture.document(sourceRootID: source.id, path: "failed.pdf")
+        let pending = fixture.document(sourceRootID: source.id, path: "pending.pdf")
+        try await fixture.documents.save(failed)
+        try await fixture.documents.save(pending)
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [
+                DocumentDNAAnalysisStatus(
+                    documentID: failed.id,
+                    phase: .failed(.analysisFailure)
+                ),
+                DocumentDNAAnalysisStatus(documentID: pending.id, phase: .pending),
+            ],
+        ])
+        let model = fixture.model(
+            dnaStatuses: dnaStatuses,
+            dnaRetryer: RecordingDocumentDNAFailureRetryer { _, _ in
+                throw AppModelTestError.documentDNAStatusLoadFailed
+            }
+        )
+        try await model.reload()
+        await model.selectDocument(id: failed.id)
+        await model.retrySelectedDocumentDNA()
+        #expect(model.lastErrorCode == "documentDNARetryFailure")
+
+        await model.selectDocument(id: pending.id)
+
+        #expect(model.selectedDocumentID == pending.id)
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func staleOrCancelledDocumentDNARetryCannotReplaceNewerSelection() async throws {
+        for mode in 0 ..< 3 {
+            let fixture = try AppModelFixture()
+            let source = try await fixture.addSource(named: "Archive")
+            let failed = fixture.document(sourceRootID: source.id, path: "failed.pdf")
+            let ready = fixture.document(sourceRootID: source.id, path: "ready.pdf")
+            try await fixture.documents.save(failed)
+            try await fixture.documents.save(ready)
+            let readySnapshot = try testDocumentDNA(document: ready)
+            let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+                source.id: [
+                    DocumentDNAAnalysisStatus(
+                        documentID: failed.id,
+                        phase: .failed(.analysisFailure)
+                    ),
+                    DocumentDNAAnalysisStatus(documentID: ready.id, phase: .ready),
+                ],
+            ])
+            let retryer = BlockingDocumentDNAFailureRetryer(
+                result: mode == 1
+                    ? .failure(.documentDNASnapshotLoadFailed)
+                    : .success(())
+            )
+            let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                ready.id: [.snapshot(readySnapshot)],
+            ])
+            let diagnostics = RuntimeDiagnosticRecorder()
+            let model = AppModel(
+                sources: fixture.sources,
+                documents: fixture.documents,
+                sourceAccess: fixture.sourceAccess,
+                catalog: FakeCatalogScanner(),
+                ingestion: FakePendingIngester(),
+                dnaStatuses: dnaStatuses,
+                dnaSnapshots: dnaSnapshots,
+                dnaRetryer: retryer,
+                reportRuntimeFailure: { diagnostics.record($0) }
+            )
+            try await model.reload()
+            await model.selectDocument(id: failed.id)
+            let retry = Task { await model.retrySelectedDocumentDNA() }
+            await retryer.waitUntilRetryStarts()
+
+            await model.selectDocument(id: ready.id)
+            if mode == 2 {
+                retry.cancel()
+            }
+            await retryer.release()
+            await retry.value
+
+            #expect(model.selectedDocumentID == ready.id)
+            #expect(model.documentDNADetailState == .available(readySnapshot))
+            #expect(diagnostics.values.isEmpty)
+        }
+    }
+
     @Test @MainActor func currentDocumentDNALoadFailurePreservesSourcePresentation() async throws {
         let fixture = try AppModelFixture()
         let source = try await fixture.addSource(named: "Archive")
@@ -2385,7 +2814,8 @@ private final class AppModelFixture: @unchecked Sendable {
     @MainActor
     func model(
         dnaStatuses: any DocumentDNAStatusLoading,
-        dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil
+        dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil,
+        dnaRetryer: (any DocumentDNAFailureRetrying)? = nil
     ) -> AppModel {
         AppModel(
             sources: sources,
@@ -2394,7 +2824,8 @@ private final class AppModelFixture: @unchecked Sendable {
             catalog: FakeCatalogScanner(),
             ingestion: FakePendingIngester(),
             dnaStatuses: dnaStatuses,
-            dnaSnapshots: dnaSnapshots
+            dnaSnapshots: dnaSnapshots,
+            dnaRetryer: dnaRetryer
         )
     }
 }
@@ -2435,6 +2866,56 @@ private struct FakeCatalogScanner: CatalogScanning {
 
 private struct FakePendingIngester: PendingIngesting {
     func processPending(source: SourceRootRecord) async throws {}
+}
+
+private struct DocumentDNARetryRequest: Sendable, Equatable {
+    let documentID: UUID
+    let sourceRootID: UUID
+}
+
+private actor RecordingDocumentDNAFailureRetryer: DocumentDNAFailureRetrying {
+    private(set) var requests: [DocumentDNARetryRequest] = []
+    private let operation: @Sendable (UUID, UUID) async throws -> Void
+
+    init(
+        operation: @escaping @Sendable (UUID, UUID) async throws -> Void = { _, _ in }
+    ) {
+        self.operation = operation
+    }
+
+    func retryFailedAnalysis(documentID: UUID, sourceRootID: UUID) async throws {
+        requests.append(DocumentDNARetryRequest(documentID: documentID, sourceRootID: sourceRootID))
+        try await operation(documentID, sourceRootID)
+    }
+}
+
+private actor BlockingDocumentDNAFailureRetryer: DocumentDNAFailureRetrying {
+    private(set) var requests: [DocumentDNARetryRequest] = []
+    private let result: Result<Void, AppModelTestError>
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(result: Result<Void, AppModelTestError> = .success(())) {
+        self.result = result
+    }
+
+    func retryFailedAnalysis(documentID: UUID, sourceRootID: UUID) async throws {
+        requests.append(DocumentDNARetryRequest(documentID: documentID, sourceRootID: sourceRootID))
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        await withCheckedContinuation { continuation = $0 }
+        try result.get()
+    }
+
+    func waitUntilRetryStarts() async {
+        guard continuation == nil else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
 }
 
 private actor MutableDocumentDNAStatusLoader: DocumentDNAStatusLoading {

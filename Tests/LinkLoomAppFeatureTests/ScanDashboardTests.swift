@@ -34,6 +34,18 @@ struct ScanDashboardTests {
         #expect(summary.failed == 1)
     }
 
+    @Test func documentDNAFailureLabelsExposeOnlySafeBoundedReasons() {
+        let cases: [(DocumentDNAAnalysisFailureCode, String)] = [
+            (.analysisFailure, "Lokale Analyse fehlgeschlagen"),
+            (.invalidFinding, "Ungültiger Befund"),
+            (.invalidProvenance, "Ungültiger Nachweis"),
+        ]
+
+        for (code, title) in cases {
+            #expect(DocumentDNAFailurePresentation.title(for: code) == title)
+        }
+    }
+
     @Test func documentDNADetailProjectsFactsAndOneBasedEvidenceInStoredOrder() throws {
         let personEvidence = try DocumentDNAEvidence(
             pageIndex: 0,

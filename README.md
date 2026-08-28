@@ -104,3 +104,10 @@ If a network share, external disk, or cloud-backed mount becomes unavailable, Li
 ### OCR failures
 
 OCR can fail for damaged images, unsupported encodings, extreme image dimensions, blank pages, or text that Vision cannot recognize reliably. Confirm that the original opens normally in Preview, then retry with a clearer or correctly oriented source file. The original is not rewritten during OCR.
+
+### Document DNA analysis failures
+
+Select a document whose Document DNA status is failed to see its privacy-safe
+failure reason in the inspector. Choose “Erneut analysieren” to retry that
+document with the current local analyzer. The retry refreshes the visible
+status and inspector without changing the original source document.

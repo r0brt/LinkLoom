@@ -161,6 +161,10 @@ struct LinkLoomApp: App {
             repository: dnaRepository,
             target: dnaTarget
         )
+        let dnaRetryer = LocalDocumentDNAFailureRetryer(
+            repository: dnaRepository,
+            analysis: dnaAnalysis
+        )
         let documentProcessor = LocalDocumentProcessor(
             ingestion: ingestion,
             dnaAnalysis: dnaAnalysis
@@ -185,6 +189,7 @@ struct LinkLoomApp: App {
             ingestion: documentProcessor,
             dnaStatuses: dnaStatuses,
             dnaSnapshots: dnaSnapshots,
+            dnaRetryer: dnaRetryer,
             watchScheduler: watchScheduler,
             reportRuntimeFailure: { diagnostic in
                 Self.runtimeLogger.error(
@@ -328,5 +333,36 @@ struct CurrentDocumentDNASnapshotLoader: DocumentDNASnapshotLoading {
 
     func currentSnapshot(documentID: UUID) async throws -> DocumentDNA? {
         try await repository.currentSnapshot(documentID: documentID, target: target)
+    }
+}
+
+struct LocalDocumentDNAFailureRetryer: DocumentDNAFailureRetrying {
+    private let clearFailedAnalysis: @Sendable (UUID) async throws -> Void
+    private let processPending: @Sendable (UUID) async throws -> Void
+
+    init(
+        repository: DocumentDNARepository,
+        analysis: DocumentDNAAnalysisPipeline
+    ) {
+        clearFailedAnalysis = { documentID in
+            try await repository.retryFailedAnalysis(documentID: documentID)
+        }
+        processPending = { sourceRootID in
+            _ = try await analysis.processPending(sourceRootID: sourceRootID)
+        }
+    }
+
+    init(
+        clearFailedAnalysis: @escaping @Sendable (UUID) async throws -> Void,
+        processPending: @escaping @Sendable (UUID) async throws -> Void
+    ) {
+        self.clearFailedAnalysis = clearFailedAnalysis
+        self.processPending = processPending
+    }
+
+    func retryFailedAnalysis(documentID: UUID, sourceRootID: UUID) async throws {
+        try await clearFailedAnalysis(documentID)
+        try Task.checkCancellation()
+        try await processPending(sourceRootID)
     }
 }

@@ -70,6 +70,65 @@ struct AppCompositionTests {
         #expect(await dnaCalls.count == 0)
     }
 
+    @Test func localDNARetryerClearsExactFailureBeforeProcessingSourceQueue() async throws {
+        let events = EventRecorder()
+        let documentID = UUID(uuidString: "00000000-0000-0000-0000-000000000201")!
+        let sourceID = UUID(uuidString: "00000000-0000-0000-0000-000000000202")!
+        let retryer = LocalDocumentDNAFailureRetryer(
+            clearFailedAnalysis: { id in await events.append("clear:\(id)") },
+            processPending: { id in await events.append("process:\(id)") }
+        )
+
+        try await retryer.retryFailedAnalysis(
+            documentID: documentID,
+            sourceRootID: sourceID
+        )
+
+        #expect(await events.snapshot() == [
+            "clear:\(documentID)",
+            "process:\(sourceID)",
+        ])
+    }
+
+    @Test func localDNARetryerDoesNotProcessWhenClearingFailureFails() async {
+        let processCalls = CallCounter()
+        let retryer = LocalDocumentDNAFailureRetryer(
+            clearFailedAnalysis: { _ in throw CompositionTestError.dnaFailed },
+            processPending: { _ in await processCalls.increment() }
+        )
+
+        await #expect(throws: CompositionTestError.dnaFailed) {
+            try await retryer.retryFailedAnalysis(
+                documentID: UUID(),
+                sourceRootID: UUID()
+            )
+        }
+        #expect(await processCalls.count == 0)
+    }
+
+    @Test func localDNARetryerHonorsCancellationBetweenStages() async {
+        let processCalls = CallCounter()
+        let retryer = LocalDocumentDNAFailureRetryer(
+            clearFailedAnalysis: { _ in
+                withUnsafeCurrentTask { task in
+                    task?.cancel()
+                }
+            },
+            processPending: { _ in await processCalls.increment() }
+        )
+        let retry = Task {
+            try await retryer.retryFailedAnalysis(
+                documentID: UUID(),
+                sourceRootID: UUID()
+            )
+        }
+
+        await #expect(throws: CancellationError.self) {
+            try await retry.value
+        }
+        #expect(await processCalls.count == 0)
+    }
+
     @Test func incrementalRescanRunsCatalogThenTextThenDNA() async throws {
         let events = EventRecorder()
         let source = sourceRecord()

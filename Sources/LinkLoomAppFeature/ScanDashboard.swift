@@ -219,11 +219,37 @@ public struct ScanDashboard: View {
         case .loading:
             ProgressView("Document DNA wird geladen …")
         case .unavailable:
-            ContentUnavailableView(
-                "Keine aktuelle Document DNA",
-                systemImage: "doc.text.magnifyingglass",
-                description: Text("Die lokale Analyse ist noch nicht bereit.")
-            )
+            if let failureCode = selectedDocumentDNAFailureCode {
+                VStack(spacing: 12) {
+                    ContentUnavailableView(
+                        "Document DNA nicht verfügbar",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text("Das Originaldokument bleibt unverändert.")
+                    )
+                    Text("Fehlergrund: \(DocumentDNAFailurePresentation.title(for: failureCode))")
+                        .foregroundStyle(.secondary)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(
+                            "Fehlergrund: \(DocumentDNAFailurePresentation.title(for: failureCode))"
+                        )
+                        .accessibilityIdentifier("document-dna.failure-reason")
+                    if model.documentDNARetryingDocumentID == model.selectedDocumentID {
+                        ProgressView("Wird erneut analysiert …")
+                            .accessibilityIdentifier("document-dna.retry-progress")
+                    }
+                    Button("Erneut analysieren") {
+                        Task { await model.retrySelectedDocumentDNA() }
+                    }
+                    .accessibilityIdentifier("document-dna.retry")
+                    .disabled(model.documentDNARetryingDocumentID != nil)
+                }
+            } else {
+                ContentUnavailableView(
+                    "Keine aktuelle Document DNA",
+                    systemImage: "doc.text.magnifyingglass",
+                    description: Text("Die lokale Analyse ist noch nicht bereit.")
+                )
+            }
         case .failed:
             ContentUnavailableView(
                 "Document DNA konnte nicht geladen werden",
@@ -233,6 +259,16 @@ public struct ScanDashboard: View {
         case .available(let snapshot):
             documentDNADetail(DocumentDNADetailPresentation(snapshot: snapshot))
         }
+    }
+
+    private var selectedDocumentDNAFailureCode: DocumentDNAAnalysisFailureCode? {
+        guard let selectedDocumentID = model.selectedDocumentID,
+              let phase = model.documentDNAAnalysisPhases[selectedDocumentID],
+              case .failed(let failureCode) = phase
+        else {
+            return nil
+        }
+        return failureCode
     }
 
     private func documentDNADetail(
@@ -350,6 +386,19 @@ enum DocumentDNAAnalysisPresentation {
         case .failed(.invalidFinding):
             "Ungültiger Befund"
         case .failed(.invalidProvenance):
+            "Ungültiger Nachweis"
+        }
+    }
+}
+
+enum DocumentDNAFailurePresentation {
+    static func title(for failureCode: DocumentDNAAnalysisFailureCode) -> String {
+        switch failureCode {
+        case .analysisFailure:
+            "Lokale Analyse fehlgeschlagen"
+        case .invalidFinding:
+            "Ungültiger Befund"
+        case .invalidProvenance:
             "Ungültiger Nachweis"
         }
     }
