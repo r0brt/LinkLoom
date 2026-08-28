@@ -228,6 +228,9 @@ public struct ScanDashboard: View {
                     )
                     Text("Fehlergrund: \(DocumentDNAFailurePresentation.title(for: failureCode))")
                         .foregroundStyle(.secondary)
+                        .accessibilityLabel(
+                            "Fehlergrund: \(DocumentDNAFailurePresentation.title(for: failureCode))"
+                        )
                         .accessibilityIdentifier("document-dna.failure-reason")
                     if model.documentDNARetryingDocumentID == model.selectedDocumentID {
                         ProgressView("Wird erneut analysiert …")
