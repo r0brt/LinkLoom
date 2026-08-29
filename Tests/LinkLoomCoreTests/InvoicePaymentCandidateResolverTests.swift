@@ -388,6 +388,41 @@ struct InvoicePaymentCandidateResolverTests {
             in: [invoice, payment]
         ).isEmpty)
     }
+
+    @Test func multipleMonetaryValuesDemoteOtherwiseStrongCandidate() throws {
+        let invoice = try currentDocument(
+            id: UUID(uuidString: "6b000000-0000-0000-0000-000000000001")!,
+            path: "invoice.pdf",
+            type: .invoice,
+            referenceQualifier: .invoiceNumber,
+            referenceDisplay: "INV-42",
+            referenceValue: "INV42",
+            amount: "100",
+            currency: "CHF",
+            organizationQualifier: "issuer",
+            organization: "alpha ag",
+            additionalAmounts: [("1250", "CHF")]
+        )
+        let payment = try currentDocument(
+            id: UUID(uuidString: "6b000000-0000-0000-0000-000000000002")!,
+            path: "payment.pdf",
+            type: .paymentConfirmation,
+            referenceQualifier: .paymentReference,
+            referenceDisplay: "INV 42",
+            referenceValue: "INV42",
+            amount: "100",
+            currency: "CHF",
+            organizationQualifier: "payee",
+            organization: "alpha ag"
+        )
+
+        let candidate = try #require(InvoicePaymentCandidateResolver().candidates(
+            matching: "INV42",
+            in: [invoice, payment]
+        ).only)
+
+        #expect(candidate.disposition == .suggestion)
+    }
 }
 
 private extension InvoicePaymentCandidateResolverTests {
@@ -402,7 +437,8 @@ private extension InvoicePaymentCandidateResolverTests {
         currency: String?,
         organizationQualifier: String?,
         organization: String?,
-        analyzerVersion: String = "2"
+        analyzerVersion: String = "2",
+        additionalAmounts: [(String, String)] = []
     ) throws -> CurrentDocumentDNA {
         var findings = [
             try finding(
@@ -419,6 +455,14 @@ private extension InvoicePaymentCandidateResolverTests {
             ),
         ]
         if let amount, let currency {
+            findings.append(try finding(
+                kind: .monetaryAmount,
+                qualifier: currency,
+                displayValue: "\(currency) \(amount)",
+                normalizedValue: amount
+            ))
+        }
+        for (amount, currency) in additionalAmounts {
             findings.append(try finding(
                 kind: .monetaryAmount,
                 qualifier: currency,

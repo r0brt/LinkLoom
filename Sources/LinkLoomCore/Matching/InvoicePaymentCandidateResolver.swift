@@ -152,7 +152,8 @@ public struct InvoicePaymentCandidateResolver: Sendable {
                 candidates.append(InvoicePaymentCandidate(
                     invoice: invoice,
                     payment: payment,
-                    disposition: amountSignal != nil && organizationSignal != nil
+                    disposition: amountAssessment.isUnambiguousMatch
+                        && organizationAssessment.isUnambiguousMatch
                         ? .automatic
                         : .suggestion,
                     resolverVersion: Self.version,
@@ -252,16 +253,31 @@ public struct InvoicePaymentCandidateResolver: Sendable {
         guard !invoiceFindings.isEmpty, !paymentFindings.isEmpty else {
             return .missing
         }
+        let invoiceValues = Set(invoiceFindings.map {
+            SignalValue(
+                qualifier: requireSameQualifier ? $0.qualifier : nil,
+                normalizedValue: $0.normalizedValue
+            )
+        })
+        let paymentValues = Set(paymentFindings.map {
+            SignalValue(
+                qualifier: requireSameQualifier ? $0.qualifier : nil,
+                normalizedValue: $0.normalizedValue
+            )
+        })
         for invoiceFinding in invoiceFindings {
             if let paymentFinding = paymentFindings.first(where: {
                 (!requireSameQualifier || $0.qualifier == invoiceFinding.qualifier)
                     && $0.normalizedValue == invoiceFinding.normalizedValue
             }) {
-                return .matching(InvoicePaymentCandidateSignal(
-                    kind: signalKind,
-                    invoiceFinding: invoiceFinding,
-                    paymentFinding: paymentFinding
-                ))
+                return .matching(
+                    InvoicePaymentCandidateSignal(
+                        kind: signalKind,
+                        invoiceFinding: invoiceFinding,
+                        paymentFinding: paymentFinding
+                    ),
+                    isUnambiguous: invoiceValues.count == 1 && paymentValues.count == 1
+                )
             }
         }
         return .conflict
@@ -291,14 +307,24 @@ public struct InvoicePaymentCandidateResolver: Sendable {
     }
 }
 
+private struct SignalValue: Hashable {
+    let qualifier: String?
+    let normalizedValue: String
+}
+
 private enum SignalAssessment {
     case missing
-    case matching(InvoicePaymentCandidateSignal)
+    case matching(InvoicePaymentCandidateSignal, isUnambiguous: Bool)
     case conflict
 
     var signal: InvoicePaymentCandidateSignal? {
-        guard case let .matching(signal) = self else { return nil }
+        guard case let .matching(signal, _) = self else { return nil }
         return signal
+    }
+
+    var isUnambiguousMatch: Bool {
+        guard case let .matching(_, isUnambiguous) = self else { return false }
+        return isUnambiguous
     }
 
     var isConflict: Bool {
