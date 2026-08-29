@@ -62,7 +62,7 @@
 - Produces: `LocalRulesDocumentDNAAnalyzer.analyzerVersion == "2"` and a private `normalizeReference(_ value: String) -> String?` whose non-nil output matches `^[A-Z0-9]+$`.
 - Preserves: `CandidateKey(kind, qualifier, normalizedValue, secondaryNormalizedValue)` so only same-qualifier findings collapse inside one snapshot.
 
-- [ ] **Step 1: Add the failing separator/whitespace equivalence test**
+- [x] **Step 1: Add the failing separator/whitespace equivalence test**
 
 Add this behavior test beside `extractsEverySupportedLabelledReferenceKind`:
 
@@ -208,7 +208,7 @@ Before v2 implementation, the lookup returns only the payment document because
 the invoice stores `INV-2026-0042`. After v2 implementation, it returns both
 while preserving their distinct qualifiers, displays, and evidence.
 
-- [ ] **Step 2: Add rejected-Unicode, check-digit, and qualifier/collision tests**
+- [x] **Step 2: Add rejected-Unicode, check-digit, and qualifier/collision tests**
 
 Add these independent tests before changing production code:
 
@@ -270,7 +270,7 @@ Add these independent tests before changing production code:
 
 The rejection test is a guardrail against implementing the feature with broad punctuation deletion or compatibility folding. The collision test records that separator loss is intentional while qualifier semantics remain intact.
 
-- [ ] **Step 3: Update all literal v2 expectations before implementation**
+- [x] **Step 3: Update all literal v2 expectations before implementation**
 
 Change `extractsEverySupportedLabelledReferenceKind` to expect:
 
@@ -317,7 +317,7 @@ implementation version. Do not copy real personal documents, names,
 identifiers, or extracted text into these fixtures.
 ```
 
-- [ ] **Step 4: Run the focused tests and verify RED**
+- [x] **Step 4: Run the focused tests and verify RED**
 
 Run:
 
@@ -332,7 +332,7 @@ swift test --disable-sandbox --enable-swift-testing \
 
 Expected: failures show that the current analyzer still reports version `1`, retains ASCII punctuation, does not accept the selected Unicode separator variants, and therefore does not collapse all equivalent references. Evidence re-slicing must continue to pass.
 
-- [ ] **Step 5: Implement the explicit scalar normalizer and analyzer version bump**
+- [x] **Step 5: Implement the explicit scalar normalizer and analyzer version bump**
 
 Change the analyzer constants and capture pattern to:
 
@@ -395,13 +395,13 @@ candidates.append(Candidate(
 
 Do not change `CandidateKey`, finding sorting, evidence construction, domain validation, repository code, or schema code.
 
-- [ ] **Step 6: Run the focused tests and verify GREEN**
+- [x] **Step 6: Run the focused tests and verify GREEN**
 
 Re-run the Step 4 command.
 
 Expected: every analyzer unit, complete golden snapshot, and real pipeline literal test passes. The six formatting variants collapse to one finding with six evidence values; disallowed Unicode remains absent; leading zeros/check digits are unchanged.
 
-- [ ] **Step 7: Commit the analyzer-v2 contract**
+- [x] **Step 7: Commit the analyzer-v2 contract**
 
 ```sh
 git add Sources/LinkLoomCore/Analysis/LocalRulesDocumentDNAAnalyzer.swift \
@@ -431,7 +431,7 @@ git commit -m "fix(dna): normalize reference separators"
 - Produces: an end-to-end regression proving two differently formatted, differently qualified references share one catalog lookup without changing repository SQL or persistence schema.
 - Reuses: existing generic analyzer-version replacement, stale/current visibility, rollback, one-statement query, and index regressions.
 
-- [ ] **Step 1: Confirm the catalog lookup test participated in Task 1 RED**
+- [x] **Step 1: Confirm the catalog lookup test participated in Task 1 RED**
 
 Task 1 Step 1 adds the following test beside the existing real-local-analyzer
 integration test before any production change. Confirm its pre-implementation
@@ -544,7 +544,7 @@ payment pair:
 
 Before v2 implementation, the lookup returns only the payment document because the invoice stores `INV-2026-0042`. After v2 implementation, it returns both while preserving their distinct qualifiers, displays, and evidence.
 
-- [ ] **Step 2: Run the new integration test and verify GREEN after Task 1**
+- [x] **Step 2: Run the new integration test and verify GREEN after Task 1**
 
 Run:
 
@@ -559,7 +559,7 @@ swift test --disable-sandbox --enable-swift-testing \
 
 Expected: one passing test; the first run completes exactly two documents and the unchanged rerun completes zero.
 
-- [ ] **Step 3: Re-run the existing controlled-version and persistence regressions**
+- [x] **Step 3: Re-run the existing controlled-version and persistence regressions**
 
 Run:
 
@@ -582,7 +582,7 @@ Expected: every named regression passes and proves:
 
 Do not change `DocumentDNARepository`, `AppDatabase`, `DocumentDNA`, or the `currentFindings` signature to make these tests pass.
 
-- [ ] **Step 4: Inspect the Task 1 commit boundary**
+- [x] **Step 4: Inspect the Task 1 commit boundary**
 
 Run:
 
@@ -610,7 +610,7 @@ network, telemetry, or dependency change.
 - Consumes: Tasks 1-2 and the repository definition of done.
 - Produces: exact local verification evidence and a focused review-ready branch; no push, pull request, merge, remote setting, or remote branch change.
 
-- [ ] **Step 1: Run all focused Document DNA suites**
+- [x] **Step 1: Run all focused Document DNA suites**
 
 ```sh
 swift test --disable-sandbox --enable-swift-testing \
@@ -623,7 +623,7 @@ swift test --disable-sandbox --enable-swift-testing \
 
 Expected: every focused domain, analyzer, golden, repository, pipeline, and composition test passes. The production target must be `schemaVersion 1 / local-rules / analyzerVersion 2`.
 
-- [ ] **Step 2: Run the complete non-opt-in suite**
+- [x] **Step 2: Run the complete non-opt-in suite**
 
 ```sh
 swift test --disable-sandbox --enable-swift-testing \
@@ -635,7 +635,7 @@ swift test --disable-sandbox --enable-swift-testing \
 
 Expected: all non-opt-in tests pass. Do not run `catalogHandlesTenThousandDocumentsIdempotently`; reference normalization does not change catalog, fingerprinting, or scale behavior.
 
-- [ ] **Step 3: Run the production release build**
+- [x] **Step 3: Run the production release build**
 
 ```sh
 swift build -c release
@@ -643,7 +643,7 @@ swift build -c release
 
 Expected: exit status `0` with no warning attributable to this change.
 
-- [ ] **Step 4: Verify diff hygiene, schema scope, and repository index reuse**
+- [x] **Step 4: Verify diff hygiene, schema scope, and repository index reuse**
 
 ```sh
 git diff --check
@@ -662,7 +662,7 @@ Expected:
 - the existing `document_dna_finding_kind_value` index remains the lookup path;
 - changes are limited to the analyzer, focused tests, synthetic golden expectations/README, and this plan.
 
-- [ ] **Step 5: Inspect normalization and privacy invariants manually**
+- [x] **Step 5: Inspect normalization and privacy invariants manually**
 
 Review the complete diff and confirm all of the following:
 
@@ -675,7 +675,7 @@ Review the complete diff and confirm all of the following:
 - no normalization input, reference value, path, or personal data enters errors or logs;
 - no source file is accessed or modified by DNA analysis.
 
-- [ ] **Step 6: Request independent read-only review**
+- [x] **Step 6: Request independent read-only review**
 
 Use `superpowers:requesting-code-review` with the task base SHA and current HEAD. Require review of:
 
@@ -689,7 +689,7 @@ Use `superpowers:requesting-code-review` with the task base SHA and current HEAD
 
 Resolve every Critical or Important finding through `superpowers:receiving-code-review`: reproduce it with a focused failing test, observe RED, apply the minimum in-scope fix, rerun the affected focused test, then repeat Tasks 3 Steps 1-5.
 
-- [ ] **Step 7: Record exact verification evidence in this plan and commit it**
+- [x] **Step 7: Record exact verification evidence in this plan and commit it**
 
 Add a `## Verification Record` section containing literal test counts, suite counts, release-build result, diff/status result, independent-review verdict, and the tested commit SHA. Do not use placeholders or estimated counts.
 
@@ -702,3 +702,33 @@ git commit -m "docs: record reference normalization verification"
 - [ ] **Step 8: Hand off without remote mutation**
 
 Report the branch name, commits, exact focused/full/release verification, review verdict, schema/persistence compatibility, and remaining required GitHub checks. Do not push, create or merge a pull request, change GitHub settings, or delete a branch without a new explicit user authorization.
+
+## Verification Record
+
+- Tested implementation commit: `35cf660326367f0ea0456be9893979c16a9610be`
+  (`fix(dna): normalize reference separators`).
+- Focused Document DNA verification: 108 tests in 6 suites passed (exit 0).
+- Complete non-opt-in verification: 320 tests in 25 suites passed (exit 0).
+  `catalogHandlesTenThousandDocumentsIdempotently()` was skipped as the
+  opt-in scale test, because this change does not affect cataloging,
+  fingerprinting, or scale behavior.
+- Production release build: `swift build -c release` exited 0 with no
+  attributable compiler warnings. The complete test run emitted the
+  non-failing, non-attributable CoreGraphics runtime line `CoreGraphics PDF
+  has logged an error. Set environment variable "CG_PDF_VERBOSE" to learn
+  more.`; all tests and suites still passed.
+- Diff and status: `git diff --check`, `git diff --cached --check`, and the
+  committed-range `git diff --check origin/main...HEAD` were clean; `git
+  status --short` was empty before this record. The protected-path diff for
+  `AppDatabase.swift`, `DocumentDNARepository.swift`, `DocumentDNA.swift`,
+  and `Package.swift` was empty.
+- Independent review: Ready to merge **Yes**; no Critical or Important
+  findings; two non-blocking Minor test-hardenings (representative rather than
+  exhaustive scalar-boundary cases, and no direct per-evidence range/exact-text
+  assertions in the six-variant collapse test).
+- Schema and persistence compatibility: schema version remains 1; analyzer
+  identity remains `local-rules` with analyzer version 2; no migration,
+  database, repository, domain-model, package, or index change was made. The
+  existing `document_dna_finding_kind_value` index remains the lookup path,
+  and currentness/atomic prior-snapshot behavior remains covered by the
+  passing focused regressions.
