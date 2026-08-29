@@ -33,6 +33,56 @@ public struct PendingDocumentDNAAnalysis: Sendable, Equatable {
     }
 }
 
+public struct DocumentDNAFindingMatch: Sendable, Equatable {
+    public let document: DocumentRecord
+    public let finding: DocumentDNAFinding
+
+    public init(document: DocumentRecord, finding: DocumentDNAFinding) {
+        self.document = document
+        self.finding = finding
+    }
+}
+
+private struct DocumentDNAFindingMatchAccumulator {
+    let document: DocumentRecord
+    let kind: DocumentDNAFindingKind
+    let qualifier: String?
+    let displayValue: String
+    let normalizedValue: String
+    let secondaryNormalizedValue: String?
+    let confidence: Double
+    var evidence: [DocumentDNAEvidence] = []
+
+    init(document: DocumentRecord, row: Row) throws {
+        let kindValue: String = row["kind"]
+        guard let kind = DocumentDNAFindingKind(rawValue: kindValue) else {
+            throw DocumentDNAValidationError.invalidFinding
+        }
+        self.document = document
+        self.kind = kind
+        qualifier = row["qualifier"]
+        displayValue = row["displayValue"]
+        normalizedValue = row["normalizedValue"]
+        secondaryNormalizedValue = row["secondaryNormalizedValue"]
+        confidence = row["confidence"]
+    }
+
+    func match() throws -> DocumentDNAFindingMatch {
+        DocumentDNAFindingMatch(
+            document: document,
+            finding: try DocumentDNAFinding(
+                kind: kind,
+                qualifier: qualifier,
+                displayValue: displayValue,
+                normalizedValue: normalizedValue,
+                secondaryNormalizedValue: secondaryNormalizedValue,
+                confidence: confidence,
+                evidence: evidence
+            )
+        )
+    }
+}
+
 public enum DocumentDNAAnalysisFailureCode: String, Sendable, Equatable, CaseIterable {
     case analysisFailure
     case invalidFinding
@@ -502,6 +552,83 @@ public actor DocumentDNARepository {
         }
     }
 
+    public func currentFindings(
+        kind: DocumentDNAFindingKind,
+        normalizedValue: String,
+        target: DocumentDNAAnalysisTarget
+    ) async throws -> [DocumentDNAFindingMatch] {
+        try await dbWriter.read { db in
+            let rows = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT document.*, finding.id AS findingID, finding.kind,
+                           finding.qualifier, finding.displayValue,
+                           finding.normalizedValue, finding.secondaryNormalizedValue,
+                           finding.confidence,
+                           evidence.pageIndex AS evidencePageIndex,
+                           evidence.startUTF16 AS evidenceStartUTF16,
+                           evidence.lengthUTF16 AS evidenceLengthUTF16,
+                           evidence.exactText AS evidenceExactText,
+                           evidence.ocrRegionIndexesJSON AS evidenceOCRRegionIndexesJSON
+                    FROM documentDNAFinding AS finding
+                        INDEXED BY document_dna_finding_kind_value
+                    JOIN documentDNA
+                        ON documentDNA.documentID = finding.documentID
+                    JOIN document
+                        ON document.id = documentDNA.documentID
+                    JOIN documentExtraction
+                        ON documentExtraction.documentID = document.id
+                    LEFT JOIN documentDNAEvidence AS evidence
+                        ON evidence.findingID = finding.id
+                    WHERE finding.kind = ?
+                        AND finding.normalizedValue = ?
+                        AND documentDNA.schemaVersion = ?
+                        AND documentDNA.analyzerIdentifier = ?
+                        AND documentDNA.analyzerVersion = ?
+                        AND documentDNA.inputContentHash = document.contentHash
+                        AND documentDNA.inputExtractionVersion =
+                            documentExtraction.analysisVersion
+                    ORDER BY document.sourceRootID, document.relativePath,
+                             document.id, finding.sortOrder, finding.id,
+                             evidence.evidenceOrder
+                    """,
+                arguments: [
+                    kind.rawValue,
+                    normalizedValue,
+                    target.schemaVersion,
+                    target.analyzerIdentifier,
+                    target.analyzerVersion,
+                ]
+            )
+            var positionsByFindingID: [Int64: Int] = [:]
+            var accumulators: [DocumentDNAFindingMatchAccumulator] = []
+            for row in rows {
+                let findingID: Int64 = row["findingID"]
+                let position: Int
+                if let existingPosition = positionsByFindingID[findingID] {
+                    position = existingPosition
+                } else {
+                    position = accumulators.endIndex
+                    positionsByFindingID[findingID] = position
+                    accumulators.append(try DocumentDNAFindingMatchAccumulator(
+                        document: DocumentRecord(row: row),
+                        row: row
+                    ))
+                }
+                guard let pageIndex: Int = row["evidencePageIndex"] else { continue }
+                let indexesJSON: Data = row["evidenceOCRRegionIndexesJSON"]
+                accumulators[position].evidence.append(try DocumentDNAEvidence(
+                    pageIndex: pageIndex,
+                    startUTF16: row["evidenceStartUTF16"],
+                    lengthUTF16: row["evidenceLengthUTF16"],
+                    exactText: row["evidenceExactText"],
+                    ocrRegionIndexes: try JSONDecoder().decode([Int].self, from: indexesJSON)
+                ))
+            }
+            return try accumulators.map { try $0.match() }
+        }
+    }
+
     private static func snapshot(
         in db: Database,
         documentID: UUID
@@ -529,46 +656,7 @@ public actor DocumentDNARepository {
                 """,
             arguments: [documentID]
         )
-        let findings = try findingRows.map { findingRow in
-            let findingID: Int64 = findingRow["id"]
-            let kindValue: String = findingRow["kind"]
-            guard let kind = DocumentDNAFindingKind(rawValue: kindValue) else {
-                throw DocumentDNAValidationError.invalidFinding
-            }
-            let evidenceRows = try Row.fetchAll(
-                db,
-                sql: """
-                    SELECT pageIndex, startUTF16, lengthUTF16, exactText,
-                           ocrRegionIndexesJSON
-                    FROM documentDNAEvidence
-                    WHERE findingID = ?
-                    ORDER BY evidenceOrder
-                    """,
-                arguments: [findingID]
-            )
-            let evidence = try evidenceRows.map { evidenceRow in
-                let indexesJSON: Data = evidenceRow["ocrRegionIndexesJSON"]
-                return try DocumentDNAEvidence(
-                    pageIndex: evidenceRow["pageIndex"],
-                    startUTF16: evidenceRow["startUTF16"],
-                    lengthUTF16: evidenceRow["lengthUTF16"],
-                    exactText: evidenceRow["exactText"],
-                    ocrRegionIndexes: try JSONDecoder().decode(
-                        [Int].self,
-                        from: indexesJSON
-                    )
-                )
-            }
-            return try DocumentDNAFinding(
-                kind: kind,
-                qualifier: findingRow["qualifier"],
-                displayValue: findingRow["displayValue"],
-                normalizedValue: findingRow["normalizedValue"],
-                secondaryNormalizedValue: findingRow["secondaryNormalizedValue"],
-                confidence: findingRow["confidence"],
-                evidence: evidence
-            )
-        }
+        let findings = try findingRows.map { try Self.finding(in: db, row: $0) }
         let schemaVersion: Int = header["schemaVersion"]
         let analyzerIdentifier: String = header["analyzerIdentifier"]
         let analyzerVersion: String = header["analyzerVersion"]
@@ -592,6 +680,44 @@ public actor DocumentDNARepository {
             inputExtractionVersion: inputExtractionVersion,
             findings: findings,
             analyzedAt: analyzedAt
+        )
+    }
+
+    private static func finding(in db: Database, row: Row) throws -> DocumentDNAFinding {
+        let findingID: Int64 = row["id"]
+        let kindValue: String = row["kind"]
+        guard let kind = DocumentDNAFindingKind(rawValue: kindValue) else {
+            throw DocumentDNAValidationError.invalidFinding
+        }
+        let evidenceRows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT pageIndex, startUTF16, lengthUTF16, exactText,
+                       ocrRegionIndexesJSON
+                FROM documentDNAEvidence
+                WHERE findingID = ?
+                ORDER BY evidenceOrder
+                """,
+            arguments: [findingID]
+        )
+        let evidence = try evidenceRows.map { evidenceRow in
+            let indexesJSON: Data = evidenceRow["ocrRegionIndexesJSON"]
+            return try DocumentDNAEvidence(
+                pageIndex: evidenceRow["pageIndex"],
+                startUTF16: evidenceRow["startUTF16"],
+                lengthUTF16: evidenceRow["lengthUTF16"],
+                exactText: evidenceRow["exactText"],
+                ocrRegionIndexes: try JSONDecoder().decode([Int].self, from: indexesJSON)
+            )
+        }
+        return try DocumentDNAFinding(
+            kind: kind,
+            qualifier: row["qualifier"],
+            displayValue: row["displayValue"],
+            normalizedValue: row["normalizedValue"],
+            secondaryNormalizedValue: row["secondaryNormalizedValue"],
+            confidence: row["confidence"],
+            evidence: evidence
         )
     }
 
