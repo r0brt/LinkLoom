@@ -143,7 +143,7 @@ final class SQLiteProbe {
                 WHERE status = 'ready'
                   AND targetSchemaVersion = 1
                   AND targetAnalyzerIdentifier = 'local-rules'
-                  AND targetAnalyzerVersion = '1'
+                  AND targetAnalyzerVersion = '2'
                 """),
             dnaClassificationCount: try scalar("""
                 SELECT COUNT(*)
@@ -155,7 +155,7 @@ final class SQLiteProbe {
                 FROM documentDNA
                 WHERE schemaVersion = 1
                   AND analyzerIdentifier = 'local-rules'
-                  AND analyzerVersion = '1'
+                  AND analyzerVersion = '2'
                 """),
             coherentDNADocumentCount: try scalar("""
                 SELECT COUNT(DISTINCT document.id)
@@ -170,7 +170,7 @@ final class SQLiteProbe {
                   AND document.availability = 'available'
                   AND documentDNA.schemaVersion = 1
                   AND documentDNA.analyzerIdentifier = 'local-rules'
-                  AND documentDNA.analyzerVersion = '1'
+                  AND documentDNA.analyzerVersion = '2'
                   AND documentDNA.inputContentHash = document.contentHash
                   AND documentDNA.inputExtractionVersion =
                     documentExtraction.analysisVersion
