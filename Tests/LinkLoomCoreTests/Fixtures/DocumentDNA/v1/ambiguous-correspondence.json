@@ -16,7 +16,7 @@
     "documentID": "30000000-0000-0000-0000-000000000008",
     "schemaVersion": 1,
     "analyzerIdentifier": "local-rules",
-    "analyzerVersion": "1",
+    "analyzerVersion": "2",
     "inputContentHash": "synthetic-ambiguous-hash",
     "inputExtractionVersion": "text-v1",
     "findings": [
@@ -40,7 +40,7 @@
         "kind": "referenceNumber",
         "qualifier": "other",
         "displayValue": "brief-77",
-        "normalizedValue": "BRIEF-77",
+        "normalizedValue": "BRIEF77",
         "confidence": 1,
         "evidence": [
           {

@@ -16,7 +16,7 @@
     "documentID": "30000000-0000-0000-0000-000000000004",
     "schemaVersion": 1,
     "analyzerIdentifier": "local-rules",
-    "analyzerVersion": "1",
+    "analyzerVersion": "2",
     "inputContentHash": "synthetic-insurance-hash",
     "inputExtractionVersion": "text-v1",
     "findings": [
@@ -103,7 +103,7 @@
         "kind": "referenceNumber",
         "qualifier": "claimNumber",
         "displayValue": "clm-2026-9",
-        "normalizedValue": "CLM-2026-9",
+        "normalizedValue": "CLM20269",
         "confidence": 1,
         "evidence": [
           {

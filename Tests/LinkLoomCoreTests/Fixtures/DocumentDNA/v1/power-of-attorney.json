@@ -16,7 +16,7 @@
     "documentID": "30000000-0000-0000-0000-000000000005",
     "schemaVersion": 1,
     "analyzerIdentifier": "local-rules",
-    "analyzerVersion": "1",
+    "analyzerVersion": "2",
     "inputContentHash": "synthetic-power-hash",
     "inputExtractionVersion": "text-v1",
     "findings": [

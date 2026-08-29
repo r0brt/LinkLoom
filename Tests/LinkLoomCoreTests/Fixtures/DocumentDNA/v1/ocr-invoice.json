@@ -42,7 +42,7 @@
     "documentID": "30000000-0000-0000-0000-000000000006",
     "schemaVersion": 1,
     "analyzerIdentifier": "local-rules",
-    "analyzerVersion": "1",
+    "analyzerVersion": "2",
     "inputContentHash": "synthetic-ocr-invoice-hash",
     "inputExtractionVersion": "text-v1",
     "findings": [
@@ -97,7 +97,7 @@
         "kind": "referenceNumber",
         "qualifier": "invoiceNumber",
         "displayValue": "ocr-0043",
-        "normalizedValue": "OCR-0043",
+        "normalizedValue": "OCR0043",
         "confidence": 1,
         "evidence": [
           {

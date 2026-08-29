@@ -518,7 +518,7 @@ struct DocumentDNAAnalysisPipelineTests {
             documentID: documentID,
             schemaVersion: 1,
             analyzerIdentifier: "local-rules",
-            analyzerVersion: "1",
+            analyzerVersion: "2",
             inputContentHash: contentHash,
             inputExtractionVersion: extractionVersion,
             findings: [
@@ -556,7 +556,7 @@ struct DocumentDNAAnalysisPipelineTests {
                     kind: .referenceNumber,
                     qualifier: "invoiceNumber",
                     displayValue: "RE-2026-0815",
-                    normalizedValue: "RE-2026-0815",
+                    normalizedValue: "RE20260815",
                     secondaryNormalizedValue: nil,
                     confidence: 1,
                     evidence: [try DocumentDNAEvidence(
@@ -598,6 +598,108 @@ struct DocumentDNAAnalysisPipelineTests {
         #expect(report == DocumentDNAAnalysisReport(completed: 1, failed: 0))
         #expect(actual == expected)
         #expect(reloadedDocument.status == .ready)
+    }
+
+    @Test func realAnalyzerJointlyFindsInvoiceAndPaymentReferenceVariants() async throws {
+        let db = try TestDatabase.make()
+        let date = Date(timeIntervalSince1970: 1_800_000_000)
+        let source = SourceRootRecord(
+            id: UUID(uuidString: "51000000-0000-0000-0000-000000000001")!,
+            displayName: "Reference matching",
+            pathHint: "/synthetic/reference-matching",
+            bookmarkData: Data("bookmark-reference-matching".utf8),
+            createdAt: date
+        )
+        let inputs: [(UUID, String, String, String)] = [
+            (
+                UUID(uuidString: "51000000-0000-0000-0000-000000000002")!,
+                "invoice.pdf",
+                "hash-invoice",
+                "Rechnung\nRechnungsnummer: inv-2026-0042"
+            ),
+            (
+                UUID(uuidString: "51000000-0000-0000-0000-000000000003")!,
+                "payment.pdf",
+                "hash-payment",
+                "Zahlungsbestätigung\nZahlungsreferenz: inv 2026 0042"
+            ),
+        ]
+        try await db.write { database in
+            try source.insert(database)
+        }
+        let extractions = ExtractionRepository(dbWriter: db)
+        for (documentID, relativePath, contentHash, text) in inputs {
+            let document = DocumentRecord(
+                id: documentID,
+                sourceRootID: source.id,
+                relativePath: relativePath,
+                contentHash: contentHash,
+                byteCount: 64,
+                modifiedAt: date,
+                mediaType: .pdf,
+                status: .ready,
+                availability: .available,
+                pageCount: 1,
+                lastSeenAt: date,
+                lastFingerprintAt: date
+            )
+            try await db.write { database in
+                try document.insert(database)
+            }
+            try await extractions.replace(
+                documentID: documentID,
+                analysisVersion: "text-v1",
+                extraction: ExtractedDocument(
+                    method: .embeddedPDFText,
+                    pages: [ExtractedPage(pageIndex: 0, text: text, regions: [])]
+                ),
+                at: date
+            )
+        }
+        let target = try DocumentDNAAnalysisTarget(
+            schemaVersion: LocalRulesDocumentDNAAnalyzer.schemaVersion,
+            analyzerIdentifier: LocalRulesDocumentDNAAnalyzer.analyzerIdentifier,
+            analyzerVersion: LocalRulesDocumentDNAAnalyzer.analyzerVersion
+        )
+        let repository = DocumentDNARepository(dbWriter: db)
+        let pipeline = DocumentDNAAnalysisPipeline(
+            repository: repository,
+            analyzer: LocalRulesDocumentDNAAnalyzer(),
+            target: target,
+            now: { date }
+        )
+
+        #expect(try await pipeline.processPending(
+            sourceRootID: source.id,
+            limit: 2
+        ) == DocumentDNAAnalysisReport(completed: 2, failed: 0))
+
+        let matches = try await repository.currentFindings(
+            kind: .referenceNumber,
+            normalizedValue: "INV20260042",
+            target: target
+        )
+
+        #expect(matches.map(\.document.relativePath) == [
+            "invoice.pdf",
+            "payment.pdf",
+        ])
+        #expect(matches.map(\.finding.qualifier) == [
+            "invoiceNumber",
+            "paymentReference",
+        ])
+        #expect(matches.map(\.finding.displayValue) == [
+            "inv-2026-0042",
+            "inv 2026 0042",
+        ])
+        #expect(matches.allSatisfy {
+            $0.finding.normalizedValue == "INV20260042"
+                && $0.finding.evidence.count == 1
+        })
+        #expect(try await pipeline.processPending(
+            sourceRootID: source.id,
+            limit: 2
+        ) == DocumentDNAAnalysisReport(completed: 0, failed: 0))
     }
 
     @Test func limitBoundsConcurrencyWithoutTruncatingLaterBatches() async throws {
