@@ -4,6 +4,12 @@ This file applies to the entire repository. It is an execution guide, not a
 product specification. Verify current behavior in code and tests before making
 changes.
 
+## Communication
+
+- Always make one explicit recommendation when proposing a next step.
+- If meaningful alternatives exist, state the recommended option first and
+  explain why; never present only an unranked list of options.
+
 ## Start here
 
 - Use [README.md](README.md) for prerequisites, setup, supported inputs, and operator guidance.
