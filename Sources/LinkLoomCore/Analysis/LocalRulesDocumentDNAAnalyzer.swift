@@ -3,8 +3,15 @@ import Foundation
 public struct LocalRulesDocumentDNAAnalyzer: DocumentDNAAnalyzing {
     public static let schemaVersion = 1
     public static let analyzerIdentifier = "local-rules"
-    public static let analyzerVersion = "1"
-    private static let labelledReferencePattern = #"(?mi)^(Vertragsnummer|Rechnungsnummer|Policennummer|Schadennummer|Kundennummer|Zahlungsreferenz|Referenz):[ \t]*([A-Z0-9][A-Z0-9 ./-]*?)[ \t]*$"#
+    public static let analyzerVersion = "2"
+    private static let labelledReferencePattern = #"(?mi)^(Vertragsnummer|Rechnungsnummer|Policennummer|Schadennummer|Kundennummer|Zahlungsreferenz|Referenz):[ \t]*([^\r\n]+?)[ \t]*$"#
+    private static let referenceSeparatorScalars: Set<UInt32> = [
+        0x002D, 0x002E, 0x002F, // ASCII hyphen, full stop, slash
+        0x2010, 0x2011, 0x2012, 0x2013, 0x2014, 0x2015, // dash family
+        0x2044, 0x2212, 0x2215, // fraction slash, minus, division slash
+        0x2024, 0xFE52, // one-dot leader, small full stop
+        0xFE63, 0xFF0D, 0xFF0E, 0xFF0F, // small/fullwidth variants
+    ]
 
     public init() {}
 
@@ -316,13 +323,14 @@ public struct LocalRulesDocumentDNAAnalyzer: DocumentDNAAnalyzing {
                     .lowercased(with: Locale(identifier: "en_US_POSIX"))
                 let valueRange = match.range(at: 2)
                 let display = source.substring(with: valueRange)
+                guard let normalizedValue = normalizeReference(display) else {
+                    continue
+                }
                 candidates.append(Candidate(
                     kind: .referenceNumber,
                     qualifier: kinds[label]!.rawValue,
                     displayValue: display,
-                    normalizedValue: display
-                        .filter { !$0.isWhitespace }
-                        .uppercased(with: Locale(identifier: "en_US_POSIX")),
+                    normalizedValue: normalizedValue,
                     secondaryNormalizedValue: nil,
                     confidence: 1,
                     evidence: [try makeEvidence(page: page, range: valueRange)]
@@ -434,6 +442,27 @@ public struct LocalRulesDocumentDNAAnalyzer: DocumentDNAAnalyzing {
             .split(whereSeparator: \.isWhitespace)
             .joined(separator: " ")
             .lowercased(with: Locale(identifier: "en_US_POSIX"))
+    }
+
+    private func normalizeReference(_ value: String) -> String? {
+        var normalized = ""
+        for scalar in value.unicodeScalars {
+            switch scalar.value {
+            case 0x30...0x39, 0x41...0x5A:
+                normalized.unicodeScalars.append(scalar)
+            case 0x61...0x7A:
+                normalized.unicodeScalars.append(
+                    Unicode.Scalar(scalar.value - 0x20)!
+                )
+            default:
+                guard scalar.properties.isWhitespace
+                        || Self.referenceSeparatorScalars.contains(scalar.value)
+                else {
+                    return nil
+                }
+            }
+        }
+        return normalized.isEmpty ? nil : normalized
     }
 
     private func normalizeDate(_ value: String) -> String? {

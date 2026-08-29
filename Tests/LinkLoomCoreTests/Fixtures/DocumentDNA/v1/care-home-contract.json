@@ -16,7 +16,7 @@
     "documentID": "30000000-0000-0000-0000-000000000001",
     "schemaVersion": 1,
     "analyzerIdentifier": "local-rules",
-    "analyzerVersion": "1",
+    "analyzerVersion": "2",
     "inputContentHash": "synthetic-contract-hash",
     "inputExtractionVersion": "text-v1",
     "findings": [
@@ -103,7 +103,7 @@
         "kind": "referenceNumber",
         "qualifier": "contractNumber",
         "displayValue": "ver 2026-001",
-        "normalizedValue": "VER2026-001",
+        "normalizedValue": "VER2026001",
         "confidence": 1,
         "evidence": [
           {

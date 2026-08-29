@@ -132,7 +132,7 @@ struct LocalRulesDocumentDNAAnalyzerTests {
 
         #expect(result.findings.filter { $0.kind == .date }.isEmpty)
         #expect(result.findings.filter { $0.kind == .referenceNumber }.map(\.normalizedValue) == [
-            "INV-2026-08-03",
+            "INV20260803",
         ])
     }
 
@@ -162,16 +162,97 @@ struct LocalRulesDocumentDNAAnalyzerTests {
             "other",
         ])
         #expect(references.map(\.normalizedValue) == [
-            "VER2026-01",
-            "INV-0042",
+            "VER202601",
+            "INV0042",
             "POL7788",
-            "CLM-9",
+            "CLM9",
             "KD123",
             "QRR000111",
-            "SONST-5",
+            "SONST5",
         ])
         #expect(!references.contains { $0.displayValue.contains("044") })
         #expect(!references.contains { $0.displayValue.contains("8000") })
+    }
+
+    @Test func normalizesEquivalentReferenceSeparatorsAndUnicodeWhitespace() throws {
+        let nonBreakingHyphen = "\u{2011}"
+        let nonBreakingSpace = "\u{00A0}"
+        let narrowNoBreakSpace = "\u{202F}"
+        let fullwidthSlash = "\u{FF0F}"
+        let fullwidthFullStop = "\u{FF0E}"
+        let text = """
+            Rechnung
+            Rechnungsnummer: inv-2026-0042
+            Rechnungsnummer: INV 2026 0042
+            Rechnungsnummer: INV/2026.0042
+            Rechnungsnummer: INV\(nonBreakingHyphen)2026\(nonBreakingHyphen)0042
+            Rechnungsnummer: INV\(nonBreakingSpace)2026\(narrowNoBreakSpace)0042
+            Rechnungsnummer: INV\(fullwidthSlash)2026\(fullwidthFullStop)0042
+            """
+
+        let references = try analyze(text).findings.filter {
+            $0.kind == .referenceNumber
+        }
+
+        #expect(references.count == 1)
+        #expect(references[0].qualifier == "invoiceNumber")
+        #expect(references[0].normalizedValue == "INV20260042")
+        #expect(references[0].displayValue == "inv-2026-0042")
+        #expect(references[0].evidence.count == 6)
+    }
+
+    @Test func rejectsCharactersOutsideTheV2ReferenceAlphabet() throws {
+        let zeroWidthSpace = "\u{200B}"
+        let text = """
+            Rechnung
+            Rechnungsnummer: INV_2026_0042
+            Rechnungsnummer: INV+2026+0042
+            Rechnungsnummer: INV\(zeroWidthSpace)20260042
+            Rechnungsnummer: ＩＮＶ-2026-0042
+            Rechnungsnummer: INV-２０２６-0042
+            """
+
+        #expect(try analyze(text).findings.filter {
+            $0.kind == .referenceNumber
+        }.isEmpty)
+    }
+
+    @Test func preservesLeadingZerosAndCheckDigitsWithoutValidation() throws {
+        let text = """
+            Zahlungsbestätigung
+            Zahlungsreferenz: 21 00000 00003 13947 14300 09017
+            Zahlungsreferenz: 21-00000-00003-13947-14300-09018
+            """
+
+        let references = try analyze(text).findings.filter {
+            $0.kind == .referenceNumber
+        }
+
+        #expect(references.map(\.normalizedValue) == [
+            "210000000003139471430009017",
+            "210000000003139471430009018",
+        ])
+    }
+
+    @Test func separatorCollisionCollapsesOnlyWithinTheSameQualifier() throws {
+        let text = """
+            Rechnung
+            Rechnungsnummer: AB-12
+            Rechnungsnummer: A-B12
+            Kundennummer: AB-12
+            """
+
+        let references = try analyze(text).findings.filter {
+            $0.kind == .referenceNumber
+        }
+
+        #expect(references.map(\.qualifier) == [
+            "invoiceNumber",
+            "customerNumber",
+        ])
+        #expect(references.map(\.normalizedValue) == ["AB12", "AB12"])
+        #expect(references[0].evidence.count == 2)
+        #expect(references[1].evidence.count == 1)
     }
 
     @Test func collapsesEquivalentFindingsAndRetainsDistinctEvidence() throws {
@@ -249,8 +330,8 @@ struct LocalRulesDocumentDNAAnalyzerTests {
         #expect(result.findings.map { "\($0.kind.rawValue):\($0.normalizedValue)" } == [
             "documentType:invoice",
             "person:elise muster",
-            "referenceNumber:A-1",
-            "referenceNumber:B-2",
+            "referenceNumber:A1",
+            "referenceNumber:B2",
         ])
     }
 

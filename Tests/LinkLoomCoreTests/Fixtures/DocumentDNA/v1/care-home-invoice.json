@@ -16,7 +16,7 @@
     "documentID": "30000000-0000-0000-0000-000000000002",
     "schemaVersion": 1,
     "analyzerIdentifier": "local-rules",
-    "analyzerVersion": "1",
+    "analyzerVersion": "2",
     "inputContentHash": "synthetic-invoice-hash",
     "inputExtractionVersion": "text-v1",
     "findings": [
@@ -103,7 +103,7 @@
         "kind": "referenceNumber",
         "qualifier": "invoiceNumber",
         "displayValue": "inv-2026-0042",
-        "normalizedValue": "INV-2026-0042",
+        "normalizedValue": "INV20260042",
         "confidence": 1,
         "evidence": [
           {
