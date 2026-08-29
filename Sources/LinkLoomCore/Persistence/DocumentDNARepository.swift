@@ -629,6 +629,54 @@ public actor DocumentDNARepository {
         }
     }
 
+    /// Loads complete, target-current snapshots for an exact normalized reference.
+    ///
+    /// Qualifiers remain part of the returned findings but not lookup identity. The
+    /// indexed lookup and snapshot reconstruction share one database read transaction.
+    public func currentSnapshotsMatchingReference(
+        _ normalizedValue: String,
+        target: DocumentDNAAnalysisTarget
+    ) async throws -> [CurrentDocumentDNA] {
+        try await dbWriter.read { db in
+            let documents = try DocumentRecord.fetchAll(
+                db,
+                sql: """
+                    SELECT DISTINCT document.*
+                    FROM documentDNAFinding AS finding
+                        INDEXED BY document_dna_finding_kind_value
+                    JOIN documentDNA
+                        ON documentDNA.documentID = finding.documentID
+                    JOIN document
+                        ON document.id = documentDNA.documentID
+                    JOIN documentExtraction
+                        ON documentExtraction.documentID = document.id
+                    WHERE finding.kind = ?
+                        AND finding.normalizedValue = ?
+                        AND documentDNA.schemaVersion = ?
+                        AND documentDNA.analyzerIdentifier = ?
+                        AND documentDNA.analyzerVersion = ?
+                        AND documentDNA.inputContentHash = document.contentHash
+                        AND documentDNA.inputExtractionVersion =
+                            documentExtraction.analysisVersion
+                    ORDER BY document.sourceRootID, document.relativePath, document.id
+                    """,
+                arguments: [
+                    DocumentDNAFindingKind.referenceNumber.rawValue,
+                    normalizedValue,
+                    target.schemaVersion,
+                    target.analyzerIdentifier,
+                    target.analyzerVersion,
+                ]
+            )
+            return try documents.map { document in
+                guard let snapshot = try Self.snapshot(in: db, documentID: document.id) else {
+                    throw DocumentDNARepositoryError.invalidStoredState
+                }
+                return try CurrentDocumentDNA(document: document, snapshot: snapshot)
+            }
+        }
+    }
+
     private static func snapshot(
         in db: Database,
         documentID: UUID

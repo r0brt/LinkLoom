@@ -895,6 +895,30 @@ struct DocumentDNARepositoryTests {
         }
     }
 
+    @Test func currentSnapshotsMatchingReferenceReturnCoherentCurrentDocuments() async throws {
+        let fixture = try await DocumentDNARepositoryFixture.makeWithReferenceSnapshots()
+        let countsBefore = try await fixture.rowCounts()
+
+        let matches = try await fixture.repository.currentSnapshotsMatchingReference(
+            "INV42",
+            target: fixture.target
+        )
+
+        #expect(matches.map(\.document.relativePath) == [
+            "invoice.pdf",
+            "payment.pdf",
+        ])
+        #expect(matches.map(\.snapshot.analyzerVersion) == ["1", "1"])
+        let referenceQualifiers = matches.flatMap(\.snapshot.findings).filter {
+            $0.kind == .referenceNumber
+        }.map(\.qualifier)
+        #expect(referenceQualifiers == [
+            "invoiceNumber",
+            "paymentReference",
+        ])
+        #expect(try await fixture.rowCounts() == countsBefore)
+    }
+
     @Test func staleContentHashRejectsFirstAndReplacementWrites() async throws {
         let replacementFixture = try await DocumentDNARepositoryFixture.make()
         let original = try await replacementFixture.snapshot()
@@ -1216,6 +1240,98 @@ private struct DocumentDNARepositoryFixture {
             try database.execute(
                 sql: "UPDATE documentDNA SET analyzerVersion = '2' WHERE documentID = ?",
                 arguments: [staleAnalyzerVersion.id]
+            )
+            try database.execute(
+                sql: "UPDATE document SET contentHash = 'hash-changed' WHERE id = ?",
+                arguments: [staleContent.id]
+            )
+            try database.execute(
+                sql: "UPDATE documentExtraction SET analysisVersion = 'text-v2' WHERE documentID = ?",
+                arguments: [staleExtraction.id]
+            )
+        }
+        return fixture
+    }
+
+    static func makeWithReferenceSnapshots() async throws -> Self {
+        var fixture = try await makeEmpty()
+        let invoice = try await fixture.insertDocument(
+            relativePath: "invoice.pdf",
+            contentHash: "hash-invoice"
+        )
+        let payment = try await fixture.insertDocument(
+            relativePath: "payment.pdf",
+            contentHash: "hash-payment"
+        )
+        let stale = try await fixture.insertDocument(
+            relativePath: "stale-version.pdf",
+            contentHash: "hash-stale-version"
+        )
+        let staleSchema = try await fixture.insertDocument(
+            relativePath: "stale-schema.pdf",
+            contentHash: "hash-stale-schema"
+        )
+        let staleIdentifier = try await fixture.insertDocument(
+            relativePath: "stale-identifier.pdf",
+            contentHash: "hash-stale-identifier"
+        )
+        let staleContent = try await fixture.insertDocument(
+            relativePath: "stale-content.pdf",
+            contentHash: "hash-stale-content"
+        )
+        let staleExtraction = try await fixture.insertDocument(
+            relativePath: "stale-extraction.pdf",
+            contentHash: "hash-stale-extraction"
+        )
+        let referenceEvidence = try DocumentDNAEvidence(
+            pageIndex: 0,
+            startUTF16: 0,
+            lengthUTF16: 8,
+            exactText: "Rechnung",
+            ocrRegionIndexes: [0]
+        )
+        func reference(_ qualifier: DocumentDNAReferenceNumberKind) throws -> DocumentDNAFinding {
+            try DocumentDNAFinding(
+                kind: .referenceNumber,
+                qualifier: qualifier.rawValue,
+                displayValue: "INV-42",
+                normalizedValue: "INV42",
+                secondaryNormalizedValue: nil,
+                confidence: 1,
+                evidence: [referenceEvidence]
+            )
+        }
+        try await fixture.repository.replace(try await fixture.snapshot(
+            document: invoice,
+            additionalFindings: [reference(.invoiceNumber)]
+        ))
+        try await fixture.repository.replace(try await fixture.snapshot(
+            document: payment,
+            additionalFindings: [reference(.paymentReference)]
+        ))
+        try await fixture.repository.replace(try await fixture.snapshot(
+            document: stale,
+            analyzerVersion: "2",
+            additionalFindings: [reference(.invoiceNumber)]
+        ))
+        for document in [staleSchema, staleIdentifier, staleContent, staleExtraction] {
+            try await fixture.repository.replace(try await fixture.snapshot(
+                document: document,
+                additionalFindings: [reference(.invoiceNumber)]
+            ))
+        }
+        try await fixture.db.write { database in
+            try database.execute(
+                sql: "UPDATE document SET availability = ? WHERE id = ?",
+                arguments: [DocumentAvailability.unavailable, invoice.id]
+            )
+            try database.execute(
+                sql: "UPDATE documentDNA SET schemaVersion = 2 WHERE documentID = ?",
+                arguments: [staleSchema.id]
+            )
+            try database.execute(
+                sql: "UPDATE documentDNA SET analyzerIdentifier = 'other-rules' WHERE documentID = ?",
+                arguments: [staleIdentifier.id]
             )
             try database.execute(
                 sql: "UPDATE document SET contentHash = 'hash-changed' WHERE id = ?",
