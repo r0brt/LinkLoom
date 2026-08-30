@@ -102,6 +102,10 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 window: app.windows.firstMatch,
                 description: "Verknüpfungskandidaten header"
             )
+            let screenshot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
+            screenshot.name = "PR33 invoice-payment candidate inspector"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
         }
 
         terminateAndWait(app)
