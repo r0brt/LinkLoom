@@ -336,4 +336,252 @@ struct AppDatabaseTests {
             #expect(stateCount == 0)
         }
     }
+
+    @Test func invoicePaymentDecisionMigrationCreatesConstrainedSchema() throws {
+        let db = try TestDatabase.make()
+
+        try db.read { connection in
+            let tableExists = try connection.tableExists("invoicePaymentUserDecision")
+            #expect(tableExists)
+            guard tableExists else { return }
+
+            #expect(try connection.columns(in: "invoicePaymentUserDecision").map(\.name) == [
+                "relationshipType",
+                "invoiceDocumentID",
+                "paymentDocumentID",
+                "invoiceContentHash",
+                "paymentContentHash",
+                "decision",
+                "updatedAt",
+            ])
+            let indexes = try connection.indexes(on: "invoicePaymentUserDecision")
+            let primaryKey = indexes.filter { $0.origin == .primaryKeyConstraint }.first
+            #expect(primaryKey?.isUnique == true)
+            #expect(primaryKey?.columns == [
+                "relationshipType",
+                "invoiceDocumentID",
+                "paymentDocumentID",
+                "invoiceContentHash",
+                "paymentContentHash",
+            ])
+            #expect(indexes.contains {
+                $0.name == "invoice_payment_decision_invoice_document"
+                    && $0.columns == ["invoiceDocumentID"]
+            })
+            #expect(indexes.contains {
+                $0.name == "invoice_payment_decision_payment_document"
+                    && $0.columns == ["paymentDocumentID"]
+            })
+        }
+    }
+
+    @Test func invoicePaymentDecisionMigrationRejectsInvalidStoredValues() throws {
+        let fixture = try DecisionMigrationFixture.make()
+
+        try fixture.db.write { connection in
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertDecision(
+                    in: connection,
+                    relationshipType: "unrelated",
+                    decision: "confirmed"
+                )
+            }
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertDecision(
+                    in: connection,
+                    decision: "pending",
+                    invoiceContentHash: "invalid-decision"
+                )
+            }
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertDecision(
+                    in: connection,
+                    paymentDocumentID: fixture.invoiceID,
+                    invoiceContentHash: "self-pair"
+                )
+            }
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertDecision(
+                    in: connection,
+                    invoiceContentHash: "",
+                    paymentContentHash: "empty-hash"
+                )
+            }
+        }
+    }
+
+    @Test func deletingDocumentCascadesInvoicePaymentDecision() throws {
+        let fixture = try DecisionMigrationFixture.make()
+        try fixture.db.write { connection in
+            try fixture.insertDecision(in: connection)
+
+            try connection.execute(
+                sql: "DELETE FROM document WHERE id = ?",
+                arguments: [fixture.paymentID]
+            )
+
+            #expect(try Int.fetchOne(
+                connection,
+                sql: "SELECT COUNT(*) FROM invoicePaymentUserDecision"
+            ) == 0)
+        }
+    }
+
+    @Test func deletingSourceCascadesInvoicePaymentDecision() throws {
+        let fixture = try DecisionMigrationFixture.make()
+        try fixture.db.write { connection in
+            try fixture.insertDecision(in: connection)
+
+            try connection.execute(
+                sql: "DELETE FROM sourceRoot WHERE id = ?",
+                arguments: [fixture.sourceID]
+            )
+
+            #expect(try Int.fetchOne(
+                connection,
+                sql: "SELECT COUNT(*) FROM invoicePaymentUserDecision"
+            ) == 0)
+        }
+    }
+
+    @Test func invoicePaymentDecisionMigrationPreservesV5DNAWithoutBackfill() throws {
+        let db = try DatabaseQueue()
+        let migrator = AppDatabase.makeMigrator()
+        try migrator.migrate(db, upTo: "v5_document_dna")
+        let sourceID = UUID()
+        let documentID = UUID()
+        let storedAt = Date(timeIntervalSince1970: 4_567)
+        try db.write { connection in
+            try connection.execute(
+                sql: """
+                    INSERT INTO sourceRoot
+                        (id, displayName, pathHint, bookmarkData, createdAt, lastScanAt)
+                    VALUES (?, 'Existing v5 Source', '/Existing-v5', ?, ?, NULL)
+                    """,
+                arguments: [sourceID, Data([0x05]), storedAt]
+            )
+            try connection.execute(
+                sql: """
+                    INSERT INTO document
+                        (id, sourceRootID, relativePath, contentHash, byteCount,
+                         modifiedAt, mediaType, status, availability, pageCount,
+                         failureCode, lastSeenAt, lastFingerprintAt)
+                    VALUES (?, ?, 'existing-v5.pdf', 'hash-existing-v5', 64, ?,
+                            'pdf', 'ready', 'available', 1, NULL, ?, ?)
+                    """,
+                arguments: [documentID, sourceID, storedAt, storedAt, storedAt]
+            )
+            try connection.execute(
+                sql: """
+                    INSERT INTO documentDNA
+                        (documentID, schemaVersion, analyzerIdentifier, analyzerVersion,
+                         inputContentHash, inputExtractionVersion, analyzedAt)
+                    VALUES (?, 1, 'local-rules', '2', 'hash-existing-v5', 'text-v1', ?)
+                    """,
+                arguments: [documentID, storedAt]
+            )
+        }
+
+        try AppDatabase.migrate(db)
+
+        try db.read { connection in
+            let storedDNA = try Row.fetchOne(
+                connection,
+                sql: """
+                    SELECT schemaVersion, analyzerIdentifier, analyzerVersion,
+                           inputContentHash, inputExtractionVersion, analyzedAt
+                    FROM documentDNA WHERE documentID = ?
+                    """,
+                arguments: [documentID]
+            )
+            let dna = try #require(storedDNA)
+            #expect(dna["schemaVersion"] as Int == 1)
+            #expect(dna["analyzerIdentifier"] as String == "local-rules")
+            #expect(dna["analyzerVersion"] as String == "2")
+            #expect(dna["inputContentHash"] as String == "hash-existing-v5")
+            #expect(dna["inputExtractionVersion"] as String == "text-v1")
+            #expect(dna["analyzedAt"] as Date == storedAt)
+            #expect(try Int.fetchOne(
+                connection,
+                sql: "SELECT COUNT(*) FROM invoicePaymentUserDecision"
+            ) == 0)
+        }
+    }
+}
+
+private struct DecisionMigrationFixture {
+    let db: DatabaseQueue
+    let sourceID: UUID
+    let invoiceID: UUID
+    let paymentID: UUID
+    let storedAt: Date
+
+    static func make() throws -> Self {
+        let db = try TestDatabase.make()
+        let sourceID = UUID()
+        let invoiceID = UUID()
+        let paymentID = UUID()
+        let storedAt = Date(timeIntervalSince1970: 3_456)
+        try db.write { connection in
+            try connection.execute(
+                sql: """
+                    INSERT INTO sourceRoot
+                        (id, displayName, pathHint, bookmarkData, createdAt, lastScanAt)
+                    VALUES (?, 'Decision Source', '/Decision', ?, ?, NULL)
+                    """,
+                arguments: [sourceID, Data([0x04]), storedAt]
+            )
+            for (id, path, hash) in [
+                (invoiceID, "invoice.pdf", "hash-invoice"),
+                (paymentID, "payment.pdf", "hash-payment"),
+            ] {
+                try connection.execute(
+                    sql: """
+                        INSERT INTO document
+                            (id, sourceRootID, relativePath, contentHash, byteCount,
+                             modifiedAt, mediaType, status, availability, pageCount,
+                             failureCode, lastSeenAt, lastFingerprintAt)
+                        VALUES (?, ?, ?, ?, 64, ?, 'pdf', 'ready', 'available', 1,
+                                NULL, ?, ?)
+                        """,
+                    arguments: [id, sourceID, path, hash, storedAt, storedAt, storedAt]
+                )
+            }
+        }
+        return Self(
+            db: db,
+            sourceID: sourceID,
+            invoiceID: invoiceID,
+            paymentID: paymentID,
+            storedAt: storedAt
+        )
+    }
+
+    func insertDecision(
+        in connection: Database,
+        relationshipType: String = "paymentSettlesInvoice",
+        decision: String = "confirmed",
+        invoiceDocumentID: UUID? = nil,
+        paymentDocumentID: UUID? = nil,
+        invoiceContentHash: String = "hash-invoice",
+        paymentContentHash: String = "hash-payment"
+    ) throws {
+        try connection.execute(
+            sql: """
+                INSERT INTO invoicePaymentUserDecision
+                    (relationshipType, invoiceDocumentID, paymentDocumentID,
+                     invoiceContentHash, paymentContentHash, decision, updatedAt)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [
+                relationshipType,
+                invoiceDocumentID ?? invoiceID,
+                paymentDocumentID ?? paymentID,
+                invoiceContentHash,
+                paymentContentHash,
+                decision,
+                storedAt,
+            ]
+        )
+    }
 }

@@ -180,6 +180,41 @@ public enum AppDatabase {
                 condition: Column("kind") == "documentType"
             )
         }
+        migrator.registerMigration("v6_invoice_payment_user_decisions") { db in
+            try db.create(table: "invoicePaymentUserDecision") { table in
+                table.column("relationshipType", .text).notNull()
+                    .check(sql: "relationshipType = 'paymentSettlesInvoice'")
+                table.column("invoiceDocumentID", .text).notNull()
+                    .references("document", onDelete: .cascade)
+                table.column("paymentDocumentID", .text).notNull()
+                    .references("document", onDelete: .cascade)
+                table.column("invoiceContentHash", .text).notNull()
+                    .check(sql: "length(invoiceContentHash) > 0")
+                table.column("paymentContentHash", .text).notNull()
+                    .check(sql: "length(paymentContentHash) > 0")
+                table.column("decision", .text).notNull()
+                    .check(sql: "decision IN ('confirmed', 'excluded')")
+                table.column("updatedAt", .datetime).notNull()
+                table.primaryKey([
+                    "relationshipType",
+                    "invoiceDocumentID",
+                    "paymentDocumentID",
+                    "invoiceContentHash",
+                    "paymentContentHash",
+                ])
+                table.check(sql: "invoiceDocumentID <> paymentDocumentID")
+            }
+            try db.create(
+                index: "invoice_payment_decision_invoice_document",
+                on: "invoicePaymentUserDecision",
+                columns: ["invoiceDocumentID"]
+            )
+            try db.create(
+                index: "invoice_payment_decision_payment_document",
+                on: "invoicePaymentUserDecision",
+                columns: ["paymentDocumentID"]
+            )
+        }
         return migrator
     }
 }
