@@ -124,7 +124,7 @@ final class SQLiteProbe {
                 SELECT COUNT(*)
                 FROM document AS d
                 JOIN documentExtraction AS e ON e.documentID = d.id
-                WHERE d.relativePath = 'payment.pdf'
+                WHERE d.relativePath = 'payments/payment-confirmation.pdf'
                   AND instr(e.joinedText, 'Zahlungsbestätigung') > 0
                   AND instr(e.joinedText, 'INV-2026-001') > 0
                 """),

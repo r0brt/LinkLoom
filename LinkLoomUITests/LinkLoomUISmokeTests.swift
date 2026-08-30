@@ -63,7 +63,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireLabel("Document DNA Fehler: 0", for: element("dna-status.failed", in: app), timeout: 90)
             requireExists(element("documents.table", in: app), description: "documents.table")
             for text in [
-                "selectable.pdf", "payment.pdf", "scan.png", "corrupt.pdf", "failed",
+                "selectable.pdf", "payments/payment-confirmation.pdf", "scan.png", "corrupt.pdf", "failed",
                 "unreadableDocument",
             ] {
                 requireExists(app.staticTexts[text], description: text)
@@ -93,15 +93,87 @@ final class LinkLoomUISmokeTests: XCTestCase {
             )
             let candidateHeader = element("invoice-payment-candidates.header", in: app)
             requireExists(candidateHeader, description: "invoice-payment-candidates.header")
-            let inspectorScroll = inspector.scrollViews.firstMatch
-            requireExists(inspectorScroll, description: "Document DNA inspector scroll view")
-            inspectorScroll.scroll(byDeltaX: 0, deltaY: -1_200)
             requireFullyVisibleInInspector(
                 candidateHeader,
                 splitter: inspectorSplitter,
                 window: app.windows.firstMatch,
                 description: "Verknüpfungskandidaten header"
             )
+            let candidateCard = element("invoice-payment-candidates.0", in: app)
+            requireExists(candidateCard, description: "invoice-payment-candidates.0")
+            let candidateDetails: [(XCUIElement, String)] = [
+                (
+                    candidateCard.staticTexts["payments/payment-confirmation.pdf"].firstMatch,
+                    "candidate counterpart"
+                ),
+                (
+                    candidateCard.staticTexts["Hohe Übereinstimmung"].firstMatch,
+                    "candidate confidence label"
+                ),
+                (candidateCard.staticTexts["Referenz"].firstMatch, "reference signal"),
+                (
+                    candidateCard.staticTexts["INV-2026-001 ↔ INV-2026-001"].firstMatch,
+                    "reference comparison"
+                ),
+                (
+                    candidateCard.staticTexts["Betrag und Währung"].firstMatch,
+                    "amount and currency signal"
+                ),
+                (
+                    candidateCard.staticTexts["CHF 1250 ↔ CHF 1250"].firstMatch,
+                    "amount and currency comparison"
+                ),
+                (candidateCard.staticTexts["Organisation"].firstMatch, "organization signal"),
+                (
+                    candidateCard.staticTexts["Beispiel AG ↔ Beispiel AG"].firstMatch,
+                    "organization comparison"
+                ),
+            ]
+            for (detail, description) in candidateDetails {
+                requireExists(detail, description: description)
+                requireFullyVisibleInInspector(
+                    detail,
+                    splitter: inspectorSplitter,
+                    window: app.windows.firstMatch,
+                    description: description
+                )
+            }
+            let candidateEvidence: [(String, String)] = [
+                (
+                    "invoice-payment-candidates.0.signal.0.invoice.0",
+                    "Rechnung · Seite 1: INV-2026-001"
+                ),
+                (
+                    "invoice-payment-candidates.0.signal.0.payment.0",
+                    "Zahlung · Seite 1: INV-2026-001"
+                ),
+                (
+                    "invoice-payment-candidates.0.signal.1.invoice.0",
+                    "Rechnung · Seite 1: CHF 1250"
+                ),
+                (
+                    "invoice-payment-candidates.0.signal.1.payment.0",
+                    "Zahlung · Seite 1: CHF 1250"
+                ),
+                (
+                    "invoice-payment-candidates.0.signal.2.invoice.0",
+                    "Rechnung · Seite 1: Beispiel AG"
+                ),
+                (
+                    "invoice-payment-candidates.0.signal.2.payment.0",
+                    "Zahlung · Seite 1: Beispiel AG"
+                ),
+            ]
+            for (identifier, label) in candidateEvidence {
+                let evidence = element(identifier, in: app)
+                requireLabel(label, for: evidence)
+                requireFullyVisibleInInspector(
+                    evidence,
+                    splitter: inspectorSplitter,
+                    window: app.windows.firstMatch,
+                    description: identifier
+                )
+            }
             let screenshot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
             screenshot.name = "PR33 invoice-payment candidate inspector"
             screenshot.lifetime = .keepAlways
@@ -133,7 +205,10 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireLabel("Document DNA Bereit: 2", for: element("dna-status.ready", in: relaunchedApp))
             requireLabel("Document DNA Fehler: 1", for: element("dna-status.failed", in: relaunchedApp))
             requireExists(element("documents.table", in: relaunchedApp), description: "persisted table")
-            for text in ["selectable.pdf", "payment.pdf", "scan.png", "corrupt.pdf", "unreadableDocument"] {
+            for text in [
+                "selectable.pdf", "payments/payment-confirmation.pdf", "scan.png", "corrupt.pdf",
+                "unreadableDocument",
+            ] {
                 requireExists(relaunchedApp.staticTexts[text], description: "persisted \(text)")
             }
             relaunchedApp.staticTexts["selectable.pdf"].click()

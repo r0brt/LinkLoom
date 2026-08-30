@@ -61,7 +61,15 @@ struct SmokeFixture {
             "Ausstellerin: Beispiel AG",
         ], to: selectablePDF)
 
-        let paymentPDF = source.appendingPathComponent("payment.pdf", isDirectory: false)
+        let paymentDirectory = source.appendingPathComponent("payments", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: paymentDirectory,
+            withIntermediateDirectories: false
+        )
+        let paymentPDF = paymentDirectory.appendingPathComponent(
+            "payment-confirmation.pdf",
+            isDirectory: false
+        )
         try Self.writeTextPDF([
             "Zahlungsbestätigung",
             "Zahlungsreferenz: INV-2026-001",
