@@ -170,7 +170,10 @@ entfernen` menu item. No UI-only removal API is added.
 
 The source contains exactly:
 
-- `selectable.pdf`, a one-page PDF containing `Selectable LinkLoom smoke text`;
+- `selectable.pdf`, a one-page synthetic invoice containing reference
+  `INV-2026-001`, amount `CHF 1250`, and organization `Beispiel AG`;
+- `payments/payment-confirmation.pdf`, a one-page synthetic payment containing
+  the same reference, amount, and organization under payment-specific labels;
 - `scan.png`, a high-contrast image containing `Scanned LinkLoom smoke 2026`;
 - `corrupt.pdf`, invalid PDF bytes beginning with a PDF header;
 - `unsupported.txt`, an unsupported UTF-8 document.
@@ -199,33 +202,52 @@ The serialized `testProductWorkflowPersistsAndPreservesSourceFiles` performs:
 3. Wait for `source.add` and click it.
 4. Wait for one identifier matching `source.row.*` and for `scan.start`.
 5. Click `scan.start` and wait for terminal visible counts:
-   `Entdeckt: 0`, `Extraktion: 0`, `Bereit: 2`, `Fehler: 1`.
-6. Require `documents.table`, `selectable.pdf`, `scan.png`, `corrupt.pdf`,
-   failed status, and `unreadableDocument` to be visible. Require
-   `unsupported.txt` to be absent.
-7. Terminate the app cleanly.
-8. Open the temporary database read-only with SQLite and require:
-   - three document rows;
-   - two ready and one failed status;
-   - two extraction headers and two FTS rows;
-   - selectable extraction text contains `Selectable LinkLoom smoke text`;
+   `Entdeckt: 0`, `Extraktion: 0`, `Bereit: 3`, `Fehler: 1`,
+   `Document DNA Bereit: 3`, and `Document DNA Fehler: 0`.
+6. Require `documents.table`, `selectable.pdf`,
+   `payments/payment-confirmation.pdf`, `scan.png`, `corrupt.pdf`, failed
+   status, and `unreadableDocument` to be visible. Require `unsupported.txt`
+   to be absent.
+7. Select `selectable.pdf` and require the Document DNA inspector to show the
+   invoice classification and one local invoice-payment candidate. Using
+   bounded, condition-based scrolling, require the section header,
+   width-stressing counterpart path, `Hohe Übereinstimmung`, all three signal
+   titles and comparisons, and both documents' evidence rows to be hittable and
+   horizontally within the inspector bounds. Retain window-only screenshots of
+   the section header and the complete evidence state.
+8. Terminate the app cleanly.
+9. Open the temporary database read-only with SQLite and require:
+   - four document rows;
+   - three ready and one failed status;
+   - three extraction headers, three extracted pages, and three FTS rows;
+   - selectable extraction text contains the synthetic invoice markers;
+   - payment extraction text contains `Zahlungsbestätigung` and
+     `INV-2026-001` at `payments/payment-confirmation.pdf`;
    - OCR extraction text contains `LinkLoom` and `2026`;
    - the corrupt document has failure code `unreadableDocument`;
-   - no row references `unsupported.txt`.
-9. Relaunch with the same database and source arguments without clicking Add
+   - no row references `unsupported.txt`;
+   - three coherent current local-rules Document DNA snapshots and analysis
+     states.
+10. Make the invoice's Document DNA state retryable in the temporary database,
+    without changing any source file.
+11. Relaunch with the same database and source arguments without clicking Add
    or Scan.
-10. Require the source row, persisted counts, table, paths, and failure code to
-    reappear.
-11. Right-click the source row and click `Quelle entfernen`.
-12. Wait until the source row and selected-source dashboard disappear, then
+12. Require the source row, persisted counts, table, paths, and failure code to
+    reappear. Select the invoice, retry its Document DNA analysis, and require
+    the ready state and invoice evidence to return.
+13. Verify the database again and require the complete coherent workflow state
+    plus exact source-snapshot equality.
+14. Right-click the source row and click `Quelle entfernen`.
+15. Wait until the source row and selected-source dashboard disappear, then
     terminate the app.
-13. Require zero rows in `sourceRoot`, `document`, `documentExtraction`,
-    `extractedPage`, and `extractionFTS`.
-14. Capture the final source snapshot and require exact equality with the
+16. Require zero rows in the catalog, extraction, FTS, Document DNA, and
+    analysis-state tables covered by the read-only probe.
+17. Capture the final source snapshot and require exact equality with the
     initial snapshot.
 
-All database access by the UI-test process is read-only and occurs while the
-app is terminated.
+The evidence probes are read-only and run while the app is terminated. The
+only UI-test database write is the bounded, test-only state transition in step
+10; it also runs while the app is terminated and never changes source files.
 
 ## 9. Recoverable Startup-Failure Workflow
 
