@@ -390,7 +390,6 @@ public struct ScanDashboard: View {
                 Text(candidate.counterpartLocation)
                     .font(.body.weight(.semibold))
                     .textSelection(.enabled)
-                    .accessibilityLabel(candidate.counterpartLocation)
                     .accessibilityIdentifier(
                         "invoice-payment-candidates.\(index).counterpart"
                     )
@@ -398,7 +397,6 @@ public struct ScanDashboard: View {
                 Text(candidate.dispositionTitle)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .accessibilityLabel(candidate.dispositionTitle)
                     .accessibilityIdentifier(
                         "invoice-payment-candidates.\(index).disposition"
                     )
@@ -408,14 +406,12 @@ public struct ScanDashboard: View {
                     Text(signal.title)
                         .font(.caption)
                         .foregroundStyle(.secondary)
-                        .accessibilityLabel(signal.title)
                         .accessibilityIdentifier(
                             "invoice-payment-candidates.\(index).signal.\(signalIndex).title"
                         )
                     Text(signal.comparison)
                         .font(.caption.weight(.medium))
                         .textSelection(.enabled)
-                        .accessibilityLabel(signal.comparison)
                         .accessibilityIdentifier(
                             "invoice-payment-candidates.\(index).signal.\(signalIndex).comparison"
                         )
@@ -452,9 +448,6 @@ public struct ScanDashboard: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-                    .accessibilityLabel(
-                        "\(role) · Seite \(item.pageNumber): \(item.exactText)"
-                    )
                     .accessibilityIdentifier("\(identifierPrefix).\(index)")
             }
         }

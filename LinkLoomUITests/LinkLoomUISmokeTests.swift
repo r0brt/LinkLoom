@@ -181,7 +181,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 ),
             ]
             for (detail, label, description) in candidateDetails {
-                requireLabel(label, for: detail)
+                requireValue(label, for: detail)
                 requireFullyVisibleInInspector(
                     detail,
                     scrollingIn: inspectorScroll,
@@ -449,6 +449,21 @@ final class LinkLoomUISmokeTests: XCTestCase {
             XCTWaiter.wait(for: [expectation], timeout: timeout),
             .completed,
             "Timed out waiting for label \(label); actual label was \(element.label)"
+        )
+    }
+
+    private func requireValue(
+        _ value: String,
+        for element: XCUIElement,
+        timeout: TimeInterval = 20
+    ) {
+        requireExists(element, timeout: timeout, description: element.identifier)
+        let predicate = NSPredicate(format: "value == %@", value)
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [expectation], timeout: timeout),
+            .completed,
+            "Timed out waiting for value \(value); actual value was \(String(describing: element.value))"
         )
     }
 
