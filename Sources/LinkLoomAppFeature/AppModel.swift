@@ -28,11 +28,23 @@ public protocol DocumentDNAFailureRetrying: Sendable {
     func retryFailedAnalysis(documentID: UUID, sourceRootID: UUID) async throws
 }
 
+public protocol InvoicePaymentCandidateLoading: Sendable {
+    func candidates(involving documentID: UUID) async throws
+        -> [InvoicePaymentCandidate]
+}
+
 public enum DocumentDNADetailState: Sendable, Equatable {
     case none
     case loading(documentID: UUID)
     case available(DocumentDNA)
     case unavailable(documentID: UUID)
+    case failed(documentID: UUID)
+}
+
+public enum InvoicePaymentCandidateDetailState: Sendable, Equatable {
+    case none
+    case loading(documentID: UUID)
+    case available(documentID: UUID, candidates: [InvoicePaymentCandidate])
     case failed(documentID: UUID)
 }
 
@@ -46,6 +58,8 @@ public final class AppModel: ObservableObject {
     ] = [:]
     @Published public private(set) var selectedDocumentID: UUID?
     @Published public private(set) var documentDNADetailState: DocumentDNADetailState = .none
+    @Published public private(set) var invoicePaymentCandidateState:
+        InvoicePaymentCandidateDetailState = .none
     @Published public private(set) var documentDNARetryingDocumentID: UUID?
     @Published public private(set) var scanState: AppScanState = .idle
     @Published public private(set) var lastErrorCode: String?
@@ -65,6 +79,8 @@ public final class AppModel: ObservableObject {
             "Document DNA konnte nicht geladen werden. Bitte versuche es erneut."
         case "documentDNARetryFailure":
             "Document DNA konnte nicht erneut analysiert werden. Bitte versuche es erneut."
+        case "invoicePaymentCandidateLoadFailure":
+            "Verknüpfungskandidaten konnten nicht geladen werden. Bitte versuche es erneut."
         case "incrementalRefreshFailure":
             "Die Ansicht konnte nach der Analyse nicht aktualisiert werden. Bitte versuche es erneut."
         case .some:
@@ -81,6 +97,7 @@ public final class AppModel: ObservableObject {
     private let dnaStatuses: (any DocumentDNAStatusLoading)?
     private let dnaSnapshots: (any DocumentDNASnapshotLoading)?
     private let dnaRetryer: (any DocumentDNAFailureRetrying)?
+    private let invoicePaymentCandidates: (any InvoicePaymentCandidateLoading)?
     private let sourceLoader: @Sendable () async throws -> [SourceRootRecord]
     private let documentLoader: @Sendable (UUID) async throws -> [DocumentRecord]
     private let watchScheduler: (any SourceWatchScheduling)?
@@ -107,6 +124,7 @@ public final class AppModel: ObservableObject {
         dnaStatuses: (any DocumentDNAStatusLoading)? = nil,
         dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil,
         dnaRetryer: (any DocumentDNAFailureRetrying)? = nil,
+        invoicePaymentCandidates: (any InvoicePaymentCandidateLoading)? = nil,
         watchScheduler: (any SourceWatchScheduling)? = nil,
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
@@ -117,6 +135,7 @@ public final class AppModel: ObservableObject {
         self.dnaStatuses = dnaStatuses
         self.dnaSnapshots = dnaSnapshots
         self.dnaRetryer = dnaRetryer
+        self.invoicePaymentCandidates = invoicePaymentCandidates
         sourceLoader = { try await sources.all() }
         self.watchScheduler = watchScheduler
         self.reportRuntimeFailure = reportRuntimeFailure
@@ -137,6 +156,7 @@ public final class AppModel: ObservableObject {
         dnaStatuses: (any DocumentDNAStatusLoading)? = nil,
         dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil,
         dnaRetryer: (any DocumentDNAFailureRetrying)? = nil,
+        invoicePaymentCandidates: (any InvoicePaymentCandidateLoading)? = nil,
         documentLoader: @escaping @Sendable (UUID) async throws -> [DocumentRecord],
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
@@ -147,6 +167,7 @@ public final class AppModel: ObservableObject {
         self.dnaStatuses = dnaStatuses
         self.dnaSnapshots = dnaSnapshots
         self.dnaRetryer = dnaRetryer
+        self.invoicePaymentCandidates = invoicePaymentCandidates
         sourceLoader = { try await sources.all() }
         self.documentLoader = documentLoader
         watchScheduler = nil
@@ -163,6 +184,7 @@ public final class AppModel: ObservableObject {
         dnaStatuses: (any DocumentDNAStatusLoading)? = nil,
         dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil,
         dnaRetryer: (any DocumentDNAFailureRetrying)? = nil,
+        invoicePaymentCandidates: (any InvoicePaymentCandidateLoading)? = nil,
         watchScheduler: any SourceWatchScheduling,
         sourceResolver: @escaping @Sendable (SourceRootRecord) throws -> URL,
         sourceLoader: (@Sendable () async throws -> [SourceRootRecord])? = nil,
@@ -176,6 +198,7 @@ public final class AppModel: ObservableObject {
         self.dnaStatuses = dnaStatuses
         self.dnaSnapshots = dnaSnapshots
         self.dnaRetryer = dnaRetryer
+        self.invoicePaymentCandidates = invoicePaymentCandidates
         self.sourceLoader = sourceLoader ?? { try await sources.all() }
         self.documentLoader = documentLoader ?? { sourceID in
             try await documents.all(sourceRootID: sourceID)
@@ -330,6 +353,7 @@ public final class AppModel: ObservableObject {
     public func selectDocument(id: UUID?) async {
         documentDNADetailGeneration += 1
         let generation = documentDNADetailGeneration
+        invoicePaymentCandidateState = .none
         clearDocumentScopedFailure()
         guard let id else {
             selectedDocumentID = nil
@@ -370,6 +394,10 @@ public final class AppModel: ObservableObject {
             if lastErrorCode == "documentDNADetailLoadFailure" {
                 lastErrorCode = nil
             }
+            await loadInvoicePaymentCandidates(
+                involving: id,
+                generation: generation
+            )
         } catch is CancellationError {
             guard generation == documentDNADetailGeneration,
                   selectedDocumentID == id
@@ -561,13 +589,67 @@ public final class AppModel: ObservableObject {
         documentDNADetailGeneration += 1
         selectedDocumentID = nil
         documentDNADetailState = .none
+        invoicePaymentCandidateState = .none
         clearDocumentScopedFailure()
     }
 
     private func clearDocumentScopedFailure() {
         if lastErrorCode == "documentDNADetailLoadFailure"
-            || lastErrorCode == "documentDNARetryFailure" {
+            || lastErrorCode == "documentDNARetryFailure"
+            || lastErrorCode == "invoicePaymentCandidateLoadFailure" {
             lastErrorCode = nil
+        }
+    }
+
+    private func loadInvoicePaymentCandidates(
+        involving documentID: UUID,
+        generation: Int
+    ) async {
+        guard let invoicePaymentCandidates else { return }
+        invoicePaymentCandidateState = .loading(documentID: documentID)
+        do {
+            let candidates = try await invoicePaymentCandidates.candidates(
+                involving: documentID
+            )
+            guard generation == documentDNADetailGeneration,
+                  selectedDocumentID == documentID
+            else {
+                return
+            }
+            guard !Task.isCancelled else {
+                invoicePaymentCandidateState = .none
+                return
+            }
+            invoicePaymentCandidateState = .available(
+                documentID: documentID,
+                candidates: candidates
+            )
+            if lastErrorCode == "invoicePaymentCandidateLoadFailure" {
+                lastErrorCode = nil
+            }
+        } catch is CancellationError {
+            guard generation == documentDNADetailGeneration,
+                  selectedDocumentID == documentID
+            else {
+                return
+            }
+            invoicePaymentCandidateState = .none
+        } catch {
+            guard generation == documentDNADetailGeneration,
+                  selectedDocumentID == documentID
+            else {
+                return
+            }
+            guard !Task.isCancelled else {
+                invoicePaymentCandidateState = .none
+                return
+            }
+            invoicePaymentCandidateState = .failed(documentID: documentID)
+            publishRuntimeFailure(
+                code: "invoicePaymentCandidateLoadFailure",
+                category: .invoicePaymentCandidateLoad,
+                error: error
+            )
         }
     }
 

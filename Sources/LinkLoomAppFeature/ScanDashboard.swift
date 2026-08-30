@@ -325,8 +325,113 @@ public struct ScanDashboard: View {
                         .padding(.vertical, 4)
                     }
                 }
+                invoicePaymentCandidateContent
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private var invoicePaymentCandidateContent: some View {
+        switch model.invoicePaymentCandidateState {
+        case .none:
+            EmptyView()
+        case .loading:
+            Divider()
+            ProgressView("Verknüpfungskandidaten werden geladen …")
+                .accessibilityIdentifier("invoice-payment-candidates.loading")
+        case .failed:
+            Divider()
+            ContentUnavailableView(
+                "Kandidaten nicht verfügbar",
+                systemImage: "link.badge.plus",
+                description: Text(
+                    "Document DNA bleibt verfügbar. Bitte versuche es später erneut."
+                )
+            )
+            .accessibilityIdentifier("invoice-payment-candidates.failed")
+        case .available(_, let candidates):
+            if !candidates.isEmpty, let selectedDocumentID = model.selectedDocumentID {
+                Divider()
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Verknüpfungskandidaten")
+                        .font(.headline)
+                    Text("Lokal berechnet · noch nicht gespeichert")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .accessibilityElement(children: .combine)
+                .accessibilityIdentifier("invoice-payment-candidates.header")
+                ForEach(Array(candidates.enumerated()), id: \.offset) { index, candidate in
+                    invoicePaymentCandidateCard(
+                        InvoicePaymentCandidatePresentation(
+                            candidate: candidate,
+                            selectedDocumentID: selectedDocumentID
+                        ),
+                        index: index
+                    )
+                }
+            }
+        }
+    }
+
+    private func invoicePaymentCandidateCard(
+        _ candidate: InvoicePaymentCandidatePresentation,
+        index: Int
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(candidate.counterpartPath)
+                    .font(.body.weight(.semibold))
+                    .textSelection(.enabled)
+                Spacer(minLength: 8)
+                Text(candidate.dispositionTitle)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(Array(candidate.signals.enumerated()), id: \.offset) { signalIndex, signal in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(signal.title)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text(signal.comparison)
+                        .font(.caption.weight(.medium))
+                        .textSelection(.enabled)
+                    invoicePaymentEvidence(
+                        signal.invoiceEvidence,
+                        role: "Rechnung",
+                        identifierPrefix:
+                            "invoice-payment-candidates.\(index).signal.\(signalIndex).invoice"
+                    )
+                    invoicePaymentEvidence(
+                        signal.paymentEvidence,
+                        role: "Zahlung",
+                        identifierPrefix:
+                            "invoice-payment-candidates.\(index).signal.\(signalIndex).payment"
+                    )
+                }
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("invoice-payment-candidates.\(index)")
+    }
+
+    private func invoicePaymentEvidence(
+        _ evidence: [InvoicePaymentEvidencePresentation],
+        role: String,
+        identifierPrefix: String
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            ForEach(Array(evidence.enumerated()), id: \.offset) { index, item in
+                Text("\(role) · Seite \(item.pageNumber): \(item.exactText)")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .accessibilityIdentifier("\(identifierPrefix).\(index)")
+            }
         }
     }
 

@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 @testable import LinkLoomAppFeature
-import LinkLoomCore
+@testable import LinkLoomCore
 
 @Suite("Document DNA dashboard presentation")
 struct ScanDashboardTests {
@@ -140,5 +140,161 @@ struct ScanDashboardTests {
         for (documentType, title) in cases {
             #expect(DocumentDNADetailPresentation.title(for: documentType) == title)
         }
+    }
+
+    @Test func invoicePaymentCandidatePresentationUsesNeutralLabelsAndBothSources() throws {
+        let invoice = try candidateDocument(
+            id: UUID(uuidString: "71000000-0000-0000-0000-000000000001")!,
+            path: "invoice.pdf",
+            type: .invoice,
+            referenceQualifier: .invoiceNumber,
+            referenceDisplay: "INV-42",
+            referencePageIndex: 0,
+            amountPageIndex: 1
+        )
+        let payment = try candidateDocument(
+            id: UUID(uuidString: "71000000-0000-0000-0000-000000000002")!,
+            path: "payment.pdf",
+            type: .paymentConfirmation,
+            referenceQualifier: .paymentReference,
+            referenceDisplay: "INV 42",
+            referencePageIndex: 2,
+            amountPageIndex: 3
+        )
+        let candidate = InvoicePaymentCandidate(
+            invoice: invoice.current,
+            payment: payment.current,
+            disposition: .automatic,
+            resolverVersion: "invoice-payment-v1",
+            signals: [
+                InvoicePaymentCandidateSignal(
+                    kind: .referenceNumber,
+                    invoiceFinding: invoice.reference,
+                    paymentFinding: payment.reference
+                ),
+                InvoicePaymentCandidateSignal(
+                    kind: .monetaryAmount,
+                    invoiceFinding: invoice.amount,
+                    paymentFinding: payment.amount
+                ),
+            ]
+        )
+
+        let presentation = InvoicePaymentCandidatePresentation(
+            candidate: candidate,
+            selectedDocumentID: invoice.current.document.id
+        )
+
+        #expect(presentation.counterpartPath == "payment.pdf")
+        #expect(presentation.dispositionTitle == "Hohe Übereinstimmung")
+        #expect(presentation.signals.map(\.title) == ["Referenz", "Betrag und Währung"])
+        #expect(presentation.signals.map(\.comparison) == [
+            "INV-42 ↔ INV 42", "CHF 1250 ↔ CHF 1250",
+        ])
+        #expect(presentation.signals[0].invoiceEvidence == [
+            InvoicePaymentEvidencePresentation(pageNumber: 1, exactText: "INV-42"),
+        ])
+        #expect(presentation.signals[0].paymentEvidence == [
+            InvoicePaymentEvidencePresentation(pageNumber: 3, exactText: "INV 42"),
+        ])
+        #expect(presentation.signals[1].invoiceEvidence == [
+            InvoicePaymentEvidencePresentation(pageNumber: 2, exactText: "CHF 1250"),
+        ])
+        #expect(presentation.signals[1].paymentEvidence == [
+            InvoicePaymentEvidencePresentation(pageNumber: 4, exactText: "CHF 1250"),
+        ])
+    }
+}
+
+private extension ScanDashboardTests {
+    struct CandidateDocument {
+        let current: CurrentDocumentDNA
+        let reference: DocumentDNAFinding
+        let amount: DocumentDNAFinding
+    }
+
+    func candidateDocument(
+        id: UUID,
+        path: String,
+        type: DocumentType,
+        referenceQualifier: DocumentDNAReferenceNumberKind,
+        referenceDisplay: String,
+        referencePageIndex: Int,
+        amountPageIndex: Int
+    ) throws -> CandidateDocument {
+        let classification = try finding(
+            kind: .documentType,
+            qualifier: nil,
+            displayValue: type.rawValue,
+            normalizedValue: type.rawValue,
+            pageIndex: 0
+        )
+        let reference = try finding(
+            kind: .referenceNumber,
+            qualifier: referenceQualifier.rawValue,
+            displayValue: referenceDisplay,
+            normalizedValue: "INV42",
+            pageIndex: referencePageIndex
+        )
+        let amount = try finding(
+            kind: .monetaryAmount,
+            qualifier: "CHF",
+            displayValue: "CHF 1250",
+            normalizedValue: "1250",
+            pageIndex: amountPageIndex
+        )
+        let document = DocumentRecord(
+            id: id,
+            sourceRootID: UUID(uuidString: "71000000-0000-0000-0000-000000000000")!,
+            relativePath: path,
+            contentHash: "hash-\(path)",
+            byteCount: 64,
+            modifiedAt: Date(timeIntervalSince1970: 1_800_000_000),
+            mediaType: .pdf,
+            status: .ready,
+            availability: .available,
+            pageCount: 4,
+            lastSeenAt: Date(timeIntervalSince1970: 1_800_000_000),
+            lastFingerprintAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        let snapshot = try DocumentDNA(
+            documentID: id,
+            schemaVersion: 1,
+            analyzerIdentifier: "local-rules",
+            analyzerVersion: "2",
+            inputContentHash: document.contentHash,
+            inputExtractionVersion: "text-v1",
+            findings: [classification, reference, amount],
+            analyzedAt: Date(timeIntervalSince1970: 1_800_000_000)
+        )
+        return try CandidateDocument(
+            current: CurrentDocumentDNA(document: document, snapshot: snapshot),
+            reference: reference,
+            amount: amount
+        )
+    }
+
+    func finding(
+        kind: DocumentDNAFindingKind,
+        qualifier: String?,
+        displayValue: String,
+        normalizedValue: String,
+        pageIndex: Int
+    ) throws -> DocumentDNAFinding {
+        try DocumentDNAFinding(
+            kind: kind,
+            qualifier: qualifier,
+            displayValue: displayValue,
+            normalizedValue: normalizedValue,
+            secondaryNormalizedValue: nil,
+            confidence: 1,
+            evidence: [try DocumentDNAEvidence(
+                pageIndex: pageIndex,
+                startUTF16: 0,
+                lengthUTF16: displayValue.utf16.count,
+                exactText: displayValue,
+                ocrRegionIndexes: []
+            )]
+        )
     }
 }
