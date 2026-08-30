@@ -143,8 +143,15 @@ struct ScanDashboardTests {
     }
 
     @Test func invoicePaymentCandidatePresentationUsesNeutralLabelsAndBothSources() throws {
+        let invoiceSourceID = UUID(
+            uuidString: "71000000-0000-0000-0000-000000000010"
+        )!
+        let paymentSourceID = UUID(
+            uuidString: "71000000-0000-0000-0000-000000000020"
+        )!
         let invoice = try candidateDocument(
             id: UUID(uuidString: "71000000-0000-0000-0000-000000000001")!,
+            sourceRootID: invoiceSourceID,
             path: "invoice.pdf",
             type: .invoice,
             referenceQualifier: .invoiceNumber,
@@ -154,6 +161,7 @@ struct ScanDashboardTests {
         )
         let payment = try candidateDocument(
             id: UUID(uuidString: "71000000-0000-0000-0000-000000000002")!,
+            sourceRootID: paymentSourceID,
             path: "payment.pdf",
             type: .paymentConfirmation,
             referenceQualifier: .paymentReference,
@@ -182,10 +190,11 @@ struct ScanDashboardTests {
 
         let presentation = InvoicePaymentCandidatePresentation(
             candidate: candidate,
-            selectedDocumentID: invoice.current.document.id
+            selectedDocumentID: invoice.current.document.id,
+            sourceDisplayNames: [paymentSourceID: "Zahlungen"]
         )
 
-        #expect(presentation.counterpartPath == "payment.pdf")
+        #expect(presentation.counterpartLocation == "Zahlungen · payment.pdf")
         #expect(presentation.dispositionTitle == "Hohe Übereinstimmung")
         #expect(presentation.signals.map(\.title) == ["Referenz", "Betrag und Währung"])
         #expect(presentation.signals.map(\.comparison) == [
@@ -215,6 +224,7 @@ private extension ScanDashboardTests {
 
     func candidateDocument(
         id: UUID,
+        sourceRootID: UUID,
         path: String,
         type: DocumentType,
         referenceQualifier: DocumentDNAReferenceNumberKind,
@@ -245,7 +255,7 @@ private extension ScanDashboardTests {
         )
         let document = DocumentRecord(
             id: id,
-            sourceRootID: UUID(uuidString: "71000000-0000-0000-0000-000000000000")!,
+            sourceRootID: sourceRootID,
             relativePath: path,
             contentHash: "hash-\(path)",
             byteCount: 64,

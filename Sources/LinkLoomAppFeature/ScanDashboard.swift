@@ -366,7 +366,12 @@ public struct ScanDashboard: View {
                     invoicePaymentCandidateCard(
                         InvoicePaymentCandidatePresentation(
                             candidate: candidate,
-                            selectedDocumentID: selectedDocumentID
+                            selectedDocumentID: selectedDocumentID,
+                            sourceDisplayNames: Dictionary(
+                                uniqueKeysWithValues: model.sources.map {
+                                    ($0.id, $0.displayName)
+                                }
+                            )
                         ),
                         index: index
                     )
@@ -381,7 +386,7 @@ public struct ScanDashboard: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
-                Text(candidate.counterpartPath)
+                Text(candidate.counterpartLocation)
                     .font(.body.weight(.semibold))
                     .textSelection(.enabled)
                 Spacer(minLength: 8)

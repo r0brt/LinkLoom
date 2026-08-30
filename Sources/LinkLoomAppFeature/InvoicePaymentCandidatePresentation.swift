@@ -2,14 +2,28 @@ import Foundation
 import LinkLoomCore
 
 struct InvoicePaymentCandidatePresentation: Equatable {
-    let counterpartPath: String
+    let counterpartLocation: String
     let dispositionTitle: String
     let signals: [InvoicePaymentSignalPresentation]
 
-    init(candidate: InvoicePaymentCandidate, selectedDocumentID: UUID) {
-        counterpartPath = candidate.invoice.document.id == selectedDocumentID
-            ? candidate.payment.document.relativePath
-            : candidate.invoice.document.relativePath
+    init(
+        candidate: InvoicePaymentCandidate,
+        selectedDocumentID: UUID,
+        sourceDisplayNames: [UUID: String]
+    ) {
+        let selected = candidate.invoice.document.id == selectedDocumentID
+            ? candidate.invoice.document
+            : candidate.payment.document
+        let counterpart = candidate.invoice.document.id == selectedDocumentID
+            ? candidate.payment.document
+            : candidate.invoice.document
+        if selected.sourceRootID == counterpart.sourceRootID {
+            counterpartLocation = counterpart.relativePath
+        } else {
+            let sourceName = sourceDisplayNames[counterpart.sourceRootID]
+                ?? counterpart.sourceRootID.uuidString
+            counterpartLocation = "\(sourceName) · \(counterpart.relativePath)"
+        }
         dispositionTitle = switch candidate.disposition {
         case .automatic:
             "Hohe Übereinstimmung"
