@@ -57,19 +57,31 @@ final class LinkLoomUISmokeTests: XCTestCase {
             element("scan.start", in: app).click()
             requireLabel("Entdeckt: 0", for: element("status.discovered", in: app), timeout: 90)
             requireLabel("Extraktion: 0", for: element("status.extracting", in: app), timeout: 90)
-            requireLabel("Bereit: 2", for: element("status.ready", in: app), timeout: 90)
+            requireLabel("Bereit: 3", for: element("status.ready", in: app), timeout: 90)
             requireLabel("Fehler: 1", for: element("status.failed", in: app), timeout: 90)
-            requireLabel("Document DNA Bereit: 2", for: element("dna-status.ready", in: app), timeout: 90)
+            requireLabel("Document DNA Bereit: 3", for: element("dna-status.ready", in: app), timeout: 90)
             requireLabel("Document DNA Fehler: 0", for: element("dna-status.failed", in: app), timeout: 90)
             requireExists(element("documents.table", in: app), description: "documents.table")
-            for text in ["selectable.pdf", "scan.png", "corrupt.pdf", "failed", "unreadableDocument"] {
+            for text in [
+                "selectable.pdf", "payment.pdf", "scan.png", "corrupt.pdf", "failed",
+                "unreadableDocument",
+            ] {
                 requireExists(app.staticTexts[text], description: text)
             }
             XCTAssertFalse(app.staticTexts["unsupported.txt"].exists)
             app.staticTexts["selectable.pdf"].click()
-            requireExists(
-                element("document-dna.inspector", in: app),
-                description: "document-dna.inspector"
+            let inspector = element("document-dna.inspector", in: app)
+            requireExists(inspector, description: "document-dna.inspector")
+            let splitterCount = app.splitters.count
+            XCTAssertGreaterThan(splitterCount, 0, "Document inspector splitter is unavailable")
+            let inspectorSplitter = app.splitters.element(boundBy: splitterCount - 1)
+            let inspectorTitle = inspector.staticTexts["Document DNA"].firstMatch
+            requireExists(inspectorTitle, description: "Document DNA inspector title")
+            requireFullyVisibleInInspector(
+                inspectorTitle,
+                splitter: inspectorSplitter,
+                window: app.windows.firstMatch,
+                description: "Document DNA inspector title"
             )
             requireLabel(
                 "Dokumenttyp: Rechnung",
@@ -78,6 +90,17 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireLabel(
                 "Seite 1: Rechnung",
                 for: element("document-dna.document-type.evidence.0", in: app)
+            )
+            let candidateHeader = element("invoice-payment-candidates.header", in: app)
+            requireExists(candidateHeader, description: "invoice-payment-candidates.header")
+            let inspectorScroll = inspector.scrollViews.firstMatch
+            requireExists(inspectorScroll, description: "Document DNA inspector scroll view")
+            inspectorScroll.scroll(byDeltaX: 0, deltaY: -1_200)
+            requireFullyVisibleInInspector(
+                candidateHeader,
+                splitter: inspectorSplitter,
+                window: app.windows.firstMatch,
+                description: "Verknüpfungskandidaten header"
             )
         }
 
@@ -101,12 +124,12 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireExists(sourceRow(in: relaunchedApp), timeout: 20, description: "persisted source row")
             requireLabel("Entdeckt: 0", for: element("status.discovered", in: relaunchedApp))
             requireLabel("Extraktion: 0", for: element("status.extracting", in: relaunchedApp))
-            requireLabel("Bereit: 2", for: element("status.ready", in: relaunchedApp))
+            requireLabel("Bereit: 3", for: element("status.ready", in: relaunchedApp))
             requireLabel("Fehler: 1", for: element("status.failed", in: relaunchedApp))
-            requireLabel("Document DNA Bereit: 1", for: element("dna-status.ready", in: relaunchedApp))
+            requireLabel("Document DNA Bereit: 2", for: element("dna-status.ready", in: relaunchedApp))
             requireLabel("Document DNA Fehler: 1", for: element("dna-status.failed", in: relaunchedApp))
             requireExists(element("documents.table", in: relaunchedApp), description: "persisted table")
-            for text in ["selectable.pdf", "scan.png", "corrupt.pdf", "unreadableDocument"] {
+            for text in ["selectable.pdf", "payment.pdf", "scan.png", "corrupt.pdf", "unreadableDocument"] {
                 requireExists(relaunchedApp.staticTexts[text], description: "persisted \(text)")
             }
             relaunchedApp.staticTexts["selectable.pdf"].click()
@@ -122,7 +145,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireExists(retry, description: "document-dna.retry")
             retry.click()
             requireLabel(
-                "Document DNA Bereit: 2",
+                "Document DNA Bereit: 3",
                 for: element("dna-status.ready", in: relaunchedApp),
                 timeout: 90
             )
@@ -347,6 +370,25 @@ final class LinkLoomUISmokeTests: XCTestCase {
             XCTWaiter.wait(for: [expectation], timeout: timeout),
             .completed,
             "Timed out waiting for \(description) to disappear"
+        )
+    }
+
+    private func requireFullyVisibleInInspector(
+        _ element: XCUIElement,
+        splitter: XCUIElement,
+        window: XCUIElement,
+        description: String
+    ) {
+        XCTAssertTrue(element.isHittable, "\(description) is not hittable")
+        XCTAssertGreaterThanOrEqual(
+            element.frame.minX,
+            splitter.frame.maxX,
+            "\(description) extends left of the inspector divider"
+        )
+        XCTAssertLessThanOrEqual(
+            element.frame.maxX,
+            window.frame.maxX,
+            "\(description) extends beyond the window's right edge"
         )
     }
 
