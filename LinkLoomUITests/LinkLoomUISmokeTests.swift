@@ -110,18 +110,22 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireExists(candidateCard, description: "invoice-payment-candidates.0")
             let candidateDetails: [(XCUIElement, String, String)] = [
                 (
-                    candidateCard.staticTexts["payments/payment-confirmation.pdf"].firstMatch,
+                    element("invoice-payment-candidates.0.counterpart", in: app),
                     "payments/payment-confirmation.pdf",
                     "candidate counterpart"
                 ),
                 (
-                    candidateCard.staticTexts["Hohe Übereinstimmung"].firstMatch,
+                    element("invoice-payment-candidates.0.disposition", in: app),
                     "Hohe Übereinstimmung",
                     "candidate confidence label"
                 ),
-                (candidateCard.staticTexts["Referenz"].firstMatch, "Referenz", "reference signal"),
                 (
-                    candidateCard.staticTexts["INV-2026-001 ↔ INV-2026-001"].firstMatch,
+                    element("invoice-payment-candidates.0.signal.0.title", in: app),
+                    "Referenz",
+                    "reference signal"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.0.comparison", in: app),
                     "INV-2026-001 ↔ INV-2026-001",
                     "reference comparison"
                 ),
@@ -136,12 +140,12 @@ final class LinkLoomUISmokeTests: XCTestCase {
                     "reference payment evidence"
                 ),
                 (
-                    candidateCard.staticTexts["Betrag und Währung"].firstMatch,
+                    element("invoice-payment-candidates.0.signal.1.title", in: app),
                     "Betrag und Währung",
                     "amount and currency signal"
                 ),
                 (
-                    candidateCard.staticTexts["CHF 1250 ↔ CHF 1250"].firstMatch,
+                    element("invoice-payment-candidates.0.signal.1.comparison", in: app),
                     "CHF 1250 ↔ CHF 1250",
                     "amount and currency comparison"
                 ),
@@ -156,12 +160,12 @@ final class LinkLoomUISmokeTests: XCTestCase {
                     "amount and currency payment evidence"
                 ),
                 (
-                    candidateCard.staticTexts["Organisation"].firstMatch,
+                    element("invoice-payment-candidates.0.signal.2.title", in: app),
                     "Organisation",
                     "organization signal"
                 ),
                 (
-                    candidateCard.staticTexts["Beispiel AG ↔ Beispiel AG"].firstMatch,
+                    element("invoice-payment-candidates.0.signal.2.comparison", in: app),
                     "Beispiel AG ↔ Beispiel AG",
                     "organization comparison"
                 ),

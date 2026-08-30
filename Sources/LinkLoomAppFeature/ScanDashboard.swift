@@ -390,19 +390,35 @@ public struct ScanDashboard: View {
                 Text(candidate.counterpartLocation)
                     .font(.body.weight(.semibold))
                     .textSelection(.enabled)
+                    .accessibilityLabel(candidate.counterpartLocation)
+                    .accessibilityIdentifier(
+                        "invoice-payment-candidates.\(index).counterpart"
+                    )
                 Spacer(minLength: 8)
                 Text(candidate.dispositionTitle)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
+                    .accessibilityLabel(candidate.dispositionTitle)
+                    .accessibilityIdentifier(
+                        "invoice-payment-candidates.\(index).disposition"
+                    )
             }
             ForEach(Array(candidate.signals.enumerated()), id: \.offset) { signalIndex, signal in
                 VStack(alignment: .leading, spacing: 6) {
                     Text(signal.title)
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .accessibilityLabel(signal.title)
+                        .accessibilityIdentifier(
+                            "invoice-payment-candidates.\(index).signal.\(signalIndex).title"
+                        )
                     Text(signal.comparison)
                         .font(.caption.weight(.medium))
                         .textSelection(.enabled)
+                        .accessibilityLabel(signal.comparison)
+                        .accessibilityIdentifier(
+                            "invoice-payment-candidates.\(index).signal.\(signalIndex).comparison"
+                        )
                     invoicePaymentEvidence(
                         signal.invoiceEvidence,
                         role: "Rechnung",
@@ -436,6 +452,9 @@ public struct ScanDashboard: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
+                    .accessibilityLabel(
+                        "\(role) · Seite \(item.pageNumber): \(item.exactText)"
+                    )
                     .accessibilityIdentifier("\(identifierPrefix).\(index)")
             }
         }
