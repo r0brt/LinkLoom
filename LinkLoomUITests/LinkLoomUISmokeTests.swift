@@ -93,89 +93,101 @@ final class LinkLoomUISmokeTests: XCTestCase {
             )
             let candidateHeader = element("invoice-payment-candidates.header", in: app)
             requireExists(candidateHeader, description: "invoice-payment-candidates.header")
+            let inspectorScroll = inspector.scrollViews.firstMatch
+            requireExists(inspectorScroll, description: "Document DNA inspector scroll view")
             requireFullyVisibleInInspector(
                 candidateHeader,
+                scrollingIn: inspectorScroll,
                 splitter: inspectorSplitter,
                 window: app.windows.firstMatch,
                 description: "Verknüpfungskandidaten header"
             )
+            let headerScreenshot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
+            headerScreenshot.name = "PR33 candidate inspector header"
+            headerScreenshot.lifetime = .keepAlways
+            add(headerScreenshot)
             let candidateCard = element("invoice-payment-candidates.0", in: app)
             requireExists(candidateCard, description: "invoice-payment-candidates.0")
-            let candidateDetails: [(XCUIElement, String)] = [
+            let candidateDetails: [(XCUIElement, String, String)] = [
                 (
                     candidateCard.staticTexts["payments/payment-confirmation.pdf"].firstMatch,
+                    "payments/payment-confirmation.pdf",
                     "candidate counterpart"
                 ),
                 (
                     candidateCard.staticTexts["Hohe Übereinstimmung"].firstMatch,
+                    "Hohe Übereinstimmung",
                     "candidate confidence label"
                 ),
-                (candidateCard.staticTexts["Referenz"].firstMatch, "reference signal"),
+                (candidateCard.staticTexts["Referenz"].firstMatch, "Referenz", "reference signal"),
                 (
                     candidateCard.staticTexts["INV-2026-001 ↔ INV-2026-001"].firstMatch,
+                    "INV-2026-001 ↔ INV-2026-001",
                     "reference comparison"
                 ),
                 (
+                    element("invoice-payment-candidates.0.signal.0.invoice.0", in: app),
+                    "Rechnung · Seite 1: INV-2026-001",
+                    "reference invoice evidence"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.0.payment.0", in: app),
+                    "Zahlung · Seite 1: INV-2026-001",
+                    "reference payment evidence"
+                ),
+                (
                     candidateCard.staticTexts["Betrag und Währung"].firstMatch,
+                    "Betrag und Währung",
                     "amount and currency signal"
                 ),
                 (
                     candidateCard.staticTexts["CHF 1250 ↔ CHF 1250"].firstMatch,
+                    "CHF 1250 ↔ CHF 1250",
                     "amount and currency comparison"
                 ),
-                (candidateCard.staticTexts["Organisation"].firstMatch, "organization signal"),
+                (
+                    element("invoice-payment-candidates.0.signal.1.invoice.0", in: app),
+                    "Rechnung · Seite 1: CHF 1250",
+                    "amount and currency invoice evidence"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.1.payment.0", in: app),
+                    "Zahlung · Seite 1: CHF 1250",
+                    "amount and currency payment evidence"
+                ),
+                (
+                    candidateCard.staticTexts["Organisation"].firstMatch,
+                    "Organisation",
+                    "organization signal"
+                ),
                 (
                     candidateCard.staticTexts["Beispiel AG ↔ Beispiel AG"].firstMatch,
+                    "Beispiel AG ↔ Beispiel AG",
                     "organization comparison"
                 ),
+                (
+                    element("invoice-payment-candidates.0.signal.2.invoice.0", in: app),
+                    "Rechnung · Seite 1: Beispiel AG",
+                    "organization invoice evidence"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.2.payment.0", in: app),
+                    "Zahlung · Seite 1: Beispiel AG",
+                    "organization payment evidence"
+                ),
             ]
-            for (detail, description) in candidateDetails {
-                requireExists(detail, description: description)
+            for (detail, label, description) in candidateDetails {
+                requireLabel(label, for: detail)
                 requireFullyVisibleInInspector(
                     detail,
+                    scrollingIn: inspectorScroll,
                     splitter: inspectorSplitter,
                     window: app.windows.firstMatch,
                     description: description
                 )
             }
-            let candidateEvidence: [(String, String)] = [
-                (
-                    "invoice-payment-candidates.0.signal.0.invoice.0",
-                    "Rechnung · Seite 1: INV-2026-001"
-                ),
-                (
-                    "invoice-payment-candidates.0.signal.0.payment.0",
-                    "Zahlung · Seite 1: INV-2026-001"
-                ),
-                (
-                    "invoice-payment-candidates.0.signal.1.invoice.0",
-                    "Rechnung · Seite 1: CHF 1250"
-                ),
-                (
-                    "invoice-payment-candidates.0.signal.1.payment.0",
-                    "Zahlung · Seite 1: CHF 1250"
-                ),
-                (
-                    "invoice-payment-candidates.0.signal.2.invoice.0",
-                    "Rechnung · Seite 1: Beispiel AG"
-                ),
-                (
-                    "invoice-payment-candidates.0.signal.2.payment.0",
-                    "Zahlung · Seite 1: Beispiel AG"
-                ),
-            ]
-            for (identifier, label) in candidateEvidence {
-                let evidence = element(identifier, in: app)
-                requireLabel(label, for: evidence)
-                requireFullyVisibleInInspector(
-                    evidence,
-                    splitter: inspectorSplitter,
-                    window: app.windows.firstMatch,
-                    description: identifier
-                )
-            }
             let screenshot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
-            screenshot.name = "PR33 invoice-payment candidate inspector"
+            screenshot.name = "PR33 candidate inspector evidence"
             screenshot.lifetime = .keepAlways
             add(screenshot)
         }
@@ -454,10 +466,18 @@ final class LinkLoomUISmokeTests: XCTestCase {
 
     private func requireFullyVisibleInInspector(
         _ element: XCUIElement,
+        scrollingIn scrollView: XCUIElement? = nil,
         splitter: XCUIElement,
         window: XCUIElement,
         description: String
     ) {
+        if let scrollView {
+            scrollVerticallyUntilVisible(
+                element,
+                in: scrollView,
+                description: description
+            )
+        }
         XCTAssertTrue(element.isHittable, "\(description) is not hittable")
         XCTAssertGreaterThanOrEqual(
             element.frame.minX,
@@ -469,6 +489,26 @@ final class LinkLoomUISmokeTests: XCTestCase {
             window.frame.maxX,
             "\(description) extends beyond the window's right edge"
         )
+    }
+
+    private func scrollVerticallyUntilVisible(
+        _ element: XCUIElement,
+        in scrollView: XCUIElement,
+        description: String
+    ) {
+        let maximumAttempts = 12
+        for _ in 0..<maximumAttempts {
+            let elementFrame = element.frame
+            let viewportFrame = scrollView.frame
+            if elementFrame.minY >= viewportFrame.minY,
+               elementFrame.maxY <= viewportFrame.maxY
+            {
+                return
+            }
+            let deltaY: CGFloat = elementFrame.maxY > viewportFrame.maxY ? -180 : 180
+            scrollView.scroll(byDeltaX: 0, deltaY: deltaY)
+        }
+        XCTFail("\(description) did not become vertically visible after bounded scrolling")
     }
 
     private func terminateAndWait(_ app: XCUIApplication) {
