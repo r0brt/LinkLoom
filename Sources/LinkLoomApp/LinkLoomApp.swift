@@ -161,6 +161,12 @@ struct LinkLoomApp: App {
             repository: dnaRepository,
             target: dnaTarget
         )
+        let invoicePaymentCandidates = CurrentInvoicePaymentCandidateLoader(
+            lookup: InvoicePaymentCandidateLookup(
+                repository: dnaRepository,
+                target: dnaTarget
+            )
+        )
         let dnaRetryer = LocalDocumentDNAFailureRetryer(
             repository: dnaRepository,
             analysis: dnaAnalysis
@@ -190,6 +196,7 @@ struct LinkLoomApp: App {
             dnaStatuses: dnaStatuses,
             dnaSnapshots: dnaSnapshots,
             dnaRetryer: dnaRetryer,
+            invoicePaymentCandidates: invoicePaymentCandidates,
             watchScheduler: watchScheduler,
             reportRuntimeFailure: { diagnostic in
                 Self.runtimeLogger.error(
@@ -333,6 +340,16 @@ struct CurrentDocumentDNASnapshotLoader: DocumentDNASnapshotLoading {
 
     func currentSnapshot(documentID: UUID) async throws -> DocumentDNA? {
         try await repository.currentSnapshot(documentID: documentID, target: target)
+    }
+}
+
+struct CurrentInvoicePaymentCandidateLoader: InvoicePaymentCandidateLoading {
+    let lookup: InvoicePaymentCandidateLookup
+
+    func candidates(involving documentID: UUID) async throws
+        -> [InvoicePaymentCandidate]
+    {
+        try await lookup.candidates(involving: documentID)
     }
 }
 

@@ -10,6 +10,7 @@ public enum AppRuntimeFailureCategory: String, Sendable, Equatable {
     case documentLoad
     case documentDNADetailLoad
     case documentDNARetry
+    case invoicePaymentCandidateLoad
     case watcherStart
     case incrementalRefresh
 }

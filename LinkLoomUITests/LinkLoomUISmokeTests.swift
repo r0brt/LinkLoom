@@ -57,19 +57,31 @@ final class LinkLoomUISmokeTests: XCTestCase {
             element("scan.start", in: app).click()
             requireLabel("Entdeckt: 0", for: element("status.discovered", in: app), timeout: 90)
             requireLabel("Extraktion: 0", for: element("status.extracting", in: app), timeout: 90)
-            requireLabel("Bereit: 2", for: element("status.ready", in: app), timeout: 90)
+            requireLabel("Bereit: 3", for: element("status.ready", in: app), timeout: 90)
             requireLabel("Fehler: 1", for: element("status.failed", in: app), timeout: 90)
-            requireLabel("Document DNA Bereit: 2", for: element("dna-status.ready", in: app), timeout: 90)
+            requireLabel("Document DNA Bereit: 3", for: element("dna-status.ready", in: app), timeout: 90)
             requireLabel("Document DNA Fehler: 0", for: element("dna-status.failed", in: app), timeout: 90)
             requireExists(element("documents.table", in: app), description: "documents.table")
-            for text in ["selectable.pdf", "scan.png", "corrupt.pdf", "failed", "unreadableDocument"] {
+            for text in [
+                "selectable.pdf", "payments/payment-confirmation.pdf", "scan.png", "corrupt.pdf", "failed",
+                "unreadableDocument",
+            ] {
                 requireExists(app.staticTexts[text], description: text)
             }
             XCTAssertFalse(app.staticTexts["unsupported.txt"].exists)
             app.staticTexts["selectable.pdf"].click()
-            requireExists(
-                element("document-dna.inspector", in: app),
-                description: "document-dna.inspector"
+            let inspector = element("document-dna.inspector", in: app)
+            requireExists(inspector, description: "document-dna.inspector")
+            let splitterCount = app.splitters.count
+            XCTAssertGreaterThan(splitterCount, 0, "Document inspector splitter is unavailable")
+            let inspectorSplitter = app.splitters.element(boundBy: splitterCount - 1)
+            let inspectorTitle = inspector.staticTexts["Document DNA"].firstMatch
+            requireExists(inspectorTitle, description: "Document DNA inspector title")
+            requireFullyVisibleInInspector(
+                inspectorTitle,
+                splitter: inspectorSplitter,
+                window: app.windows.firstMatch,
+                description: "Document DNA inspector title"
             )
             requireLabel(
                 "Dokumenttyp: Rechnung",
@@ -79,6 +91,109 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 "Seite 1: Rechnung",
                 for: element("document-dna.document-type.evidence.0", in: app)
             )
+            let candidateHeader = element("invoice-payment-candidates.header", in: app)
+            requireExists(candidateHeader, description: "invoice-payment-candidates.header")
+            let inspectorScroll = inspector.scrollViews.firstMatch
+            requireExists(inspectorScroll, description: "Document DNA inspector scroll view")
+            requireFullyVisibleInInspector(
+                candidateHeader,
+                scrollingIn: inspectorScroll,
+                splitter: inspectorSplitter,
+                window: app.windows.firstMatch,
+                description: "Verknüpfungskandidaten header"
+            )
+            let headerScreenshot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
+            headerScreenshot.name = "PR33 candidate inspector header"
+            headerScreenshot.lifetime = .keepAlways
+            add(headerScreenshot)
+            let candidateCard = element("invoice-payment-candidates.0", in: app)
+            requireExists(candidateCard, description: "invoice-payment-candidates.0")
+            let candidateDetails: [(XCUIElement, String, String)] = [
+                (
+                    element("invoice-payment-candidates.0.counterpart", in: app),
+                    "payments/payment-confirmation.pdf",
+                    "candidate counterpart"
+                ),
+                (
+                    element("invoice-payment-candidates.0.disposition", in: app),
+                    "Hohe Übereinstimmung",
+                    "candidate confidence label"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.0.title", in: app),
+                    "Referenz",
+                    "reference signal"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.0.comparison", in: app),
+                    "INV-2026-001 ↔ INV-2026-001",
+                    "reference comparison"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.0.invoice.0", in: app),
+                    "Rechnung · Seite 1: INV-2026-001",
+                    "reference invoice evidence"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.0.payment.0", in: app),
+                    "Zahlung · Seite 1: INV-2026-001",
+                    "reference payment evidence"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.1.title", in: app),
+                    "Betrag und Währung",
+                    "amount and currency signal"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.1.comparison", in: app),
+                    "CHF 1250 ↔ CHF 1250",
+                    "amount and currency comparison"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.1.invoice.0", in: app),
+                    "Rechnung · Seite 1: CHF 1250",
+                    "amount and currency invoice evidence"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.1.payment.0", in: app),
+                    "Zahlung · Seite 1: CHF 1250",
+                    "amount and currency payment evidence"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.2.title", in: app),
+                    "Organisation",
+                    "organization signal"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.2.comparison", in: app),
+                    "Beispiel AG ↔ Beispiel AG",
+                    "organization comparison"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.2.invoice.0", in: app),
+                    "Rechnung · Seite 1: Beispiel AG",
+                    "organization invoice evidence"
+                ),
+                (
+                    element("invoice-payment-candidates.0.signal.2.payment.0", in: app),
+                    "Zahlung · Seite 1: Beispiel AG",
+                    "organization payment evidence"
+                ),
+            ]
+            for (detail, label, description) in candidateDetails {
+                requireValue(label, for: detail)
+                requireFullyVisibleInInspector(
+                    detail,
+                    scrollingIn: inspectorScroll,
+                    splitter: inspectorSplitter,
+                    window: app.windows.firstMatch,
+                    description: description
+                )
+            }
+            let screenshot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
+            screenshot.name = "PR33 candidate inspector evidence"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
         }
 
         terminateAndWait(app)
@@ -101,12 +216,15 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireExists(sourceRow(in: relaunchedApp), timeout: 20, description: "persisted source row")
             requireLabel("Entdeckt: 0", for: element("status.discovered", in: relaunchedApp))
             requireLabel("Extraktion: 0", for: element("status.extracting", in: relaunchedApp))
-            requireLabel("Bereit: 2", for: element("status.ready", in: relaunchedApp))
+            requireLabel("Bereit: 3", for: element("status.ready", in: relaunchedApp))
             requireLabel("Fehler: 1", for: element("status.failed", in: relaunchedApp))
-            requireLabel("Document DNA Bereit: 1", for: element("dna-status.ready", in: relaunchedApp))
+            requireLabel("Document DNA Bereit: 2", for: element("dna-status.ready", in: relaunchedApp))
             requireLabel("Document DNA Fehler: 1", for: element("dna-status.failed", in: relaunchedApp))
             requireExists(element("documents.table", in: relaunchedApp), description: "persisted table")
-            for text in ["selectable.pdf", "scan.png", "corrupt.pdf", "unreadableDocument"] {
+            for text in [
+                "selectable.pdf", "payments/payment-confirmation.pdf", "scan.png", "corrupt.pdf",
+                "unreadableDocument",
+            ] {
                 requireExists(relaunchedApp.staticTexts[text], description: "persisted \(text)")
             }
             relaunchedApp.staticTexts["selectable.pdf"].click()
@@ -122,7 +240,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireExists(retry, description: "document-dna.retry")
             retry.click()
             requireLabel(
-                "Document DNA Bereit: 2",
+                "Document DNA Bereit: 3",
                 for: element("dna-status.ready", in: relaunchedApp),
                 timeout: 90
             )
@@ -334,6 +452,21 @@ final class LinkLoomUISmokeTests: XCTestCase {
         )
     }
 
+    private func requireValue(
+        _ value: String,
+        for element: XCUIElement,
+        timeout: TimeInterval = 20
+    ) {
+        requireExists(element, timeout: timeout, description: element.identifier)
+        let predicate = NSPredicate(format: "value == %@", value)
+        let expectation = XCTNSPredicateExpectation(predicate: predicate, object: element)
+        XCTAssertEqual(
+            XCTWaiter.wait(for: [expectation], timeout: timeout),
+            .completed,
+            "Timed out waiting for value \(value); actual value was \(String(describing: element.value))"
+        )
+    }
+
     private func requireDisappearance(
         _ element: XCUIElement,
         timeout: TimeInterval,
@@ -348,6 +481,53 @@ final class LinkLoomUISmokeTests: XCTestCase {
             .completed,
             "Timed out waiting for \(description) to disappear"
         )
+    }
+
+    private func requireFullyVisibleInInspector(
+        _ element: XCUIElement,
+        scrollingIn scrollView: XCUIElement? = nil,
+        splitter: XCUIElement,
+        window: XCUIElement,
+        description: String
+    ) {
+        if let scrollView {
+            scrollVerticallyUntilVisible(
+                element,
+                in: scrollView,
+                description: description
+            )
+        }
+        XCTAssertTrue(element.isHittable, "\(description) is not hittable")
+        XCTAssertGreaterThanOrEqual(
+            element.frame.minX,
+            splitter.frame.maxX,
+            "\(description) extends left of the inspector divider"
+        )
+        XCTAssertLessThanOrEqual(
+            element.frame.maxX,
+            window.frame.maxX,
+            "\(description) extends beyond the window's right edge"
+        )
+    }
+
+    private func scrollVerticallyUntilVisible(
+        _ element: XCUIElement,
+        in scrollView: XCUIElement,
+        description: String
+    ) {
+        let maximumAttempts = 12
+        for _ in 0..<maximumAttempts {
+            let elementFrame = element.frame
+            let viewportFrame = scrollView.frame
+            if elementFrame.minY >= viewportFrame.minY,
+               elementFrame.maxY <= viewportFrame.maxY
+            {
+                return
+            }
+            let deltaY: CGFloat = elementFrame.maxY > viewportFrame.maxY ? -180 : 180
+            scrollView.scroll(byDeltaX: 0, deltaY: deltaY)
+        }
+        XCTFail("\(description) did not become vertically visible after bounded scrolling")
     }
 
     private func terminateAndWait(_ app: XCUIApplication) {

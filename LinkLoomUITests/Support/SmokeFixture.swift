@@ -54,7 +54,28 @@ struct SmokeFixture {
 
     private static func prepareDefaultSource(_ source: URL) throws {
         let selectablePDF = source.appendingPathComponent("selectable.pdf", isDirectory: false)
-        try Self.writeTextPDF("Rechnung", to: selectablePDF)
+        try Self.writeTextPDF([
+            "Rechnung",
+            "Rechnungsnummer: INV-2026-001",
+            "CHF 1250",
+            "Ausstellerin: Beispiel AG",
+        ], to: selectablePDF)
+
+        let paymentDirectory = source.appendingPathComponent("payments", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: paymentDirectory,
+            withIntermediateDirectories: false
+        )
+        let paymentPDF = paymentDirectory.appendingPathComponent(
+            "payment-confirmation.pdf",
+            isDirectory: false
+        )
+        try Self.writeTextPDF([
+            "Zahlungsbestätigung",
+            "Zahlungsreferenz: INV-2026-001",
+            "CHF 1250",
+            "Zahlungsempfängerin: Beispiel AG",
+        ], to: paymentPDF)
 
         let scanImage = source.appendingPathComponent("scan.png", isDirectory: false)
         try Self.writeScanImage("Scanned LinkLoom smoke 2026", to: scanImage)
@@ -142,13 +163,20 @@ struct SmokeFixture {
         }
     }
 
-    private static func writeTextPDF(_ text: String, to url: URL) throws {
+    private static func writeTextPDF(_ lines: [String], to url: URL) throws {
         var mediaBox = CGRect(x: 0, y: 0, width: 612, height: 792)
         guard let context = CGContext(url as CFURL, mediaBox: &mediaBox, nil) else {
             throw CocoaError(.fileWriteUnknown)
         }
         context.beginPDFPage(nil)
-        draw(text, fontSize: 24, at: CGPoint(x: 72, y: 700), in: context)
+        for (index, line) in lines.enumerated() {
+            draw(
+                line,
+                fontSize: 24,
+                at: CGPoint(x: 72, y: 700 - CGFloat(index * 40)),
+                in: context
+            )
+        }
         context.endPDFPage()
         context.closePDF()
     }

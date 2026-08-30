@@ -11,6 +11,7 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
     let ftsCount: Int
     let unsupportedCount: Int
     let selectableTextMatchCount: Int
+    let paymentTextMatchCount: Int
     let ocrTextMatchCount: Int
     let corruptFailureMatchCount: Int
     let dnaSnapshotCount: Int
@@ -24,24 +25,25 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
 
     var matchesCompletedWorkflow: Bool {
         sourceCount == 1
-            && documentCount == 3
-            && readyCount == 2
+            && documentCount == 4
+            && readyCount == 3
             && failedCount == 1
-            && extractionCount == 2
-            && extractedPageCount == 2
-            && ftsCount == 2
+            && extractionCount == 3
+            && extractedPageCount == 3
+            && ftsCount == 3
             && unsupportedCount == 0
             && selectableTextMatchCount == 1
+            && paymentTextMatchCount == 1
             && ocrTextMatchCount == 1
             && corruptFailureMatchCount == 1
-            && dnaSnapshotCount == 2
-            && dnaFindingCount == 2
-            && dnaEvidenceCount == 1
-            && dnaAnalysisStateCount == 2
-            && dnaReadyStateCount == 2
-            && dnaClassificationCount == 2
-            && localRulesSnapshotCount == 2
-            && coherentDNADocumentCount == 2
+            && dnaSnapshotCount == 3
+            && dnaFindingCount == 9
+            && dnaEvidenceCount == 8
+            && dnaAnalysisStateCount == 3
+            && dnaReadyStateCount == 3
+            && dnaClassificationCount == 3
+            && localRulesSnapshotCount == 3
+            && coherentDNADocumentCount == 3
     }
 
     var matchesRemovedWorkflow: Bool {
@@ -62,6 +64,7 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
             + "failed=\(failedCount), extraction=\(extractionCount), "
             + "page=\(extractedPageCount), fts=\(ftsCount), "
             + "unsupported=\(unsupportedCount), selectableText=\(selectableTextMatchCount), "
+            + "paymentText=\(paymentTextMatchCount), "
             + "ocrText=\(ocrTextMatchCount), corruptFailure=\(corruptFailureMatchCount), "
             + "dnaSnapshot=\(dnaSnapshotCount), dnaFinding=\(dnaFindingCount), "
             + "dnaEvidence=\(dnaEvidenceCount), dnaState=\(dnaAnalysisStateCount), "
@@ -116,6 +119,14 @@ final class SQLiteProbe {
                 JOIN documentExtraction AS e ON e.documentID = d.id
                 WHERE d.relativePath = 'selectable.pdf'
                   AND instr(e.joinedText, 'Rechnung') > 0
+                """),
+            paymentTextMatchCount: try scalar("""
+                SELECT COUNT(*)
+                FROM document AS d
+                JOIN documentExtraction AS e ON e.documentID = d.id
+                WHERE d.relativePath = 'payments/payment-confirmation.pdf'
+                  AND instr(e.joinedText, 'Zahlungsbestätigung') > 0
+                  AND instr(e.joinedText, 'INV-2026-001') > 0
                 """),
             ocrTextMatchCount: try scalar("""
                 SELECT COUNT(*)
