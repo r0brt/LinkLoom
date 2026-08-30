@@ -207,6 +207,7 @@ public struct ScanDashboard: View {
         }
         .padding()
         .frame(minWidth: 320, idealWidth: 380)
+        .inspectorColumnWidth(min: 320, ideal: 380, max: 520)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("document-dna.inspector")
     }
