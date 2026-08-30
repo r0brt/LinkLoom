@@ -407,23 +407,48 @@ struct AppDatabaseTests {
                     paymentContentHash: "empty-hash"
                 )
             }
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertDecision(
+                    in: connection,
+                    invoiceContentHash: " \t\n",
+                    paymentContentHash: "whitespace-invoice"
+                )
+            }
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertDecision(
+                    in: connection,
+                    invoiceContentHash: "whitespace-payment",
+                    paymentContentHash: "\r\n\t "
+                )
+            }
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertDecision(
+                    in: connection,
+                    invoiceContentHash: "\u{00A0}",
+                    paymentContentHash: "unicode-whitespace"
+                )
+            }
         }
     }
 
-    @Test func deletingDocumentCascadesInvoicePaymentDecision() throws {
-        let fixture = try DecisionMigrationFixture.make()
-        try fixture.db.write { connection in
-            try fixture.insertDecision(in: connection)
+    @Test func deletingEitherDocumentCascadesInvoicePaymentDecision() throws {
+        for deletedRole in [DecisionDocumentRole.invoice, .payment] {
+            let fixture = try DecisionMigrationFixture.make()
+            try fixture.db.write { connection in
+                try fixture.insertDecision(in: connection)
 
-            try connection.execute(
-                sql: "DELETE FROM document WHERE id = ?",
-                arguments: [fixture.paymentID]
-            )
+                try connection.execute(
+                    sql: "DELETE FROM document WHERE id = ?",
+                    arguments: [
+                        deletedRole == .invoice ? fixture.invoiceID : fixture.paymentID,
+                    ]
+                )
 
-            #expect(try Int.fetchOne(
-                connection,
-                sql: "SELECT COUNT(*) FROM invoicePaymentUserDecision"
-            ) == 0)
+                #expect(try Int.fetchOne(
+                    connection,
+                    sql: "SELECT COUNT(*) FROM invoicePaymentUserDecision"
+                ) == 0)
+            }
         }
     }
 
@@ -507,6 +532,11 @@ struct AppDatabaseTests {
             ) == 0)
         }
     }
+}
+
+private enum DecisionDocumentRole {
+    case invoice
+    case payment
 }
 
 private struct DecisionMigrationFixture {

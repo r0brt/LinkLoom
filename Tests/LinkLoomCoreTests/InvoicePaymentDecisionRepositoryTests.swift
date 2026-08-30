@@ -36,6 +36,15 @@ struct InvoicePaymentDecisionRepositoryTests {
                 paymentContentHash: "\n"
             )
         }
+        #expect(throws: InvoicePaymentDecisionValidationError.invalidKey) {
+            try InvoicePaymentDecisionKey(
+                relationshipType: .paymentSettlesInvoice,
+                invoiceDocumentID: invoiceID,
+                paymentDocumentID: paymentID,
+                invoiceContentHash: "\u{00A0}",
+                paymentContentHash: "hash-payment"
+            )
+        }
     }
 
     @Test func savingConfirmedDecisionTwiceRoundTripsOneRow() async throws {
@@ -118,7 +127,7 @@ struct InvoicePaymentDecisionRepositoryTests {
         }
     }
 
-    @Test func reanalysisAndRecognizedMovesPreserveCurrentDecision() async throws {
+    @Test func stableCatalogIdentitySurvivesReanalysisAndPathChanges() async throws {
         let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
         let key = try fixture.key()
         let record = InvoicePaymentDecisionRecord(
@@ -137,31 +146,54 @@ struct InvoicePaymentDecisionRepositoryTests {
     }
 
     @Test func changedContentRequiresANewExplicitDecision() async throws {
-        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
-        let oldKey = try fixture.key()
-        try await fixture.repository.save(InvoicePaymentDecisionRecord(
-            key: oldKey,
-            decision: .confirmed,
-            updatedAt: fixture.date
-        ))
-        try await fixture.changeContentHash(
-            documentID: fixture.invoice.id,
-            to: "hash-invoice-v2"
-        )
-        let newKey = try fixture.key(invoiceContentHash: "hash-invoice-v2")
+        for changedDocument in [ChangedDecisionDocument.invoice, .payment] {
+            let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+            let oldKey = try fixture.key()
+            try await fixture.repository.save(InvoicePaymentDecisionRecord(
+                key: oldKey,
+                decision: .confirmed,
+                updatedAt: fixture.date
+            ))
+            let newHash = changedDocument == .invoice
+                ? "hash-invoice-v2"
+                : "hash-payment-v2"
+            try await fixture.changeContentHash(
+                documentID: changedDocument == .invoice
+                    ? fixture.invoice.id
+                    : fixture.payment.id,
+                to: newHash
+            )
+            let newKey = try fixture.key(
+                invoiceContentHash: changedDocument == .invoice ? newHash : nil,
+                paymentContentHash: changedDocument == .payment ? newHash : nil
+            )
 
-        #expect(try await fixture.repository.currentDecision(for: oldKey) == nil)
-        #expect(try await fixture.repository.currentDecision(for: newKey) == nil)
+            #expect(try await fixture.repository.currentDecision(for: oldKey) == nil)
+            #expect(try await fixture.repository.currentDecision(for: newKey) == nil)
 
-        let newDecision = InvoicePaymentDecisionRecord(
-            key: newKey,
-            decision: .excluded,
-            updatedAt: fixture.date.addingTimeInterval(60)
-        )
-        try await fixture.repository.save(newDecision)
+            let newDecision = InvoicePaymentDecisionRecord(
+                key: newKey,
+                decision: .excluded,
+                updatedAt: fixture.date.addingTimeInterval(60)
+            )
+            try await fixture.repository.save(newDecision)
 
-        #expect(try await fixture.repository.currentDecision(for: newKey) == newDecision)
-        #expect(try await fixture.rowCount() == 2)
+            #expect(try await fixture.repository.currentDecision(for: newKey) == newDecision)
+            #expect(try await fixture.rowCount() == 2)
+
+            try await fixture.changeContentHash(
+                documentID: changedDocument == .invoice
+                    ? fixture.invoice.id
+                    : fixture.payment.id,
+                to: changedDocument == .invoice
+                    ? fixture.invoice.contentHash
+                    : fixture.payment.contentHash
+            )
+
+            #expect(try await fixture.repository.currentDecision(for: oldKey)?.decision == .confirmed)
+            #expect(try await fixture.repository.currentDecision(for: newKey) == nil)
+            #expect(try await fixture.rowCount() == 2)
+        }
     }
 }
 

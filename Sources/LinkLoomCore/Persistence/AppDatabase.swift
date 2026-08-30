@@ -181,6 +181,16 @@ public enum AppDatabase {
             )
         }
         migrator.registerMigration("v6_invoice_payment_user_decisions") { db in
+            // Unicode White_Space scalars, matching Foundation's
+            // CharacterSet.whitespacesAndNewlines used by the domain key.
+            let hashTrimmingCharactersSQL = """
+                char(9) || char(10) || char(11) || char(12) || char(13) ||
+                char(32) || char(133) || char(160) || char(5760) ||
+                char(8192) || char(8193) || char(8194) || char(8195) ||
+                char(8196) || char(8197) || char(8198) || char(8199) ||
+                char(8200) || char(8201) || char(8202) || char(8232) ||
+                char(8233) || char(8239) || char(8287) || char(12288)
+                """
             try db.create(table: "invoicePaymentUserDecision") { table in
                 table.column("relationshipType", .text).notNull()
                     .check(sql: "relationshipType = 'paymentSettlesInvoice'")
@@ -189,9 +199,19 @@ public enum AppDatabase {
                 table.column("paymentDocumentID", .text).notNull()
                     .references("document", onDelete: .cascade)
                 table.column("invoiceContentHash", .text).notNull()
-                    .check(sql: "length(invoiceContentHash) > 0")
+                    .check(sql: """
+                        length(trim(
+                            invoiceContentHash,
+                            \(hashTrimmingCharactersSQL)
+                        )) > 0
+                        """)
                 table.column("paymentContentHash", .text).notNull()
-                    .check(sql: "length(paymentContentHash) > 0")
+                    .check(sql: """
+                        length(trim(
+                            paymentContentHash,
+                            \(hashTrimmingCharactersSQL)
+                        )) > 0
+                        """)
                 table.column("decision", .text).notNull()
                     .check(sql: "decision IN ('confirmed', 'excluded')")
                 table.column("updatedAt", .datetime).notNull()
