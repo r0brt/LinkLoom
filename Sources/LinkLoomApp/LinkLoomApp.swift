@@ -161,11 +161,15 @@ struct LinkLoomApp: App {
             repository: dnaRepository,
             target: dnaTarget
         )
+        let invoicePaymentDecisions = InvoicePaymentDecisionRepository(
+            dbWriter: database
+        )
         let invoicePaymentCandidates = CurrentInvoicePaymentCandidateLoader(
             lookup: InvoicePaymentCandidateLookup(
                 repository: dnaRepository,
                 target: dnaTarget
-            )
+            ),
+            decisions: invoicePaymentDecisions
         )
         let dnaRetryer = LocalDocumentDNAFailureRetryer(
             repository: dnaRepository,
@@ -344,12 +348,39 @@ struct CurrentDocumentDNASnapshotLoader: DocumentDNASnapshotLoading {
 }
 
 struct CurrentInvoicePaymentCandidateLoader: InvoicePaymentCandidateLoading {
-    let lookup: InvoicePaymentCandidateLookup
+    private let lookupCandidates: @Sendable (UUID) async throws
+        -> [InvoicePaymentCandidate]
+    private let annotateCandidates: @Sendable ([InvoicePaymentCandidate]) async throws
+        -> [InvoicePaymentCandidateWithDecision]
+
+    init(
+        lookup: InvoicePaymentCandidateLookup,
+        decisions: InvoicePaymentDecisionRepository
+    ) {
+        lookupCandidates = { documentID in
+            try await lookup.candidates(involving: documentID)
+        }
+        annotateCandidates = { candidates in
+            try await decisions.candidatesWithCurrentDecisions(candidates)
+        }
+    }
+
+    init(
+        lookupCandidates: @escaping @Sendable (UUID) async throws
+            -> [InvoicePaymentCandidate],
+        annotateCandidates: @escaping @Sendable ([InvoicePaymentCandidate]) async throws
+            -> [InvoicePaymentCandidateWithDecision]
+    ) {
+        self.lookupCandidates = lookupCandidates
+        self.annotateCandidates = annotateCandidates
+    }
 
     func candidates(involving documentID: UUID) async throws
-        -> [InvoicePaymentCandidate]
+        -> [InvoicePaymentCandidateWithDecision]
     {
-        try await lookup.candidates(involving: documentID)
+        let candidates = try await lookupCandidates(documentID)
+        try Task.checkCancellation()
+        return try await annotateCandidates(candidates)
     }
 }
 

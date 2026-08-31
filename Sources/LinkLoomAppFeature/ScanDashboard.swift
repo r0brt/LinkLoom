@@ -363,10 +363,10 @@ public struct ScanDashboard: View {
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("invoice-payment-candidates.header")
-                ForEach(Array(candidates.enumerated()), id: \.offset) { index, candidate in
+                ForEach(Array(candidates.enumerated()), id: \.offset) { index, annotated in
                     invoicePaymentCandidateCard(
                         InvoicePaymentCandidatePresentation(
-                            candidate: candidate,
+                            candidate: annotated.candidate,
                             selectedDocumentID: selectedDocumentID,
                             sourceDisplayNames: Dictionary(
                                 uniqueKeysWithValues: model.sources.map {
