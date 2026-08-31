@@ -10,6 +10,20 @@ changes.
 - If meaningful alternatives exist, state the recommended option first and
   explain why; never present only an unranked list of options.
 
+## Solo-maintainer workflow
+
+- LinkLoom is maintained by a solo developer. Unless the user explicitly says
+  that another reviewer is involved, do not wait for or propose external human
+  review, reviewer approval, or future review comments.
+- After the required checks pass, inspect any comments that already exist and
+  perform the required self-review, then report the pull request as ready. Do
+  not propose or create recurring pull-request monitoring solely to wait for
+  review activity.
+- Evaluate actual bot or reviewer feedback when it exists; do not assume that
+  feedback will arrive later.
+- Solo maintenance does not imply merge or push authorization. Continue to
+  require the explicit authorization described below.
+
 ## Start here
 
 - Use [README.md](README.md) for prerequisites, setup, supported inputs, and operator guidance.
