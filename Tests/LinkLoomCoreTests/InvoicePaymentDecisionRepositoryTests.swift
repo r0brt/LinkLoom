@@ -195,11 +195,177 @@ struct InvoicePaymentDecisionRepositoryTests {
             #expect(try await fixture.rowCount() == 2)
         }
     }
+
+    @Test func batchAnnotationMapsExactCurrentDecisionsInInputOrder() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let excludedPayment = try await fixture.insertPayment(
+            path: "excluded-payment.pdf",
+            contentHash: "hash-excluded-payment"
+        )
+        let undecidedPayment = try await fixture.insertPayment(
+            path: "undecided-payment.pdf",
+            contentHash: "hash-undecided-payment"
+        )
+        let candidates = [
+            try fixture.candidate(),
+            try fixture.candidate(payment: excludedPayment),
+            try fixture.candidate(payment: undecidedPayment),
+        ]
+        try await fixture.repository.save(InvoicePaymentDecisionRecord(
+            key: try fixture.key(),
+            decision: .confirmed,
+            updatedAt: fixture.date
+        ))
+        try await fixture.repository.save(InvoicePaymentDecisionRecord(
+            key: try fixture.key(payment: excludedPayment),
+            decision: .excluded,
+            updatedAt: fixture.date.addingTimeInterval(60)
+        ))
+
+        let annotated = try await fixture.repository.candidatesWithCurrentDecisions(
+            candidates
+        )
+
+        #expect(annotated.map(\.candidate) == candidates)
+        #expect(annotated.map(\.decision) == [
+            .confirmed,
+            .excluded,
+            .undecided,
+        ])
+    }
+
+    @Test func batchAnnotationUsesOneReadOnlyStatement() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let secondPayment = try await fixture.insertPayment(
+            path: "second-payment.pdf",
+            contentHash: "hash-second-payment"
+        )
+        let candidates = [
+            try fixture.candidate(),
+            try fixture.candidate(payment: secondPayment),
+        ]
+        try await fixture.repository.save(InvoicePaymentDecisionRecord(
+            key: try fixture.key(),
+            decision: .confirmed,
+            updatedAt: fixture.date
+        ))
+        let rowCountBefore = try await fixture.rowCount()
+        let counter = DecisionSQLReadCounter()
+        try await fixture.db.write { database in
+            database.trace(options: .statement) { event in
+                counter.record(event)
+            }
+        }
+        counter.reset()
+
+        _ = try await fixture.repository.candidatesWithCurrentDecisions(candidates)
+        let readCount = counter.value
+        try await fixture.db.write { database in
+            database.trace(options: [])
+        }
+
+        #expect(readCount == 1)
+        #expect(try await fixture.rowCount() == rowCountBefore)
+    }
+
+    @Test func batchAnnotationDoesNotApplyDecisionAfterEitherContentChanges() async throws {
+        for changedDocument in [ChangedDecisionDocument.invoice, .payment] {
+            let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+            let candidate = try fixture.candidate()
+            try await fixture.repository.save(InvoicePaymentDecisionRecord(
+                key: try fixture.key(),
+                decision: .confirmed,
+                updatedAt: fixture.date
+            ))
+            let changedDocumentID = changedDocument == .invoice
+                ? fixture.invoice.id
+                : fixture.payment.id
+            try await fixture.changeContentHash(
+                documentID: changedDocumentID,
+                to: "hash-changed"
+            )
+
+            #expect(try await fixture.repository.candidatesWithCurrentDecisions([
+                candidate,
+            ]).map(\.decision) == [.undecided])
+            #expect(try await fixture.rowCount() == 1)
+
+            try await fixture.changeContentHash(
+                documentID: changedDocumentID,
+                to: changedDocument == .invoice
+                    ? fixture.invoice.contentHash
+                    : fixture.payment.contentHash
+            )
+
+            #expect(try await fixture.repository.candidatesWithCurrentDecisions([
+                candidate,
+            ]).map(\.decision) == [.confirmed])
+        }
+    }
+
+    @Test func batchAnnotationSurvivesPathChangesAndDNAReanalysis() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let candidate = try fixture.candidate()
+        try await fixture.repository.save(InvoicePaymentDecisionRecord(
+            key: try fixture.key(),
+            decision: .excluded,
+            updatedAt: fixture.date
+        ))
+
+        try await fixture.moveDocuments()
+        try await fixture.replaceDNASnapshots(analyzerVersion: "2")
+
+        #expect(try await fixture.repository.candidatesWithCurrentDecisions([
+            candidate,
+        ]).map(\.decision) == [.excluded])
+    }
+
+    @Test func emptyBatchAnnotationPerformsNoRead() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let counter = DecisionSQLReadCounter()
+        try await fixture.db.write { database in
+            database.trace(options: .statement) { event in
+                counter.record(event)
+            }
+        }
+        counter.reset()
+
+        let annotated = try await fixture.repository.candidatesWithCurrentDecisions([])
+        let readCount = counter.value
+        try await fixture.db.write { database in
+            database.trace(options: [])
+        }
+
+        #expect(annotated.isEmpty)
+        #expect(readCount == 0)
+    }
 }
 
 private enum ChangedDecisionDocument {
     case invoice
     case payment
+}
+
+private final class DecisionSQLReadCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.withLock { count }
+    }
+
+    func reset() {
+        lock.withLock { count = 0 }
+    }
+
+    func record(_ event: Database.TraceEvent) {
+        guard case let .statement(statement) = event,
+              statement.sql.hasPrefix("SELECT") || statement.sql.hasPrefix("WITH")
+        else {
+            return
+        }
+        lock.withLock { count += 1 }
+    }
 }
 
 private struct InvoicePaymentDecisionRepositoryFixture {
@@ -263,15 +429,131 @@ private struct InvoicePaymentDecisionRepositoryFixture {
     }
 
     func key(
+        invoice: DocumentRecord? = nil,
+        payment: DocumentRecord? = nil,
         invoiceContentHash: String? = nil,
         paymentContentHash: String? = nil
     ) throws -> InvoicePaymentDecisionKey {
-        try InvoicePaymentDecisionKey(
+        let invoice = invoice ?? self.invoice
+        let payment = payment ?? self.payment
+        return try InvoicePaymentDecisionKey(
             relationshipType: .paymentSettlesInvoice,
             invoiceDocumentID: invoice.id,
             paymentDocumentID: payment.id,
             invoiceContentHash: invoiceContentHash ?? invoice.contentHash,
             paymentContentHash: paymentContentHash ?? payment.contentHash
+        )
+    }
+
+    func insertPayment(path: String, contentHash: String) async throws -> DocumentRecord {
+        let document = DocumentRecord(
+            id: UUID(),
+            sourceRootID: source.id,
+            relativePath: path,
+            contentHash: contentHash,
+            byteCount: 64,
+            modifiedAt: date,
+            mediaType: .pdf,
+            status: .ready,
+            availability: .available,
+            pageCount: 1,
+            lastSeenAt: date,
+            lastFingerprintAt: date
+        )
+        try await db.write { connection in
+            try document.insert(connection)
+        }
+        return document
+    }
+
+    func candidate(
+        invoice: DocumentRecord? = nil,
+        payment: DocumentRecord? = nil
+    ) throws -> InvoicePaymentCandidate {
+        let invoice = invoice ?? self.invoice
+        let payment = payment ?? self.payment
+        let invoiceReference = try referenceFinding(
+            qualifier: .invoiceNumber,
+            displayValue: "INV-42"
+        )
+        let paymentReference = try referenceFinding(
+            qualifier: .paymentReference,
+            displayValue: "INV 42"
+        )
+        return InvoicePaymentCandidate(
+            invoice: try currentDocument(
+                invoice,
+                type: .invoice,
+                reference: invoiceReference
+            ),
+            payment: try currentDocument(
+                payment,
+                type: .paymentConfirmation,
+                reference: paymentReference
+            ),
+            disposition: .automatic,
+            resolverVersion: InvoicePaymentCandidateResolver.version,
+            signals: [InvoicePaymentCandidateSignal(
+                kind: .referenceNumber,
+                invoiceFinding: invoiceReference,
+                paymentFinding: paymentReference
+            )]
+        )
+    }
+
+    private func currentDocument(
+        _ document: DocumentRecord,
+        type: DocumentType,
+        reference: DocumentDNAFinding
+    ) throws -> CurrentDocumentDNA {
+        try CurrentDocumentDNA(
+            document: document,
+            snapshot: DocumentDNA(
+                documentID: document.id,
+                schemaVersion: 1,
+                analyzerIdentifier: "local-rules",
+                analyzerVersion: "2",
+                inputContentHash: document.contentHash,
+                inputExtractionVersion: "text-v1",
+                findings: [
+                    try DocumentDNAFinding(
+                        kind: .documentType,
+                        qualifier: nil,
+                        displayValue: type.rawValue,
+                        normalizedValue: type.rawValue,
+                        secondaryNormalizedValue: nil,
+                        confidence: 1,
+                        evidence: [try evidence()]
+                    ),
+                    reference,
+                ],
+                analyzedAt: date
+            )
+        )
+    }
+
+    private func referenceFinding(
+        qualifier: DocumentDNAReferenceNumberKind,
+        displayValue: String
+    ) throws -> DocumentDNAFinding {
+        try DocumentDNAFinding(
+            kind: .referenceNumber,
+            qualifier: qualifier.rawValue,
+            displayValue: displayValue,
+            normalizedValue: "INV42",
+            secondaryNormalizedValue: nil,
+            confidence: 1,
+            evidence: [try evidence()]
+        )
+    }
+
+    private func evidence() throws -> DocumentDNAEvidence {
+        try DocumentDNAEvidence(
+            pageIndex: 0,
+            startUTF16: 0,
+            lengthUTF16: 1,
+            exactText: "x",
+            ocrRegionIndexes: []
         )
     }
 
