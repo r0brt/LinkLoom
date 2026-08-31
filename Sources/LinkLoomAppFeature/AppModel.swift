@@ -30,7 +30,7 @@ public protocol DocumentDNAFailureRetrying: Sendable {
 
 public protocol InvoicePaymentCandidateLoading: Sendable {
     func candidates(involving documentID: UUID) async throws
-        -> [InvoicePaymentCandidate]
+        -> [InvoicePaymentCandidateWithDecision]
 }
 
 public enum DocumentDNADetailState: Sendable, Equatable {
@@ -44,7 +44,10 @@ public enum DocumentDNADetailState: Sendable, Equatable {
 public enum InvoicePaymentCandidateDetailState: Sendable, Equatable {
     case none
     case loading(documentID: UUID)
-    case available(documentID: UUID, candidates: [InvoicePaymentCandidate])
+    case available(
+        documentID: UUID,
+        candidates: [InvoicePaymentCandidateWithDecision]
+    )
     case failed(documentID: UUID)
 }
 

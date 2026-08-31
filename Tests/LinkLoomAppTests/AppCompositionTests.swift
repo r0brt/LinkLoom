@@ -1,10 +1,92 @@
 import Foundation
 import Testing
 @testable import LinkLoomApp
-import LinkLoomCore
+@testable import LinkLoomCore
 
 @Suite("App composition")
 struct AppCompositionTests {
+    @Test func candidateLoaderAnnotatesOneCompleteBatchAndPreservesOrder() async throws {
+        let first = try invoicePaymentCandidate(suffix: 1)
+        let second = try invoicePaymentCandidate(suffix: 2)
+        let third = try invoicePaymentCandidate(suffix: 3)
+        let candidates = [first, second, third]
+        let expected = [
+            InvoicePaymentCandidateWithDecision(candidate: first, decision: .confirmed),
+            InvoicePaymentCandidateWithDecision(candidate: second, decision: .undecided),
+            InvoicePaymentCandidateWithDecision(candidate: third, decision: .excluded),
+        ]
+        let recorder = CandidateLoaderRecorder()
+        let selectedDocumentID = first.invoice.document.id
+        let loader = CurrentInvoicePaymentCandidateLoader(
+            lookupCandidates: { documentID in
+                await recorder.recordLookup(documentID: documentID)
+                return candidates
+            },
+            annotateCandidates: { batch in
+                await recorder.recordAnnotation(batch: batch)
+                return expected
+            }
+        )
+
+        let annotated = try await loader.candidates(involving: selectedDocumentID)
+
+        #expect(annotated == expected)
+        #expect(await recorder.lookupDocumentIDs == [selectedDocumentID])
+        #expect(await recorder.annotationBatches == [candidates])
+    }
+
+    @Test func candidateLoaderHonorsCancellationBetweenLookupAndAnnotation() async {
+        let annotationCalls = CallCounter()
+        let loader = CurrentInvoicePaymentCandidateLoader(
+            lookupCandidates: { _ in
+                withUnsafeCurrentTask { task in task?.cancel() }
+                return []
+            },
+            annotateCandidates: { _ in
+                await annotationCalls.increment()
+                return []
+            }
+        )
+        let loading = Task {
+            try await loader.candidates(involving: UUID())
+        }
+
+        await #expect(throws: CancellationError.self) {
+            try await loading.value
+        }
+        #expect(await annotationCalls.count == 0)
+    }
+
+    @Test func candidateLoaderPropagatesLookupFailureWithoutAnnotation() async {
+        let annotationCalls = CallCounter()
+        let loader = CurrentInvoicePaymentCandidateLoader(
+            lookupCandidates: { _ in throw CompositionTestError.candidateLookupFailed },
+            annotateCandidates: { _ in
+                await annotationCalls.increment()
+                return []
+            }
+        )
+
+        await #expect(throws: CompositionTestError.candidateLookupFailed) {
+            try await loader.candidates(involving: UUID())
+        }
+        #expect(await annotationCalls.count == 0)
+    }
+
+    @Test func candidateLoaderPropagatesBatchAnnotationFailure() async throws {
+        let candidate = try invoicePaymentCandidate(suffix: 1)
+        let loader = CurrentInvoicePaymentCandidateLoader(
+            lookupCandidates: { _ in [candidate] },
+            annotateCandidates: { _ in
+                throw CompositionTestError.decisionAnnotationFailed
+            }
+        )
+
+        await #expect(throws: CompositionTestError.decisionAnnotationFailed) {
+            try await loader.candidates(involving: UUID())
+        }
+    }
+
     @Test func localProcessorRunsTextIngestionBeforeDNAAnalysis() async throws {
         let events = EventRecorder()
         let source = sourceRecord()
@@ -197,6 +279,21 @@ struct AppCompositionTests {
 private enum CompositionTestError: Error {
     case ingestionFailed
     case dnaFailed
+    case candidateLookupFailed
+    case decisionAnnotationFailed
+}
+
+private actor CandidateLoaderRecorder {
+    private(set) var lookupDocumentIDs: [UUID] = []
+    private(set) var annotationBatches: [[InvoicePaymentCandidate]] = []
+
+    func recordLookup(documentID: UUID) {
+        lookupDocumentIDs.append(documentID)
+    }
+
+    func recordAnnotation(batch: [InvoicePaymentCandidate]) {
+        annotationBatches.append(batch)
+    }
 }
 
 private actor EventRecorder {
@@ -226,5 +323,70 @@ private func sourceRecord() -> SourceRootRecord {
         pathHint: "/tmp/archive",
         bookmarkData: Data([0x01]),
         createdAt: Date(timeIntervalSince1970: 1)
+    )
+}
+
+private func invoicePaymentCandidate(suffix: UInt8) throws -> InvoicePaymentCandidate {
+    let sourceID = UUID(uuidString: "00000000-0000-0000-0000-000000000301")!
+    let invoice = candidateDocument(
+        id: UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, suffix)),
+        sourceID: sourceID,
+        path: "invoice-\(suffix).pdf"
+    )
+    let payment = candidateDocument(
+        id: UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 5, suffix)),
+        sourceID: sourceID,
+        path: "payment-\(suffix).pdf"
+    )
+    return InvoicePaymentCandidate(
+        invoice: try CurrentDocumentDNA(
+            document: invoice,
+            snapshot: candidateSnapshot(document: invoice)
+        ),
+        payment: try CurrentDocumentDNA(
+            document: payment,
+            snapshot: candidateSnapshot(document: payment)
+        ),
+        disposition: .automatic,
+        resolverVersion: InvoicePaymentCandidateResolver.version,
+        signals: []
+    )
+}
+
+private func candidateDocument(id: UUID, sourceID: UUID, path: String) -> DocumentRecord {
+    DocumentRecord(
+        id: id,
+        sourceRootID: sourceID,
+        relativePath: path,
+        contentHash: "hash-\(path)",
+        byteCount: 1,
+        modifiedAt: Date(timeIntervalSince1970: 1),
+        mediaType: .pdf,
+        status: .ready,
+        availability: .available,
+        pageCount: 1,
+        lastSeenAt: Date(timeIntervalSince1970: 1),
+        lastFingerprintAt: Date(timeIntervalSince1970: 1)
+    )
+}
+
+private func candidateSnapshot(document: DocumentRecord) throws -> DocumentDNA {
+    try DocumentDNA(
+        documentID: document.id,
+        schemaVersion: 1,
+        analyzerIdentifier: "local-rules",
+        analyzerVersion: "1",
+        inputContentHash: document.contentHash,
+        inputExtractionVersion: "text-v1",
+        findings: [try DocumentDNAFinding(
+            kind: .documentType,
+            qualifier: nil,
+            displayValue: "",
+            normalizedValue: DocumentType.unknown.rawValue,
+            secondaryNormalizedValue: nil,
+            confidence: 0,
+            evidence: []
+        )],
+        analyzedAt: Date(timeIntervalSince1970: 1)
     )
 }

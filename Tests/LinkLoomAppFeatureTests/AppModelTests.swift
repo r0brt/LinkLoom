@@ -295,6 +295,82 @@ struct AppModelTests {
         #expect(diagnostics.values.map(\.reason) == [.unexpected])
     }
 
+    @Test @MainActor func candidateLoadPublishesMixedDecisionsInStableOrder() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let invoice = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        let firstPayment = fixture.document(
+            sourceRootID: source.id,
+            path: "z-confirmed-payment.pdf"
+        )
+        let secondPayment = fixture.document(
+            sourceRootID: source.id,
+            path: "a-undecided-payment.pdf"
+        )
+        let thirdPayment = fixture.document(
+            sourceRootID: source.id,
+            path: "m-excluded-payment.pdf"
+        )
+        try await fixture.documents.save(invoice)
+        let snapshot = try testDocumentDNA(document: invoice)
+        let annotated = [
+            InvoicePaymentCandidateWithDecision(
+                candidate: try testInvoicePaymentCandidate(
+                    invoice: invoice,
+                    payment: firstPayment
+                ),
+                decision: .confirmed
+            ),
+            InvoicePaymentCandidateWithDecision(
+                candidate: try testInvoicePaymentCandidate(
+                    invoice: invoice,
+                    payment: secondPayment
+                ),
+                decision: .undecided
+            ),
+            InvoicePaymentCandidateWithDecision(
+                candidate: try testInvoicePaymentCandidate(
+                    invoice: invoice,
+                    payment: thirdPayment
+                ),
+                decision: .excluded
+            ),
+        ]
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [DocumentDNAAnalysisStatus(documentID: invoice.id, phase: .ready)],
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            invoice.id: [.snapshot(snapshot)],
+        ])
+        let candidateLoader = ScriptedInvoicePaymentCandidateLoader(stepsByDocument: [
+            invoice.id: [.candidates(annotated)],
+        ])
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses,
+            dnaSnapshots: dnaSnapshots,
+            invoicePaymentCandidates: candidateLoader
+        )
+        try await model.reload()
+
+        await model.selectDocument(id: invoice.id)
+
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: invoice.id, candidates: annotated)
+        )
+        #expect(annotated.map(\.candidate.payment.document.relativePath) == [
+            "z-confirmed-payment.pdf",
+            "a-undecided-payment.pdf",
+            "m-excluded-payment.pdf",
+        ])
+        #expect(annotated.map(\.decision) == [.confirmed, .undecided, .excluded])
+    }
+
     @Test @MainActor func staleCandidateResultCannotReplaceNewerDocumentSelection() async throws {
         let fixture = try AppModelFixture()
         let source = try await fixture.addSource(named: "Archive")
@@ -306,13 +382,19 @@ struct AppModelTests {
         try await fixture.documents.save(second)
         let firstSnapshot = try testDocumentDNA(document: first)
         let secondSnapshot = try testDocumentDNA(document: second)
-        let firstCandidate = try testInvoicePaymentCandidate(
-            invoice: first,
-            payment: firstPayment
+        let firstCandidate = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(
+                invoice: first,
+                payment: firstPayment
+            ),
+            decision: .excluded
         )
-        let secondCandidate = try testInvoicePaymentCandidate(
-            invoice: second,
-            payment: secondPayment
+        let secondCandidate = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(
+                invoice: second,
+                payment: secondPayment
+            ),
+            decision: .confirmed
         )
         let statuses = [first, second].map {
             DocumentDNAAnalysisStatus(documentID: $0.id, phase: .ready)
@@ -364,7 +446,13 @@ struct AppModelTests {
         let payment = fixture.document(sourceRootID: source.id, path: "payment.pdf")
         try await fixture.documents.save(invoice)
         let snapshot = try testDocumentDNA(document: invoice)
-        let candidate = try testInvoicePaymentCandidate(invoice: invoice, payment: payment)
+        let candidate = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(
+                invoice: invoice,
+                payment: payment
+            ),
+            decision: .undecided
+        )
         let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
             source.id: [DocumentDNAAnalysisStatus(documentID: invoice.id, phase: .ready)],
         ])
@@ -3189,9 +3277,9 @@ private actor ScriptedDocumentDNASnapshotLoader: DocumentDNASnapshotLoading {
 
 private actor ScriptedInvoicePaymentCandidateLoader: InvoicePaymentCandidateLoading {
     enum Step: Sendable {
-        case candidates([InvoicePaymentCandidate])
+        case candidates([InvoicePaymentCandidateWithDecision])
         case failure
-        case blocked(Result<[InvoicePaymentCandidate], AppModelTestError>)
+        case blocked(Result<[InvoicePaymentCandidateWithDecision], AppModelTestError>)
     }
 
     private var stepsByDocument: [UUID: [Step]]
@@ -3204,7 +3292,7 @@ private actor ScriptedInvoicePaymentCandidateLoader: InvoicePaymentCandidateLoad
     }
 
     func candidates(involving documentID: UUID) async throws
-        -> [InvoicePaymentCandidate]
+        -> [InvoicePaymentCandidateWithDecision]
     {
         var steps = stepsByDocument[documentID] ?? [.candidates([])]
         let step = steps.count > 1 ? steps.removeFirst() : steps[0]
