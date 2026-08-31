@@ -60,3 +60,24 @@ public struct InvoicePaymentDecisionRecord: Sendable, Equatable {
         self.updatedAt = updatedAt
     }
 }
+
+/// The current user-decision state attached to a transient candidate.
+public enum InvoicePaymentCandidateDecisionState: String, Sendable, Equatable {
+    case confirmed
+    case excluded
+    case undecided
+}
+
+/// A transient candidate annotated without persisting the candidate or relationship.
+public struct InvoicePaymentCandidateWithDecision: Sendable, Equatable {
+    public let candidate: InvoicePaymentCandidate
+    public let decision: InvoicePaymentCandidateDecisionState
+
+    public init(
+        candidate: InvoicePaymentCandidate,
+        decision: InvoicePaymentCandidateDecisionState
+    ) {
+        self.candidate = candidate
+        self.decision = decision
+    }
+}
