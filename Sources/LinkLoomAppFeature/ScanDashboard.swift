@@ -388,9 +388,11 @@ public struct ScanDashboard: View {
         index: Int
     ) -> some View {
         let updatingCandidate = model.invoicePaymentDecisionUpdatingCandidate
+        let navigatingCandidate = model.invoicePaymentCounterpartNavigatingCandidate
         let decision = InvoicePaymentDecisionPresentation(
             decision: annotated.decision,
-            actionsDisabled: model.isInvoicePaymentDecisionUpdateInFlight,
+            actionsDisabled: model.isInvoicePaymentDecisionUpdateInFlight
+                || navigatingCandidate != nil,
             isSaving: updatingCandidate == annotated.candidate
         )
         return VStack(alignment: .leading, spacing: 10) {
@@ -436,6 +438,27 @@ public struct ScanDashboard: View {
                             "invoice-payment-candidates.\(index).signal.\(signalIndex).payment"
                     )
                 }
+            }
+            Button("Gegenstück anzeigen") {
+                Task {
+                    await model.showInvoicePaymentCounterpart(
+                        candidate: annotated.candidate
+                    )
+                }
+            }
+            .disabled(
+                navigatingCandidate != nil
+                    || model.isInvoicePaymentDecisionUpdateInFlight
+            )
+            .accessibilityIdentifier(
+                "invoice-payment-candidates.\(index).show-counterpart"
+            )
+            if navigatingCandidate == annotated.candidate {
+                ProgressView("Gegenstück wird geladen …")
+                    .controlSize(.small)
+                    .accessibilityIdentifier(
+                        "invoice-payment-candidates.\(index).counterpart-loading"
+                    )
             }
             HStack(spacing: 8) {
                 Text(decision.title)

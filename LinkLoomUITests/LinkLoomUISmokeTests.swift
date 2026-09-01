@@ -206,8 +206,32 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 element("invoice-payment-candidates.0.reset", in: app),
                 description: "candidate reset action"
             )
+            let showCounterpart = element(
+                "invoice-payment-candidates.0.show-counterpart",
+                in: app
+            )
+            requireFullyVisibleInInspector(
+                showCounterpart,
+                scrollingIn: inspectorScroll,
+                splitter: inspectorSplitter,
+                window: app.windows.firstMatch,
+                description: "show counterpart action"
+            )
+            showCounterpart.click()
+            requireExists(
+                inspector.staticTexts["payments/payment-confirmation.pdf"],
+                description: "payment counterpart inspector title"
+            )
+            requireValue(
+                "Bestätigt",
+                for: element("invoice-payment-candidates.0.decision", in: app)
+            )
+            requireValue(
+                "selectable.pdf",
+                for: element("invoice-payment-candidates.0.counterpart", in: app)
+            )
             let screenshot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
-            screenshot.name = "Invoice payment candidate decision"
+            screenshot.name = "Invoice payment counterpart navigation"
             screenshot.lifetime = .keepAlways
             add(screenshot)
         }
