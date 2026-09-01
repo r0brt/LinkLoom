@@ -848,6 +848,66 @@ struct AppModelTests {
         #expect(model.lastErrorCode == nil)
     }
 
+    @Test @MainActor func decisionUpdateCannotStartDuringCounterpartNavigation() async throws {
+        let fixture = try AppModelFixture()
+        let invoiceSource = try await fixture.addSource(named: "Invoices")
+        let paymentSource = try await fixture.addSource(named: "Payments")
+        let invoice = fixture.document(sourceRootID: invoiceSource.id, path: "invoice.pdf")
+        let payment = fixture.document(sourceRootID: paymentSource.id, path: "payment.pdf")
+        try await fixture.documents.save(invoice)
+        try await fixture.documents.save(payment)
+        let invoiceSnapshot = try testDocumentDNA(document: invoice)
+        let annotated = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(invoice: invoice, payment: payment),
+            decision: .confirmed
+        )
+        let statuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [
+            invoiceSource.id: [.statuses([
+                DocumentDNAAnalysisStatus(documentID: invoice.id, phase: .ready),
+            ])],
+            paymentSource.id: [.blocked(.success([
+                DocumentDNAAnalysisStatus(documentID: payment.id, phase: .ready),
+            ]))],
+        ])
+        let updater = ScriptedInvoicePaymentDecisionUpdater(steps: [.success])
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: statuses,
+            dnaSnapshots: ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                invoice.id: [.snapshot(invoiceSnapshot)],
+            ]),
+            invoicePaymentCandidates: ScriptedInvoicePaymentCandidateLoader(
+                stepsByDocument: [invoice.id: [.candidates([annotated])]]
+            ),
+            invoicePaymentDecisions: updater
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+        let navigation = Task {
+            await model.showInvoicePaymentCounterpart(candidate: annotated.candidate)
+        }
+        await statuses.waitUntilBlockedLoadStarts()
+
+        await model.updateInvoicePaymentDecision(
+            candidate: annotated.candidate,
+            command: .set(.excluded)
+        )
+
+        #expect(await updater.invocations.isEmpty)
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: invoice.id, candidates: [annotated])
+        )
+
+        navigation.cancel()
+        await statuses.releaseBlockedLoad()
+        await navigation.value
+    }
+
     @Test @MainActor func staleABACounterpartNavigationCannotReplaceReselectedDocument() async throws {
         let fixture = try AppModelFixture()
         let invoiceSource = try await fixture.addSource(named: "Invoices")

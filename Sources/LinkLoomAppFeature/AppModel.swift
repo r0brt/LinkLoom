@@ -570,6 +570,7 @@ public final class AppModel: ObservableObject {
         command: InvoicePaymentDecisionCommand
     ) async {
         guard !isInvoicePaymentDecisionUpdateInFlight,
+              invoicePaymentCounterpartNavigatingCandidate == nil,
               let invoicePaymentDecisions,
               case .available(let documentID, let candidates) = invoicePaymentCandidateState,
               selectedDocumentID == documentID,
