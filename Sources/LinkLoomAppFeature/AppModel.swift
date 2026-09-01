@@ -33,6 +33,18 @@ public protocol InvoicePaymentCandidateLoading: Sendable {
         -> [InvoicePaymentCandidateWithDecision]
 }
 
+public enum InvoicePaymentDecisionCommand: Sendable, Equatable {
+    case set(InvoicePaymentUserDecision)
+    case reset
+}
+
+public protocol InvoicePaymentDecisionUpdating: Sendable {
+    func update(
+        candidate: InvoicePaymentCandidate,
+        command: InvoicePaymentDecisionCommand
+    ) async throws
+}
+
 public enum DocumentDNADetailState: Sendable, Equatable {
     case none
     case loading(documentID: UUID)
@@ -63,6 +75,9 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var documentDNADetailState: DocumentDNADetailState = .none
     @Published public private(set) var invoicePaymentCandidateState:
         InvoicePaymentCandidateDetailState = .none
+    @Published public private(set) var invoicePaymentDecisionUpdatingCandidate:
+        InvoicePaymentCandidate?
+    @Published public private(set) var isInvoicePaymentDecisionUpdateInFlight = false
     @Published public private(set) var documentDNARetryingDocumentID: UUID?
     @Published public private(set) var scanState: AppScanState = .idle
     @Published public private(set) var lastErrorCode: String?
@@ -84,6 +99,8 @@ public final class AppModel: ObservableObject {
             "Document DNA konnte nicht erneut analysiert werden. Bitte versuche es erneut."
         case "invoicePaymentCandidateLoadFailure":
             "Verknüpfungskandidaten konnten nicht geladen werden. Bitte versuche es erneut."
+        case "invoicePaymentDecisionUpdateFailure":
+            "Die Entscheidung konnte nicht gespeichert werden. Bitte versuche es erneut."
         case "incrementalRefreshFailure":
             "Die Ansicht konnte nach der Analyse nicht aktualisiert werden. Bitte versuche es erneut."
         case .some:
@@ -101,6 +118,7 @@ public final class AppModel: ObservableObject {
     private let dnaSnapshots: (any DocumentDNASnapshotLoading)?
     private let dnaRetryer: (any DocumentDNAFailureRetrying)?
     private let invoicePaymentCandidates: (any InvoicePaymentCandidateLoading)?
+    private let invoicePaymentDecisions: (any InvoicePaymentDecisionUpdating)?
     private let sourceLoader: @Sendable () async throws -> [SourceRootRecord]
     private let documentLoader: @Sendable (UUID) async throws -> [DocumentRecord]
     private let watchScheduler: (any SourceWatchScheduling)?
@@ -117,6 +135,7 @@ public final class AppModel: ObservableObject {
     private var isProcessingRescanCompletions = false
     private var watchLifecycleGeneration = 0
     private var documentDNADetailGeneration = 0
+    private var invoicePaymentDecisionUpdateGeneration = 0
 
     public init(
         sources: SourceRootRepository,
@@ -128,6 +147,7 @@ public final class AppModel: ObservableObject {
         dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil,
         dnaRetryer: (any DocumentDNAFailureRetrying)? = nil,
         invoicePaymentCandidates: (any InvoicePaymentCandidateLoading)? = nil,
+        invoicePaymentDecisions: (any InvoicePaymentDecisionUpdating)? = nil,
         watchScheduler: (any SourceWatchScheduling)? = nil,
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
@@ -139,6 +159,7 @@ public final class AppModel: ObservableObject {
         self.dnaSnapshots = dnaSnapshots
         self.dnaRetryer = dnaRetryer
         self.invoicePaymentCandidates = invoicePaymentCandidates
+        self.invoicePaymentDecisions = invoicePaymentDecisions
         sourceLoader = { try await sources.all() }
         self.watchScheduler = watchScheduler
         self.reportRuntimeFailure = reportRuntimeFailure
@@ -160,6 +181,7 @@ public final class AppModel: ObservableObject {
         dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil,
         dnaRetryer: (any DocumentDNAFailureRetrying)? = nil,
         invoicePaymentCandidates: (any InvoicePaymentCandidateLoading)? = nil,
+        invoicePaymentDecisions: (any InvoicePaymentDecisionUpdating)? = nil,
         documentLoader: @escaping @Sendable (UUID) async throws -> [DocumentRecord],
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
@@ -171,6 +193,7 @@ public final class AppModel: ObservableObject {
         self.dnaSnapshots = dnaSnapshots
         self.dnaRetryer = dnaRetryer
         self.invoicePaymentCandidates = invoicePaymentCandidates
+        self.invoicePaymentDecisions = invoicePaymentDecisions
         sourceLoader = { try await sources.all() }
         self.documentLoader = documentLoader
         watchScheduler = nil
@@ -188,6 +211,7 @@ public final class AppModel: ObservableObject {
         dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil,
         dnaRetryer: (any DocumentDNAFailureRetrying)? = nil,
         invoicePaymentCandidates: (any InvoicePaymentCandidateLoading)? = nil,
+        invoicePaymentDecisions: (any InvoicePaymentDecisionUpdating)? = nil,
         watchScheduler: any SourceWatchScheduling,
         sourceResolver: @escaping @Sendable (SourceRootRecord) throws -> URL,
         sourceLoader: (@Sendable () async throws -> [SourceRootRecord])? = nil,
@@ -202,6 +226,7 @@ public final class AppModel: ObservableObject {
         self.dnaSnapshots = dnaSnapshots
         self.dnaRetryer = dnaRetryer
         self.invoicePaymentCandidates = invoicePaymentCandidates
+        self.invoicePaymentDecisions = invoicePaymentDecisions
         self.sourceLoader = sourceLoader ?? { try await sources.all() }
         self.documentLoader = documentLoader ?? { sourceID in
             try await documents.all(sourceRootID: sourceID)
@@ -355,6 +380,7 @@ public final class AppModel: ObservableObject {
 
     public func selectDocument(id: UUID?) async {
         documentDNADetailGeneration += 1
+        invalidateInvoicePaymentDecisionUpdate()
         let generation = documentDNADetailGeneration
         invoicePaymentCandidateState = .none
         clearDocumentScopedFailure()
@@ -422,6 +448,82 @@ public final class AppModel: ObservableObject {
             publishRuntimeFailure(
                 code: "documentDNADetailLoadFailure",
                 category: .documentDNADetailLoad,
+                error: error
+            )
+        }
+    }
+
+    public func updateInvoicePaymentDecision(
+        candidate: InvoicePaymentCandidate,
+        command: InvoicePaymentDecisionCommand
+    ) async {
+        guard !isInvoicePaymentDecisionUpdateInFlight,
+              let invoicePaymentDecisions,
+              case .available(let documentID, let candidates) = invoicePaymentCandidateState,
+              selectedDocumentID == documentID,
+              candidates.contains(where: { $0.candidate == candidate })
+        else {
+            return
+        }
+        invoicePaymentDecisionUpdateGeneration &+= 1
+        let updateGeneration = invoicePaymentDecisionUpdateGeneration
+        let selectionGeneration = documentDNADetailGeneration
+        isInvoicePaymentDecisionUpdateInFlight = true
+        invoicePaymentDecisionUpdatingCandidate = candidate
+        defer {
+            isInvoicePaymentDecisionUpdateInFlight = false
+            if updateGeneration == invoicePaymentDecisionUpdateGeneration {
+                invoicePaymentDecisionUpdatingCandidate = nil
+            }
+        }
+        do {
+            try await invoicePaymentDecisions.update(
+                candidate: candidate,
+                command: command
+            )
+            guard case .available(let currentDocumentID, let currentCandidates) =
+                invoicePaymentCandidateState,
+                currentDocumentID == documentID,
+                selectedDocumentID == documentID,
+                selectionGeneration == documentDNADetailGeneration,
+                updateGeneration == invoicePaymentDecisionUpdateGeneration
+            else {
+                return
+            }
+            let decision: InvoicePaymentCandidateDecisionState
+            switch command {
+            case .set(.confirmed):
+                decision = .confirmed
+            case .set(.excluded):
+                decision = .excluded
+            case .reset:
+                decision = .undecided
+            }
+            invoicePaymentCandidateState = .available(
+                documentID: documentID,
+                candidates: currentCandidates.map { annotated in
+                    guard annotated.candidate == candidate else { return annotated }
+                    return InvoicePaymentCandidateWithDecision(
+                        candidate: annotated.candidate,
+                        decision: decision
+                    )
+                }
+            )
+            if lastErrorCode == "invoicePaymentDecisionUpdateFailure" {
+                lastErrorCode = nil
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard selectionGeneration == documentDNADetailGeneration,
+                  updateGeneration == invoicePaymentDecisionUpdateGeneration,
+                  selectedDocumentID == documentID
+            else {
+                return
+            }
+            publishRuntimeFailure(
+                code: "invoicePaymentDecisionUpdateFailure",
+                category: .invoicePaymentDecisionUpdate,
                 error: error
             )
         }
@@ -590,6 +692,7 @@ public final class AppModel: ObservableObject {
 
     private func clearDocumentSelection() {
         documentDNADetailGeneration += 1
+        invalidateInvoicePaymentDecisionUpdate()
         selectedDocumentID = nil
         documentDNADetailState = .none
         invoicePaymentCandidateState = .none
@@ -599,9 +702,15 @@ public final class AppModel: ObservableObject {
     private func clearDocumentScopedFailure() {
         if lastErrorCode == "documentDNADetailLoadFailure"
             || lastErrorCode == "documentDNARetryFailure"
-            || lastErrorCode == "invoicePaymentCandidateLoadFailure" {
+            || lastErrorCode == "invoicePaymentCandidateLoadFailure"
+            || lastErrorCode == "invoicePaymentDecisionUpdateFailure" {
             lastErrorCode = nil
         }
+    }
+
+    private func invalidateInvoicePaymentDecisionUpdate() {
+        invoicePaymentDecisionUpdateGeneration &+= 1
+        invoicePaymentDecisionUpdatingCandidate = nil
     }
 
     private func loadInvoicePaymentCandidates(

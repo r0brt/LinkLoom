@@ -5,6 +5,58 @@ import Testing
 
 @Suite("Document DNA dashboard presentation")
 struct ScanDashboardTests {
+    @Test func invoicePaymentDecisionPresentationDistinguishesAllStatesAndActions() {
+        let cases: [(
+            InvoicePaymentCandidateDecisionState,
+            String,
+            Bool,
+            Bool,
+            Bool
+        )] = [
+            (.undecided, "Unentschieden", true, true, false),
+            (.confirmed, "Bestätigt", false, true, true),
+            (.excluded, "Ausgeschlossen", true, false, true),
+        ]
+
+        for (decision, title, confirms, excludes, resets) in cases {
+            let presentation = InvoicePaymentDecisionPresentation(
+                decision: decision,
+                actionsDisabled: false,
+                isSaving: false
+            )
+            #expect(presentation.title == title)
+            #expect(presentation.canConfirm == confirms)
+            #expect(presentation.canExclude == excludes)
+            #expect(presentation.canReset == resets)
+            #expect(presentation.showsReset == resets)
+            #expect(!presentation.isSaving)
+        }
+    }
+
+    @Test func invoicePaymentDecisionPresentationDisablesActionsDuringAnySave() {
+        let affected = InvoicePaymentDecisionPresentation(
+            decision: .confirmed,
+            actionsDisabled: true,
+            isSaving: true
+        )
+        let other = InvoicePaymentDecisionPresentation(
+            decision: .undecided,
+            actionsDisabled: true,
+            isSaving: false
+        )
+
+        #expect(!affected.canConfirm)
+        #expect(!affected.canExclude)
+        #expect(!affected.canReset)
+        #expect(affected.showsReset)
+        #expect(affected.isSaving)
+        #expect(!other.canConfirm)
+        #expect(!other.canExclude)
+        #expect(!other.canReset)
+        #expect(!other.showsReset)
+        #expect(!other.isSaving)
+    }
+
     @Test func documentDNAStatusLabelsDistinguishEveryCurrentPhase() {
         let cases: [(DocumentDNAAnalysisPhase?, String)] = [
             (nil, "—"), (.pending, "Ausstehend"), (.analyzing, "Läuft"),

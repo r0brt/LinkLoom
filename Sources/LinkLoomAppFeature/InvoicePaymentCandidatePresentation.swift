@@ -1,6 +1,35 @@
 import Foundation
 import LinkLoomCore
 
+struct InvoicePaymentDecisionPresentation: Equatable {
+    let title: String
+    let canConfirm: Bool
+    let canExclude: Bool
+    let showsReset: Bool
+    let canReset: Bool
+    let isSaving: Bool
+
+    init(
+        decision: InvoicePaymentCandidateDecisionState,
+        actionsDisabled: Bool,
+        isSaving: Bool
+    ) {
+        title = switch decision {
+        case .undecided:
+            "Unentschieden"
+        case .confirmed:
+            "Bestätigt"
+        case .excluded:
+            "Ausgeschlossen"
+        }
+        canConfirm = !actionsDisabled && decision != .confirmed
+        canExclude = !actionsDisabled && decision != .excluded
+        showsReset = decision != .undecided
+        canReset = !actionsDisabled && showsReset
+        self.isSaving = isSaving
+    }
+}
+
 struct InvoicePaymentCandidatePresentation: Equatable {
     let counterpartLocation: String
     let dispositionTitle: String
