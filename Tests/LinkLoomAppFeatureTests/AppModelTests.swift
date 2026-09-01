@@ -380,6 +380,597 @@ struct AppModelTests {
         #expect(annotated.map(\.decision) == [.confirmed, .undecided, .excluded])
     }
 
+    @Test @MainActor func counterpartNavigationSelectsDocumentWithinCurrentSource() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let invoice = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        let payment = fixture.document(sourceRootID: source.id, path: "payment.pdf")
+        try await fixture.documents.save(invoice)
+        try await fixture.documents.save(payment)
+        let invoiceSnapshot = try testDocumentDNA(document: invoice)
+        let paymentSnapshot = try testDocumentDNA(document: payment)
+        let annotated = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(invoice: invoice, payment: payment),
+            decision: .confirmed
+        )
+        let targetAnnotation = InvoicePaymentCandidateWithDecision(
+            candidate: annotated.candidate,
+            decision: .undecided
+        )
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: MutableDocumentDNAStatusLoader(statusesBySource: [
+                source.id: [invoice, payment].map {
+                    DocumentDNAAnalysisStatus(documentID: $0.id, phase: .ready)
+                },
+            ]),
+            dnaSnapshots: ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                invoice.id: [.snapshot(invoiceSnapshot)],
+                payment.id: [.snapshot(paymentSnapshot)],
+            ]),
+            invoicePaymentCandidates: ScriptedInvoicePaymentCandidateLoader(
+                stepsByDocument: [
+                    invoice.id: [.candidates([annotated])],
+                    payment.id: [.candidates([targetAnnotation])],
+                ]
+            )
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+
+        await model.showInvoicePaymentCounterpart(candidate: annotated.candidate)
+
+        #expect(model.selectedSourceID == source.id)
+        #expect(model.selectedDocumentID == payment.id)
+        #expect(model.documentDNADetailState == .available(paymentSnapshot))
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: payment.id, candidates: [annotated])
+        )
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func counterpartNavigationAtomicallySelectsDocumentAcrossSources() async throws {
+        let fixture = try AppModelFixture()
+        let invoiceSource = try await fixture.addSource(named: "Invoices")
+        let paymentSource = try await fixture.addSource(named: "Payments")
+        let invoice = fixture.document(sourceRootID: invoiceSource.id, path: "invoice.pdf")
+        let payment = fixture.document(sourceRootID: paymentSource.id, path: "payment.pdf")
+        try await fixture.documents.save(invoice)
+        try await fixture.documents.save(payment)
+        let invoiceSnapshot = try testDocumentDNA(document: invoice)
+        let paymentSnapshot = try testDocumentDNA(document: payment)
+        let annotated = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(invoice: invoice, payment: payment),
+            decision: .excluded
+        )
+        let targetAnnotation = InvoicePaymentCandidateWithDecision(
+            candidate: annotated.candidate,
+            decision: .undecided
+        )
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: MutableDocumentDNAStatusLoader(statusesBySource: [
+                invoiceSource.id: [
+                    DocumentDNAAnalysisStatus(documentID: invoice.id, phase: .ready),
+                ],
+                paymentSource.id: [
+                    DocumentDNAAnalysisStatus(documentID: payment.id, phase: .ready),
+                ],
+            ]),
+            dnaSnapshots: ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                invoice.id: [.snapshot(invoiceSnapshot)],
+                payment.id: [.snapshot(paymentSnapshot)],
+            ]),
+            invoicePaymentCandidates: ScriptedInvoicePaymentCandidateLoader(
+                stepsByDocument: [
+                    invoice.id: [.candidates([annotated])],
+                    payment.id: [.candidates([targetAnnotation])],
+                ]
+            )
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+
+        await model.showInvoicePaymentCounterpart(candidate: annotated.candidate)
+
+        #expect(model.selectedSourceID == paymentSource.id)
+        #expect(model.documents == [payment])
+        #expect(model.selectedDocumentID == payment.id)
+        #expect(model.documentDNADetailState == .available(paymentSnapshot))
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: payment.id, candidates: [annotated])
+        )
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func counterpartNavigationFollowsStableDocumentAfterPathChange() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let invoice = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        let payment = fixture.document(sourceRootID: source.id, path: "payment.pdf")
+        try await fixture.documents.save(invoice)
+        try await fixture.documents.save(payment)
+        let movedPayment = DocumentRecord(
+            id: payment.id,
+            sourceRootID: payment.sourceRootID,
+            relativePath: "moved/payment.pdf",
+            contentHash: payment.contentHash,
+            byteCount: payment.byteCount,
+            modifiedAt: payment.modifiedAt,
+            mediaType: payment.mediaType,
+            status: payment.status,
+            availability: payment.availability,
+            pageCount: payment.pageCount,
+            failureCode: payment.failureCode,
+            lastSeenAt: payment.lastSeenAt,
+            lastFingerprintAt: payment.lastFingerprintAt
+        )
+        let invoiceSnapshot = try testDocumentDNA(document: invoice)
+        let paymentSnapshot = try testDocumentDNA(document: payment)
+        let visible = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(invoice: invoice, payment: payment),
+            decision: .confirmed
+        )
+        let movedCandidate = try testInvoicePaymentCandidate(
+            invoice: invoice,
+            payment: movedPayment
+        )
+        let reloaded = InvoicePaymentCandidateWithDecision(
+            candidate: movedCandidate,
+            decision: .undecided
+        )
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: MutableDocumentDNAStatusLoader(statusesBySource: [
+                source.id: [invoice, payment].map {
+                    DocumentDNAAnalysisStatus(documentID: $0.id, phase: .ready)
+                },
+            ]),
+            dnaSnapshots: ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                invoice.id: [.snapshot(invoiceSnapshot)],
+                payment.id: [.snapshot(paymentSnapshot)],
+            ]),
+            invoicePaymentCandidates: ScriptedInvoicePaymentCandidateLoader(
+                stepsByDocument: [
+                    invoice.id: [.candidates([visible])],
+                    payment.id: [.candidates([reloaded])],
+                ]
+            )
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+        try await fixture.documents.save(movedPayment)
+
+        await model.showInvoicePaymentCounterpart(candidate: visible.candidate)
+
+        let expected = InvoicePaymentCandidateWithDecision(
+            candidate: movedCandidate,
+            decision: .confirmed
+        )
+        #expect(model.documents == [invoice, movedPayment])
+        #expect(model.selectedDocumentID == movedPayment.id)
+        #expect(model.documentDNADetailState == .available(paymentSnapshot))
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: movedPayment.id, candidates: [expected])
+        )
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func counterpartNavigationIgnoresCandidateNoLongerInVisibleSnapshot() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let invoice = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        let stalePayment = fixture.document(sourceRootID: source.id, path: "stale-payment.pdf")
+        let currentPayment = fixture.document(sourceRootID: source.id, path: "current-payment.pdf")
+        try await fixture.documents.save(invoice)
+        let snapshot = try testDocumentDNA(document: invoice)
+        let staleCandidate = try testInvoicePaymentCandidate(
+            invoice: invoice,
+            payment: stalePayment
+        )
+        let current = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(
+                invoice: invoice,
+                payment: currentPayment
+            ),
+            decision: .undecided
+        )
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: MutableDocumentDNAStatusLoader(statusesBySource: [
+                source.id: [DocumentDNAAnalysisStatus(documentID: invoice.id, phase: .ready)],
+            ]),
+            dnaSnapshots: ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                invoice.id: [.snapshot(snapshot)],
+            ]),
+            invoicePaymentCandidates: ScriptedInvoicePaymentCandidateLoader(
+                stepsByDocument: [invoice.id: [.candidates([current])]]
+            )
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+
+        await model.showInvoicePaymentCounterpart(candidate: staleCandidate)
+
+        #expect(model.selectedSourceID == source.id)
+        #expect(model.selectedDocumentID == invoice.id)
+        #expect(model.documentDNADetailState == .available(snapshot))
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: invoice.id, candidates: [current])
+        )
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func counterpartNavigationMissingDocumentLeavesSelectionAndReportsFailure() async throws {
+        let fixture = try AppModelFixture()
+        let invoiceSource = try await fixture.addSource(named: "Invoices")
+        let paymentSource = try await fixture.addSource(named: "Payments")
+        let invoice = fixture.document(sourceRootID: invoiceSource.id, path: "invoice.pdf")
+        let missingPayment = fixture.document(
+            sourceRootID: paymentSource.id,
+            path: "missing-payment.pdf"
+        )
+        try await fixture.documents.save(invoice)
+        let invoiceSnapshot = try testDocumentDNA(document: invoice)
+        let annotated = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(
+                invoice: invoice,
+                payment: missingPayment
+            ),
+            decision: .confirmed
+        )
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: MutableDocumentDNAStatusLoader(statusesBySource: [
+                invoiceSource.id: [
+                    DocumentDNAAnalysisStatus(documentID: invoice.id, phase: .ready),
+                ],
+                paymentSource.id: [
+                    DocumentDNAAnalysisStatus(documentID: missingPayment.id, phase: .ready),
+                ],
+            ]),
+            dnaSnapshots: ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                invoice.id: [.snapshot(invoiceSnapshot)],
+            ]),
+            invoicePaymentCandidates: ScriptedInvoicePaymentCandidateLoader(
+                stepsByDocument: [invoice.id: [.candidates([annotated])]]
+            ),
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+
+        await model.showInvoicePaymentCounterpart(candidate: annotated.candidate)
+
+        #expect(model.selectedSourceID == invoiceSource.id)
+        #expect(model.documents == [invoice])
+        #expect(model.selectedDocumentID == invoice.id)
+        #expect(model.documentDNADetailState == .available(invoiceSnapshot))
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: invoice.id, candidates: [annotated])
+        )
+        #expect(model.lastErrorCode == "invoicePaymentCounterpartNavigationFailure")
+        #expect(diagnostics.values.map(\.category) == [.documentLoad])
+    }
+
+    @Test @MainActor func counterpartNavigationLoadFailureIsAtomic() async throws {
+        let fixture = try AppModelFixture()
+        let invoiceSource = try await fixture.addSource(named: "Invoices")
+        let paymentSource = try await fixture.addSource(named: "Payments")
+        let invoice = fixture.document(sourceRootID: invoiceSource.id, path: "invoice.pdf")
+        let payment = fixture.document(sourceRootID: paymentSource.id, path: "payment.pdf")
+        let invoiceSnapshot = try testDocumentDNA(document: invoice)
+        let annotated = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(invoice: invoice, payment: payment),
+            decision: .excluded
+        )
+        let loader = ToggleFailingDocumentLoader(documentsBySource: [
+            invoiceSource.id: [invoice],
+            paymentSource.id: [payment],
+        ])
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: MutableDocumentDNAStatusLoader(statusesBySource: [
+                invoiceSource.id: [
+                    DocumentDNAAnalysisStatus(documentID: invoice.id, phase: .ready),
+                ],
+                paymentSource.id: [
+                    DocumentDNAAnalysisStatus(documentID: payment.id, phase: .ready),
+                ],
+            ]),
+            dnaSnapshots: ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                invoice.id: [.snapshot(invoiceSnapshot)],
+            ]),
+            invoicePaymentCandidates: ScriptedInvoicePaymentCandidateLoader(
+                stepsByDocument: [invoice.id: [.candidates([annotated])]]
+            ),
+            documentLoader: { try await loader.load(sourceID: $0) },
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+        await loader.fail(sourceID: paymentSource.id)
+
+        await model.showInvoicePaymentCounterpart(candidate: annotated.candidate)
+
+        #expect(model.selectedSourceID == invoiceSource.id)
+        #expect(model.documents == [invoice])
+        #expect(model.selectedDocumentID == invoice.id)
+        #expect(model.documentDNADetailState == .available(invoiceSnapshot))
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: invoice.id, candidates: [annotated])
+        )
+        #expect(model.lastErrorCode == "invoicePaymentCounterpartNavigationFailure")
+        #expect(diagnostics.values.map(\.category) == [.documentLoad])
+    }
+
+    @Test @MainActor func counterpartNavigationRejectsCandidateThatBecomesStaleDuringLoad() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let invoice = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        let payment = fixture.document(sourceRootID: source.id, path: "payment.pdf")
+        try await fixture.documents.save(invoice)
+        try await fixture.documents.save(payment)
+        let invoiceSnapshot = try testDocumentDNA(document: invoice)
+        let paymentSnapshot = try testDocumentDNA(document: payment)
+        let annotated = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(invoice: invoice, payment: payment),
+            decision: .confirmed
+        )
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: MutableDocumentDNAStatusLoader(statusesBySource: [
+                source.id: [invoice, payment].map {
+                    DocumentDNAAnalysisStatus(documentID: $0.id, phase: .ready)
+                },
+            ]),
+            dnaSnapshots: ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                invoice.id: [.snapshot(invoiceSnapshot)],
+                payment.id: [.snapshot(paymentSnapshot)],
+            ]),
+            invoicePaymentCandidates: ScriptedInvoicePaymentCandidateLoader(
+                stepsByDocument: [
+                    invoice.id: [.candidates([annotated])],
+                    payment.id: [.candidates([])],
+                ]
+            )
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+
+        await model.showInvoicePaymentCounterpart(candidate: annotated.candidate)
+
+        #expect(model.selectedDocumentID == invoice.id)
+        #expect(model.documentDNADetailState == .available(invoiceSnapshot))
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: invoice.id, candidates: [annotated])
+        )
+        #expect(model.lastErrorCode == "invoicePaymentCounterpartNavigationFailure")
+    }
+
+    @Test @MainActor func cancelledCounterpartNavigationPreservesSelectionWithoutFailure() async throws {
+        let fixture = try AppModelFixture()
+        let invoiceSource = try await fixture.addSource(named: "Invoices")
+        let paymentSource = try await fixture.addSource(named: "Payments")
+        let invoice = fixture.document(sourceRootID: invoiceSource.id, path: "invoice.pdf")
+        let payment = fixture.document(sourceRootID: paymentSource.id, path: "payment.pdf")
+        try await fixture.documents.save(invoice)
+        try await fixture.documents.save(payment)
+        let invoiceSnapshot = try testDocumentDNA(document: invoice)
+        let paymentSnapshot = try testDocumentDNA(document: payment)
+        let annotated = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(invoice: invoice, payment: payment),
+            decision: .confirmed
+        )
+        let statuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [
+            invoiceSource.id: [.statuses([
+                DocumentDNAAnalysisStatus(documentID: invoice.id, phase: .ready),
+            ])],
+            paymentSource.id: [.blocked(.success([
+                DocumentDNAAnalysisStatus(documentID: payment.id, phase: .ready),
+            ]))],
+        ])
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: statuses,
+            dnaSnapshots: ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                invoice.id: [.snapshot(invoiceSnapshot)],
+                payment.id: [.snapshot(paymentSnapshot)],
+            ]),
+            invoicePaymentCandidates: ScriptedInvoicePaymentCandidateLoader(
+                stepsByDocument: [
+                    invoice.id: [.candidates([annotated])],
+                    payment.id: [.candidates([annotated])],
+                ]
+            )
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+        let navigation = Task {
+            await model.showInvoicePaymentCounterpart(candidate: annotated.candidate)
+        }
+        await statuses.waitUntilBlockedLoadStarts()
+
+        #expect(model.invoicePaymentCounterpartNavigatingCandidate == annotated.candidate)
+        navigation.cancel()
+        await statuses.releaseBlockedLoad()
+        await navigation.value
+
+        #expect(model.selectedSourceID == invoiceSource.id)
+        #expect(model.selectedDocumentID == invoice.id)
+        #expect(model.documentDNADetailState == .available(invoiceSnapshot))
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: invoice.id, candidates: [annotated])
+        )
+        #expect(model.invoicePaymentCounterpartNavigatingCandidate == nil)
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func decisionUpdateCannotStartDuringCounterpartNavigation() async throws {
+        let fixture = try AppModelFixture()
+        let invoiceSource = try await fixture.addSource(named: "Invoices")
+        let paymentSource = try await fixture.addSource(named: "Payments")
+        let invoice = fixture.document(sourceRootID: invoiceSource.id, path: "invoice.pdf")
+        let payment = fixture.document(sourceRootID: paymentSource.id, path: "payment.pdf")
+        try await fixture.documents.save(invoice)
+        try await fixture.documents.save(payment)
+        let invoiceSnapshot = try testDocumentDNA(document: invoice)
+        let annotated = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(invoice: invoice, payment: payment),
+            decision: .confirmed
+        )
+        let statuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [
+            invoiceSource.id: [.statuses([
+                DocumentDNAAnalysisStatus(documentID: invoice.id, phase: .ready),
+            ])],
+            paymentSource.id: [.blocked(.success([
+                DocumentDNAAnalysisStatus(documentID: payment.id, phase: .ready),
+            ]))],
+        ])
+        let updater = ScriptedInvoicePaymentDecisionUpdater(steps: [.success])
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: statuses,
+            dnaSnapshots: ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                invoice.id: [.snapshot(invoiceSnapshot)],
+            ]),
+            invoicePaymentCandidates: ScriptedInvoicePaymentCandidateLoader(
+                stepsByDocument: [invoice.id: [.candidates([annotated])]]
+            ),
+            invoicePaymentDecisions: updater
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+        let navigation = Task {
+            await model.showInvoicePaymentCounterpart(candidate: annotated.candidate)
+        }
+        await statuses.waitUntilBlockedLoadStarts()
+
+        await model.updateInvoicePaymentDecision(
+            candidate: annotated.candidate,
+            command: .set(.excluded)
+        )
+
+        #expect(await updater.invocations.isEmpty)
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: invoice.id, candidates: [annotated])
+        )
+
+        navigation.cancel()
+        await statuses.releaseBlockedLoad()
+        await navigation.value
+    }
+
+    @Test @MainActor func staleABACounterpartNavigationCannotReplaceReselectedDocument() async throws {
+        let fixture = try AppModelFixture()
+        let invoiceSource = try await fixture.addSource(named: "Invoices")
+        let paymentSource = try await fixture.addSource(named: "Payments")
+        let invoice = fixture.document(sourceRootID: invoiceSource.id, path: "invoice.pdf")
+        let payment = fixture.document(sourceRootID: paymentSource.id, path: "payment.pdf")
+        try await fixture.documents.save(invoice)
+        try await fixture.documents.save(payment)
+        let invoiceSnapshot = try testDocumentDNA(document: invoice)
+        let paymentSnapshot = try testDocumentDNA(document: payment)
+        let annotated = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(invoice: invoice, payment: payment),
+            decision: .excluded
+        )
+        let statuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [
+            invoiceSource.id: [.statuses([
+                DocumentDNAAnalysisStatus(documentID: invoice.id, phase: .ready),
+            ])],
+            paymentSource.id: [.blocked(.success([
+                DocumentDNAAnalysisStatus(documentID: payment.id, phase: .ready),
+            ]))],
+        ])
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: statuses,
+            dnaSnapshots: ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                invoice.id: [.snapshot(invoiceSnapshot), .snapshot(invoiceSnapshot)],
+                payment.id: [.snapshot(paymentSnapshot)],
+            ]),
+            invoicePaymentCandidates: ScriptedInvoicePaymentCandidateLoader(
+                stepsByDocument: [
+                    invoice.id: [.candidates([annotated]), .candidates([annotated])],
+                    payment.id: [.candidates([annotated])],
+                ]
+            )
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+        let staleNavigation = Task {
+            await model.showInvoicePaymentCounterpart(candidate: annotated.candidate)
+        }
+        await statuses.waitUntilBlockedLoadStarts()
+
+        await model.selectDocument(id: nil)
+        await model.selectDocument(id: invoice.id)
+        await statuses.releaseBlockedLoad()
+        await staleNavigation.value
+
+        #expect(model.selectedSourceID == invoiceSource.id)
+        #expect(model.selectedDocumentID == invoice.id)
+        #expect(model.documentDNADetailState == .available(invoiceSnapshot))
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: invoice.id, candidates: [annotated])
+        )
+        #expect(model.invoicePaymentCounterpartNavigatingCandidate == nil)
+        #expect(model.lastErrorCode == nil)
+    }
+
     @Test @MainActor func successfulDecisionUpdateCommitsAfterPersistenceInStableOrder() async throws {
         let fixture = try AppModelFixture()
         let source = try await fixture.addSource(named: "Archive")
