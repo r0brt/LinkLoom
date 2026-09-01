@@ -113,30 +113,34 @@ enum DossierStore {
     }
 
     private static func decodeDossier(_ row: Row) throws -> DossierRecord {
-        let kindValue: String = row["kind"]
-        guard let kind = DossierKind(rawValue: kindValue) else {
-            throw DossierStoreError.invalidStoredState
-        }
         do {
+            let kindValue = try row.decode(String.self, forColumn: "kind")
+            guard let kind = DossierKind(rawValue: kindValue) else {
+                throw DossierStoreError.invalidStoredState
+            }
             return try DossierRecord(
-                id: row["id"],
+                id: row.decode(UUID.self, forColumn: "id"),
                 kind: kind,
-                displayName: row["displayName"],
-                anchorDocumentID: row["anchorDocumentID"],
-                createdAt: row["createdAt"],
-                updatedAt: row["updatedAt"]
+                displayName: row.decode(String.self, forColumn: "displayName"),
+                anchorDocumentID: row.decode(UUID.self, forColumn: "anchorDocumentID"),
+                createdAt: row.decode(Date.self, forColumn: "createdAt"),
+                updatedAt: row.decode(Date.self, forColumn: "updatedAt")
             )
         } catch {
             throw DossierStoreError.invalidStoredState
         }
     }
 
-    private static func decodeExclusion(_ row: Row) -> DossierMembershipExclusion {
-        DossierMembershipExclusion(
-            dossierID: row["dossierID"],
-            documentID: row["documentID"],
-            revisionID: row["revisionID"],
-            excludedAt: row["excludedAt"]
-        )
+    private static func decodeExclusion(_ row: Row) throws -> DossierMembershipExclusion {
+        do {
+            return DossierMembershipExclusion(
+                dossierID: try row.decode(UUID.self, forColumn: "dossierID"),
+                documentID: try row.decode(UUID.self, forColumn: "documentID"),
+                revisionID: try row.decode(UUID.self, forColumn: "revisionID"),
+                excludedAt: try row.decode(Date.self, forColumn: "excludedAt")
+            )
+        } catch {
+            throw DossierStoreError.invalidStoredState
+        }
     }
 }

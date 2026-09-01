@@ -120,6 +120,83 @@ struct DossierStoreTests {
             }
         }
     }
+
+    @Test func malformedDossierUUIDIsRejected() throws {
+        let fixture = try DossierStoreFixture.make()
+        try fixture.db.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO dossier (
+                        id, kind, displayName, anchorDocumentID, createdAt, updatedAt
+                    ) VALUES ('not-a-uuid', 'costsAndPayments', 'Malformed', ?, ?, ?)
+                    """,
+                arguments: [fixture.anchorID, fixture.date, fixture.date]
+            )
+
+            #expect(throws: DossierStoreError.invalidStoredState) {
+                try DossierStore.all(in: db)
+            }
+        }
+    }
+
+    @Test func malformedDossierDateIsRejected() throws {
+        let fixture = try DossierStoreFixture.make()
+        try fixture.db.write { db in
+            try db.execute(sql: "PRAGMA ignore_check_constraints = TRUE")
+            try db.execute(
+                sql: """
+                    INSERT INTO dossier (
+                        id, kind, displayName, anchorDocumentID, createdAt, updatedAt
+                    ) VALUES (?, 'costsAndPayments', 'Malformed', ?, 'not-a-date', ?)
+                    """,
+                arguments: [fixture.firstDossierID, fixture.anchorID, fixture.date]
+            )
+
+            #expect(throws: DossierStoreError.invalidStoredState) {
+                try DossierStore.record(in: db, id: fixture.firstDossierID)
+            }
+        }
+    }
+
+    @Test func malformedExclusionUUIDIsRejected() throws {
+        let fixture = try DossierStoreFixture.make()
+        let dossier = try fixture.dossier(id: fixture.firstDossierID)
+        try fixture.db.write { db in
+            _ = try DossierStore.insertOrFetchAnchored(in: db, proposed: dossier)
+            try db.execute(
+                sql: """
+                    INSERT INTO dossierMembershipExclusion (
+                        dossierID, documentID, revisionID, excludedAt
+                    ) VALUES (?, ?, 'not-a-uuid', ?)
+                    """,
+                arguments: [dossier.id, fixture.paymentID, fixture.date]
+            )
+
+            #expect(throws: DossierStoreError.invalidStoredState) {
+                try DossierStore.exclusions(in: db, dossierID: dossier.id)
+            }
+        }
+    }
+
+    @Test func malformedExclusionDateIsRejected() throws {
+        let fixture = try DossierStoreFixture.make()
+        let dossier = try fixture.dossier(id: fixture.firstDossierID)
+        try fixture.db.write { db in
+            _ = try DossierStore.insertOrFetchAnchored(in: db, proposed: dossier)
+            try db.execute(
+                sql: """
+                    INSERT INTO dossierMembershipExclusion (
+                        dossierID, documentID, revisionID, excludedAt
+                    ) VALUES (?, ?, ?, 'not-a-date')
+                    """,
+                arguments: [dossier.id, fixture.paymentID, fixture.firstRevisionID]
+            )
+
+            #expect(throws: DossierStoreError.invalidStoredState) {
+                try DossierStore.exclusions(in: db, dossierID: dossier.id)
+            }
+        }
+    }
 }
 
 private struct DossierStoreFixture {
