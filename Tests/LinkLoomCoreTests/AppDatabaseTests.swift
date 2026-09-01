@@ -532,11 +532,339 @@ struct AppDatabaseTests {
             ) == 0)
         }
     }
+
+    @Test func dossierMigrationCreatesConstrainedSchema() throws {
+        let db = try TestDatabase.make()
+
+        try db.read { connection in
+            let dossierExists = try connection.tableExists("dossier")
+            let exclusionsExist = try connection.tableExists("dossierMembershipExclusion")
+            #expect(dossierExists)
+            #expect(exclusionsExist)
+            guard dossierExists && exclusionsExist else { return }
+
+            #expect(try connection.columns(in: "dossier").map(\.name) == [
+                "id",
+                "kind",
+                "displayName",
+                "anchorDocumentID",
+                "createdAt",
+                "updatedAt",
+            ])
+            #expect(try connection.columns(in: "dossierMembershipExclusion").map(\.name) == [
+                "dossierID",
+                "documentID",
+                "revisionID",
+                "excludedAt",
+            ])
+
+            let dossierIndexes = try connection.indexes(on: "dossier")
+            #expect(dossierIndexes.contains {
+                $0.isUnique && $0.columns == ["kind", "anchorDocumentID"]
+            })
+
+            let exclusionIndexes = try connection.indexes(on: "dossierMembershipExclusion")
+            let exclusionPrimaryKey = exclusionIndexes.first {
+                $0.origin == .primaryKeyConstraint
+            }
+            #expect(exclusionPrimaryKey?.columns == ["dossierID", "documentID"])
+            #expect(exclusionIndexes.contains {
+                $0.isUnique && $0.columns == ["revisionID"]
+            })
+        }
+    }
+
+    @Test func dossierMigrationPreservesV6DataWithoutBackfill() throws {
+        let db = try DatabaseQueue()
+        let migrator = AppDatabase.makeMigrator()
+        try migrator.migrate(db, upTo: "v6_invoice_payment_user_decisions")
+        let sourceID = UUID()
+        let invoiceID = UUID()
+        let paymentID = UUID()
+        let storedAt = Date(timeIntervalSince1970: 5_678)
+        try db.write { connection in
+            try insertDossierSource(
+                in: connection,
+                sourceID: sourceID,
+                documentIDs: [invoiceID, paymentID],
+                storedAt: storedAt
+            )
+            try connection.execute(
+                sql: """
+                    INSERT INTO invoicePaymentUserDecision
+                        (relationshipType, invoiceDocumentID, paymentDocumentID,
+                         invoiceContentHash, paymentContentHash, decision, updatedAt)
+                    VALUES ('paymentSettlesInvoice', ?, ?, 'existing-invoice-hash',
+                            'existing-payment-hash', 'confirmed', ?)
+                    """,
+                arguments: [invoiceID, paymentID, storedAt]
+            )
+        }
+
+        try AppDatabase.migrate(db)
+
+        try db.read { connection in
+            let decision = try Row.fetchOne(
+                connection,
+                sql: """
+                    SELECT relationshipType, invoiceDocumentID, paymentDocumentID,
+                           invoiceContentHash, paymentContentHash, decision, updatedAt
+                    FROM invoicePaymentUserDecision
+                    """
+            )
+            let storedDecision = try #require(decision)
+            #expect(storedDecision["relationshipType"] as String == "paymentSettlesInvoice")
+            #expect(storedDecision["invoiceDocumentID"] as UUID == invoiceID)
+            #expect(storedDecision["paymentDocumentID"] as UUID == paymentID)
+            #expect(storedDecision["invoiceContentHash"] as String == "existing-invoice-hash")
+            #expect(storedDecision["paymentContentHash"] as String == "existing-payment-hash")
+            #expect(storedDecision["decision"] as String == "confirmed")
+            #expect(storedDecision["updatedAt"] as Date == storedAt)
+            #expect(try Int.fetchOne(connection, sql: "SELECT COUNT(*) FROM dossier") == 0)
+            #expect(try Int.fetchOne(
+                connection,
+                sql: "SELECT COUNT(*) FROM dossierMembershipExclusion"
+            ) == 0)
+        }
+    }
+
+    @Test func dossierMigrationRejectsDuplicateAnchorAndInvalidKind() throws {
+        let fixture = try DossierMigrationFixture.make()
+
+        try fixture.db.write { connection in
+            try fixture.insertDossier(in: connection)
+
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertDossier(
+                    in: connection,
+                    id: UUID(),
+                    displayName: "Duplicate anchor"
+                )
+            }
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertDossier(
+                    in: connection,
+                    id: UUID(),
+                    kind: "other"
+                )
+            }
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertDossier(
+                    in: connection,
+                    id: UUID(),
+                    displayName: " ",
+                    anchorDocumentID: fixture.excludedID
+                )
+            }
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertDossier(
+                    in: connection,
+                    id: UUID(),
+                    anchorDocumentID: fixture.excludedID,
+                    createdAt: fixture.storedAt.addingTimeInterval(1),
+                    updatedAt: fixture.storedAt
+                )
+            }
+        }
+    }
+
+    @Test func deletingAnchorDocumentCascadesDossierAndExclusions() throws {
+        let fixture = try DossierMigrationFixture.make()
+        let dossierID = UUID()
+        try fixture.db.write { connection in
+            try fixture.insertDossier(in: connection, id: dossierID)
+            try fixture.insertExclusion(in: connection, dossierID: dossierID)
+
+            try connection.execute(
+                sql: "DELETE FROM document WHERE id = ?",
+                arguments: [fixture.anchorID]
+            )
+
+            #expect(try Int.fetchOne(connection, sql: "SELECT COUNT(*) FROM dossier") == 0)
+            #expect(try Int.fetchOne(
+                connection,
+                sql: "SELECT COUNT(*) FROM dossierMembershipExclusion"
+            ) == 0)
+        }
+    }
+
+    @Test func deletingExcludedDocumentCascadesOnlyItsExclusion() throws {
+        let fixture = try DossierMigrationFixture.make()
+        let dossierID = UUID()
+        let remainingDocumentID = UUID()
+        try fixture.db.write { connection in
+            try fixture.insertDocument(
+                in: connection,
+                id: remainingDocumentID,
+                relativePath: "remaining.pdf"
+            )
+            try fixture.insertDossier(in: connection, id: dossierID)
+            try fixture.insertExclusion(in: connection, dossierID: dossierID)
+            try fixture.insertExclusion(
+                in: connection,
+                dossierID: dossierID,
+                documentID: remainingDocumentID,
+                revisionID: UUID()
+            )
+
+            try connection.execute(
+                sql: "DELETE FROM document WHERE id = ?",
+                arguments: [fixture.excludedID]
+            )
+
+            #expect(try Int.fetchOne(connection, sql: "SELECT COUNT(*) FROM dossier") == 1)
+            #expect(try Int.fetchOne(
+                connection,
+                sql: "SELECT COUNT(*) FROM dossierMembershipExclusion"
+            ) == 1)
+            #expect(try UUID.fetchOne(
+                connection,
+                sql: "SELECT documentID FROM dossierMembershipExclusion WHERE dossierID = ?",
+                arguments: [dossierID]
+            ) == remainingDocumentID)
+        }
+    }
+}
+
+private func insertDossierSource(
+    in connection: Database,
+    sourceID: UUID,
+    documentIDs: [UUID],
+    storedAt: Date
+) throws {
+    try connection.execute(
+        sql: """
+            INSERT INTO sourceRoot
+                (id, displayName, pathHint, bookmarkData, createdAt, lastScanAt)
+            VALUES (?, 'Dossier Source', '/Dossier', ?, ?, NULL)
+            """,
+        arguments: [sourceID, Data([0x06]), storedAt]
+    )
+    for (index, documentID) in documentIDs.enumerated() {
+        try connection.execute(
+            sql: """
+                INSERT INTO document
+                    (id, sourceRootID, relativePath, contentHash, byteCount,
+                     modifiedAt, mediaType, status, availability, pageCount,
+                     failureCode, lastSeenAt, lastFingerprintAt)
+                VALUES (?, ?, ?, ?, 64, ?, 'pdf', 'ready', 'available', 1,
+                        NULL, ?, ?)
+                """,
+            arguments: [
+                documentID,
+                sourceID,
+                "dossier-\(index).pdf",
+                "dossier-hash-\(index)",
+                storedAt,
+                storedAt,
+                storedAt,
+            ]
+        )
+    }
 }
 
 private enum DecisionDocumentRole {
     case invoice
     case payment
+}
+
+private struct DossierMigrationFixture {
+    let db: DatabaseQueue
+    let sourceID: UUID
+    let anchorID: UUID
+    let excludedID: UUID
+    let storedAt: Date
+
+    static func make() throws -> Self {
+        let db = try TestDatabase.make()
+        let sourceID = UUID()
+        let anchorID = UUID()
+        let excludedID = UUID()
+        let storedAt = Date(timeIntervalSince1970: 6_789)
+        try db.write { connection in
+            try insertDossierSource(
+                in: connection,
+                sourceID: sourceID,
+                documentIDs: [anchorID, excludedID],
+                storedAt: storedAt
+            )
+        }
+        return Self(
+            db: db,
+            sourceID: sourceID,
+            anchorID: anchorID,
+            excludedID: excludedID,
+            storedAt: storedAt
+        )
+    }
+
+    func insertDocument(
+        in connection: Database,
+        id: UUID,
+        relativePath: String
+    ) throws {
+        try connection.execute(
+            sql: """
+                INSERT INTO document
+                    (id, sourceRootID, relativePath, contentHash, byteCount,
+                     modifiedAt, mediaType, status, availability, pageCount,
+                     failureCode, lastSeenAt, lastFingerprintAt)
+                VALUES (?, ?, ?, ?, 64, ?, 'pdf', 'ready', 'available', 1,
+                        NULL, ?, ?)
+                """,
+            arguments: [
+                id,
+                sourceID,
+                relativePath,
+                "hash-\(relativePath)",
+                storedAt,
+                storedAt,
+                storedAt,
+            ]
+        )
+    }
+
+    func insertDossier(
+        in connection: Database,
+        id: UUID = UUID(),
+        kind: String = "costsAndPayments",
+        displayName: String = "Costs and payments",
+        anchorDocumentID: UUID? = nil,
+        createdAt: Date? = nil,
+        updatedAt: Date? = nil
+    ) throws {
+        try connection.execute(
+            sql: """
+                INSERT INTO dossier
+                    (id, kind, displayName, anchorDocumentID, createdAt, updatedAt)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [
+                id,
+                kind,
+                displayName,
+                anchorDocumentID ?? anchorID,
+                createdAt ?? storedAt,
+                updatedAt ?? storedAt,
+            ]
+        )
+    }
+
+    func insertExclusion(
+        in connection: Database,
+        dossierID: UUID,
+        documentID: UUID? = nil,
+        revisionID: UUID = UUID()
+    ) throws {
+        try connection.execute(
+            sql: """
+                INSERT INTO dossierMembershipExclusion
+                    (dossierID, documentID, revisionID, excludedAt)
+                VALUES (?, ?, ?, ?)
+                """,
+            arguments: [dossierID, documentID ?? excludedID, revisionID, storedAt]
+        )
+    }
 }
 
 private struct DecisionMigrationFixture {
