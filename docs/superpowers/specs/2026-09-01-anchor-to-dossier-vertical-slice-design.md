@@ -1,6 +1,6 @@
 # Anchor-to-Dossier Vertical Slice Design
 
-**Status:** Approved in design review; awaiting written-spec review
+**Status:** Approved
 
 **Date:** 2026-09-01
 
