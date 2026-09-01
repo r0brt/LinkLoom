@@ -190,8 +190,24 @@ final class LinkLoomUISmokeTests: XCTestCase {
                     description: description
                 )
             }
+            let decision = element("invoice-payment-candidates.0.decision", in: app)
+            requireValue("Unentschieden", for: decision)
+            let confirm = element("invoice-payment-candidates.0.confirm", in: app)
+            requireFullyVisibleInInspector(
+                confirm,
+                scrollingIn: inspectorScroll,
+                splitter: inspectorSplitter,
+                window: app.windows.firstMatch,
+                description: "candidate confirm action"
+            )
+            confirm.click()
+            requireValue("Bestätigt", for: decision)
+            requireExists(
+                element("invoice-payment-candidates.0.reset", in: app),
+                description: "candidate reset action"
+            )
             let screenshot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
-            screenshot.name = "PR33 candidate inspector evidence"
+            screenshot.name = "Invoice payment candidate decision"
             screenshot.lifetime = .keepAlways
             add(screenshot)
         }
@@ -261,6 +277,10 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireLabel(
                 "Seite 1: Rechnung",
                 for: element("document-dna.document-type.evidence.0", in: relaunchedApp)
+            )
+            requireValue(
+                "Bestätigt",
+                for: element("invoice-payment-candidates.0.decision", in: relaunchedApp)
             )
         }
 

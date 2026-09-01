@@ -357,7 +357,7 @@ public struct ScanDashboard: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Verknüpfungskandidaten")
                         .font(.headline)
-                    Text("Lokal berechnet · noch nicht gespeichert")
+                    Text("Kandidaten lokal berechnet · nur Entscheidungen werden gespeichert")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -365,7 +365,8 @@ public struct ScanDashboard: View {
                 .accessibilityIdentifier("invoice-payment-candidates.header")
                 ForEach(Array(candidates.enumerated()), id: \.offset) { index, annotated in
                     invoicePaymentCandidateCard(
-                        InvoicePaymentCandidatePresentation(
+                        annotated: annotated,
+                        candidate: InvoicePaymentCandidatePresentation(
                             candidate: annotated.candidate,
                             selectedDocumentID: selectedDocumentID,
                             sourceDisplayNames: Dictionary(
@@ -382,10 +383,17 @@ public struct ScanDashboard: View {
     }
 
     private func invoicePaymentCandidateCard(
-        _ candidate: InvoicePaymentCandidatePresentation,
+        annotated: InvoicePaymentCandidateWithDecision,
+        candidate: InvoicePaymentCandidatePresentation,
         index: Int
     ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        let updatingCandidate = model.invoicePaymentDecisionUpdatingCandidate
+        let decision = InvoicePaymentDecisionPresentation(
+            decision: annotated.decision,
+            actionsDisabled: model.isInvoicePaymentDecisionUpdateInFlight,
+            isSaving: updatingCandidate == annotated.candidate
+        )
+        return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .firstTextBaseline) {
                 Text(candidate.counterpartLocation)
                     .font(.body.weight(.semibold))
@@ -428,6 +436,60 @@ public struct ScanDashboard: View {
                             "invoice-payment-candidates.\(index).signal.\(signalIndex).payment"
                     )
                 }
+            }
+            HStack(spacing: 8) {
+                Text(decision.title)
+                    .font(.caption.weight(.semibold))
+                    .accessibilityIdentifier(
+                        "invoice-payment-candidates.\(index).decision"
+                    )
+                if decision.isSaving {
+                    ProgressView("Wird gespeichert …")
+                        .controlSize(.small)
+                        .accessibilityIdentifier(
+                            "invoice-payment-candidates.\(index).saving"
+                        )
+                }
+            }
+            HStack(spacing: 8) {
+                Button("Bestätigen") {
+                    Task {
+                        await model.updateInvoicePaymentDecision(
+                            candidate: annotated.candidate,
+                            command: .set(.confirmed)
+                        )
+                    }
+                }
+                .disabled(!decision.canConfirm)
+                .accessibilityIdentifier(
+                    "invoice-payment-candidates.\(index).confirm"
+                )
+                Button("Ausschließen") {
+                    Task {
+                        await model.updateInvoicePaymentDecision(
+                            candidate: annotated.candidate,
+                            command: .set(.excluded)
+                        )
+                    }
+                }
+                .disabled(!decision.canExclude)
+                .accessibilityIdentifier(
+                    "invoice-payment-candidates.\(index).exclude"
+                )
+            }
+            if decision.showsReset {
+                Button("Entscheidung zurücksetzen") {
+                    Task {
+                        await model.updateInvoicePaymentDecision(
+                            candidate: annotated.candidate,
+                            command: .reset
+                        )
+                    }
+                }
+                .disabled(!decision.canReset)
+                .accessibilityIdentifier(
+                    "invoice-payment-candidates.\(index).reset"
+                )
             }
         }
         .padding(12)

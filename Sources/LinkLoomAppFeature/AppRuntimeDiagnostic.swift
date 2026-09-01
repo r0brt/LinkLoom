@@ -11,6 +11,7 @@ public enum AppRuntimeFailureCategory: String, Sendable, Equatable {
     case documentDNADetailLoad
     case documentDNARetry
     case invoicePaymentCandidateLoad
+    case invoicePaymentDecisionUpdate
     case watcherStart
     case incrementalRefresh
 }
@@ -36,6 +37,9 @@ public struct AppRuntimeDiagnostic: Sendable, Equatable {
     private static func reason(for error: any Error) -> AppRuntimeFailureReason {
         if error is CancellationError {
             return .cancelled
+        }
+        if (error as? InvoicePaymentDecisionRepositoryError) == .staleInput {
+            return .staleDocument
         }
         if let dnaError = error as? DocumentDNAAnalysisRunError {
             switch dnaError.reason {

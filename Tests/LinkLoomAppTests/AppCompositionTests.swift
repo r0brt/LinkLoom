@@ -5,6 +5,106 @@ import Testing
 
 @Suite("App composition")
 struct AppCompositionTests {
+    @Test func decisionUpdaterSavesExactCandidateKeyDecisionAndTimestamp() async throws {
+        let recorder = DecisionUpdaterRecorder()
+        let timestamp = Date(timeIntervalSince1970: 123)
+        let updater = CurrentInvoicePaymentDecisionUpdater(
+            saveDecision: { record in await recorder.recordSave(record) },
+            deleteDecision: { key in await recorder.recordDelete(key) },
+            now: { timestamp }
+        )
+
+        try await updater.update(
+            candidate: invoicePaymentCandidate(suffix: 7),
+            command: .set(.excluded)
+        )
+
+        let expectedKey = try InvoicePaymentDecisionKey(
+            relationshipType: .paymentSettlesInvoice,
+            invoiceDocumentID: UUID(
+                uuidString: "00000000-0000-0000-0000-000000000407"
+            )!,
+            paymentDocumentID: UUID(
+                uuidString: "00000000-0000-0000-0000-000000000507"
+            )!,
+            invoiceContentHash: "hash-invoice-7.pdf",
+            paymentContentHash: "hash-payment-7.pdf"
+        )
+        #expect(await recorder.savedRecords == [
+            InvoicePaymentDecisionRecord(
+                key: expectedKey,
+                decision: .excluded,
+                updatedAt: timestamp
+            ),
+        ])
+        #expect(await recorder.deletedKeys.isEmpty)
+    }
+
+    @Test func decisionUpdaterResetDeletesExactCandidateKeyWithoutSaving() async throws {
+        let recorder = DecisionUpdaterRecorder()
+        let updater = CurrentInvoicePaymentDecisionUpdater(
+            saveDecision: { record in await recorder.recordSave(record) },
+            deleteDecision: { key in await recorder.recordDelete(key) },
+            now: { Date(timeIntervalSince1970: 123) }
+        )
+
+        try await updater.update(
+            candidate: invoicePaymentCandidate(suffix: 8),
+            command: .reset
+        )
+
+        let expectedKey = try InvoicePaymentDecisionKey(
+            relationshipType: .paymentSettlesInvoice,
+            invoiceDocumentID: UUID(
+                uuidString: "00000000-0000-0000-0000-000000000408"
+            )!,
+            paymentDocumentID: UUID(
+                uuidString: "00000000-0000-0000-0000-000000000508"
+            )!,
+            invoiceContentHash: "hash-invoice-8.pdf",
+            paymentContentHash: "hash-payment-8.pdf"
+        )
+        #expect(await recorder.savedRecords.isEmpty)
+        #expect(await recorder.deletedKeys == [expectedKey])
+    }
+
+    @Test func decisionUpdaterHonorsCancellationBeforeRepositoryMutation() async {
+        let recorder = DecisionUpdaterRecorder()
+        let updater = CurrentInvoicePaymentDecisionUpdater(
+            saveDecision: { record in await recorder.recordSave(record) },
+            deleteDecision: { key in await recorder.recordDelete(key) },
+            now: { Date(timeIntervalSince1970: 123) }
+        )
+        let updating = Task {
+            withUnsafeCurrentTask { task in task?.cancel() }
+            try await updater.update(
+                candidate: invoicePaymentCandidate(suffix: 9),
+                command: .set(.confirmed)
+            )
+        }
+
+        await #expect(throws: CancellationError.self) {
+            try await updating.value
+        }
+        #expect(await recorder.savedRecords.isEmpty)
+        #expect(await recorder.deletedKeys.isEmpty)
+    }
+
+    @Test func decisionUpdaterPropagatesRepositoryFailureUnchanged() async throws {
+        let updater = CurrentInvoicePaymentDecisionUpdater(
+            saveDecision: { _ in throw CompositionTestError.decisionUpdateFailed },
+            deleteDecision: { _ in },
+            now: { Date(timeIntervalSince1970: 123) }
+        )
+
+        await #expect(throws: CompositionTestError.decisionUpdateFailed) {
+            try await updater.update(
+                candidate: invoicePaymentCandidate(suffix: 10),
+                command: .set(.confirmed)
+            )
+        }
+    }
+
     @Test func candidateLoaderAnnotatesOneCompleteBatchAndPreservesOrder() async throws {
         let first = try invoicePaymentCandidate(suffix: 1)
         let second = try invoicePaymentCandidate(suffix: 2)
@@ -281,6 +381,20 @@ private enum CompositionTestError: Error {
     case dnaFailed
     case candidateLookupFailed
     case decisionAnnotationFailed
+    case decisionUpdateFailed
+}
+
+private actor DecisionUpdaterRecorder {
+    private(set) var savedRecords: [InvoicePaymentDecisionRecord] = []
+    private(set) var deletedKeys: [InvoicePaymentDecisionKey] = []
+
+    func recordSave(_ record: InvoicePaymentDecisionRecord) {
+        savedRecords.append(record)
+    }
+
+    func recordDelete(_ key: InvoicePaymentDecisionKey) {
+        deletedKeys.append(key)
+    }
 }
 
 private actor CandidateLoaderRecorder {

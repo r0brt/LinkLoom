@@ -22,6 +22,8 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
     let dnaClassificationCount: Int
     let localRulesSnapshotCount: Int
     let coherentDNADocumentCount: Int
+    let invoicePaymentDecisionCount: Int
+    let confirmedInvoicePaymentDecisionMatchCount: Int
 
     var matchesCompletedWorkflow: Bool {
         sourceCount == 1
@@ -44,6 +46,8 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
             && dnaClassificationCount == 3
             && localRulesSnapshotCount == 3
             && coherentDNADocumentCount == 3
+            && invoicePaymentDecisionCount == 1
+            && confirmedInvoicePaymentDecisionMatchCount == 1
     }
 
     var matchesRemovedWorkflow: Bool {
@@ -57,6 +61,8 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
             && dnaEvidenceCount == 0
             && dnaAnalysisStateCount == 0
             && coherentDNADocumentCount == 0
+            && invoicePaymentDecisionCount == 0
+            && confirmedInvoicePaymentDecisionMatchCount == 0
     }
 
     var description: String {
@@ -71,7 +77,10 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
             + "dnaReady=\(dnaReadyStateCount), "
             + "dnaClassification=\(dnaClassificationCount), "
             + "localRulesSnapshot=\(localRulesSnapshotCount), "
-            + "coherentDNADocument=\(coherentDNADocumentCount)"
+            + "coherentDNADocument=\(coherentDNADocumentCount), "
+            + "invoicePaymentDecision=\(invoicePaymentDecisionCount), "
+            + "confirmedInvoicePaymentDecision="
+            + "\(confirmedInvoicePaymentDecisionMatchCount)"
     }
 }
 
@@ -197,6 +206,23 @@ final class SQLiteProbe {
                     documentDNA.inputExtractionVersion
                   AND documentDNAAnalysisState.status = 'ready'
                   AND documentDNAAnalysisState.failureCode IS NULL
+                """),
+            invoicePaymentDecisionCount: try scalar(
+                "SELECT COUNT(*) FROM invoicePaymentUserDecision"
+            ),
+            confirmedInvoicePaymentDecisionMatchCount: try scalar("""
+                SELECT COUNT(*)
+                FROM invoicePaymentUserDecision AS decision
+                JOIN document AS invoice
+                  ON invoice.id = decision.invoiceDocumentID
+                JOIN document AS payment
+                  ON payment.id = decision.paymentDocumentID
+                WHERE decision.relationshipType = 'paymentSettlesInvoice'
+                  AND decision.decision = 'confirmed'
+                  AND invoice.relativePath = 'selectable.pdf'
+                  AND payment.relativePath = 'payments/payment-confirmation.pdf'
+                  AND decision.invoiceContentHash = invoice.contentHash
+                  AND decision.paymentContentHash = payment.contentHash
                 """)
         )
     }

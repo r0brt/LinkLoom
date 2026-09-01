@@ -171,6 +171,9 @@ struct LinkLoomApp: App {
             ),
             decisions: invoicePaymentDecisions
         )
+        let invoicePaymentDecisionUpdater = CurrentInvoicePaymentDecisionUpdater(
+            decisions: invoicePaymentDecisions
+        )
         let dnaRetryer = LocalDocumentDNAFailureRetryer(
             repository: dnaRepository,
             analysis: dnaAnalysis
@@ -201,6 +204,7 @@ struct LinkLoomApp: App {
             dnaSnapshots: dnaSnapshots,
             dnaRetryer: dnaRetryer,
             invoicePaymentCandidates: invoicePaymentCandidates,
+            invoicePaymentDecisions: invoicePaymentDecisionUpdater,
             watchScheduler: watchScheduler,
             reportRuntimeFailure: { diagnostic in
                 Self.runtimeLogger.error(
@@ -381,6 +385,57 @@ struct CurrentInvoicePaymentCandidateLoader: InvoicePaymentCandidateLoading {
         let candidates = try await lookupCandidates(documentID)
         try Task.checkCancellation()
         return try await annotateCandidates(candidates)
+    }
+}
+
+struct CurrentInvoicePaymentDecisionUpdater: InvoicePaymentDecisionUpdating {
+    private let saveDecision: @Sendable (InvoicePaymentDecisionRecord) async throws -> Void
+    private let deleteDecision: @Sendable (InvoicePaymentDecisionKey) async throws -> Void
+    private let now: @Sendable () -> Date
+
+    init(
+        decisions: InvoicePaymentDecisionRepository,
+        now: @escaping @Sendable () -> Date = Date.init
+    ) {
+        saveDecision = { record in try await decisions.save(record) }
+        deleteDecision = { key in try await decisions.delete(key) }
+        self.now = now
+    }
+
+    init(
+        saveDecision: @escaping @Sendable (InvoicePaymentDecisionRecord) async throws -> Void,
+        deleteDecision: @escaping @Sendable (InvoicePaymentDecisionKey) async throws -> Void,
+        now: @escaping @Sendable () -> Date
+    ) {
+        self.saveDecision = saveDecision
+        self.deleteDecision = deleteDecision
+        self.now = now
+    }
+
+    func update(
+        candidate: InvoicePaymentCandidate,
+        command: InvoicePaymentDecisionCommand
+    ) async throws {
+        let key = try InvoicePaymentDecisionKey(
+            relationshipType: .paymentSettlesInvoice,
+            invoiceDocumentID: candidate.invoice.document.id,
+            paymentDocumentID: candidate.payment.document.id,
+            invoiceContentHash: candidate.invoice.document.contentHash,
+            paymentContentHash: candidate.payment.document.contentHash
+        )
+        try Task.checkCancellation()
+        switch command {
+        case .set(let decision):
+            try await saveDecision(
+                InvoicePaymentDecisionRecord(
+                    key: key,
+                    decision: decision,
+                    updatedAt: now()
+                )
+            )
+        case .reset:
+            try await deleteDecision(key)
+        }
     }
 }
 

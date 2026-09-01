@@ -6,6 +6,15 @@ import Testing
 
 @Suite("Diagnostic app model", .serialized)
 struct AppModelTests {
+    @Test func staleInvoicePaymentDecisionInputHasStableDiagnosticReason() {
+        let diagnostic = AppRuntimeDiagnostic(
+            category: .invoicePaymentDecisionUpdate,
+            error: InvoicePaymentDecisionRepositoryError.staleInput
+        )
+
+        #expect(diagnostic.reason == .staleDocument)
+    }
+
     @Test @MainActor func scanPublishesProgressAndReloadsDocuments() async throws {
         let fixture = try AppModelFixture()
         let source = try await fixture.addSource(named: "Archive")
@@ -369,6 +378,451 @@ struct AppModelTests {
             "m-excluded-payment.pdf",
         ])
         #expect(annotated.map(\.decision) == [.confirmed, .undecided, .excluded])
+    }
+
+    @Test @MainActor func successfulDecisionUpdateCommitsAfterPersistenceInStableOrder() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let invoice = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        let payments = ["first.pdf", "second.pdf", "third.pdf"].map {
+            fixture.document(sourceRootID: source.id, path: $0)
+        }
+        try await fixture.documents.save(invoice)
+        let snapshot = try testDocumentDNA(document: invoice)
+        let annotated = try zip(
+            payments,
+            [
+                InvoicePaymentCandidateDecisionState.confirmed,
+                .undecided,
+                .excluded,
+            ]
+        ).map { payment, decision in
+            InvoicePaymentCandidateWithDecision(
+                candidate: try testInvoicePaymentCandidate(
+                    invoice: invoice,
+                    payment: payment
+                ),
+                decision: decision
+            )
+        }
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [DocumentDNAAnalysisStatus(documentID: invoice.id, phase: .ready)],
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            invoice.id: [.snapshot(snapshot)],
+        ])
+        let candidateLoader = ScriptedInvoicePaymentCandidateLoader(stepsByDocument: [
+            invoice.id: [.candidates(annotated)],
+        ])
+        let updater = ScriptedInvoicePaymentDecisionUpdater(steps: [
+            .blocked(.success(())),
+        ])
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses,
+            dnaSnapshots: dnaSnapshots,
+            invoicePaymentCandidates: candidateLoader,
+            invoicePaymentDecisions: updater
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+        let target = annotated[1].candidate
+
+        let update = Task {
+            await model.updateInvoicePaymentDecision(
+                candidate: target,
+                command: .set(.confirmed)
+            )
+        }
+        await updater.waitUntilBlockedUpdateStarts()
+
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: invoice.id, candidates: annotated)
+        )
+        #expect(model.invoicePaymentDecisionUpdatingCandidate == target)
+
+        await updater.releaseBlockedUpdate()
+        await update.value
+
+        guard case .available(let documentID, let updated) = model.invoicePaymentCandidateState
+        else {
+            Issue.record("Expected available invoice-payment candidates")
+            return
+        }
+        #expect(documentID == invoice.id)
+        #expect(updated.map(\.candidate) == annotated.map(\.candidate))
+        #expect(updated.map(\.decision) == [.confirmed, .confirmed, .excluded])
+        #expect(model.invoicePaymentDecisionUpdatingCandidate == nil)
+        #expect(await updater.invocations == [
+            .init(candidate: target, command: .set(.confirmed)),
+        ])
+    }
+
+    @Test @MainActor func decisionUpdateCanExcludeAndResetCurrentCandidate() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let invoice = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        let payment = fixture.document(sourceRootID: source.id, path: "payment.pdf")
+        try await fixture.documents.save(invoice)
+        let snapshot = try testDocumentDNA(document: invoice)
+        let candidate = try testInvoicePaymentCandidate(invoice: invoice, payment: payment)
+        let initial = InvoicePaymentCandidateWithDecision(
+            candidate: candidate,
+            decision: .undecided
+        )
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [DocumentDNAAnalysisStatus(documentID: invoice.id, phase: .ready)],
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            invoice.id: [.snapshot(snapshot)],
+        ])
+        let candidateLoader = ScriptedInvoicePaymentCandidateLoader(stepsByDocument: [
+            invoice.id: [.candidates([initial])],
+        ])
+        let updater = ScriptedInvoicePaymentDecisionUpdater(steps: [.success, .success])
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses,
+            dnaSnapshots: dnaSnapshots,
+            invoicePaymentCandidates: candidateLoader,
+            invoicePaymentDecisions: updater
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+
+        await model.updateInvoicePaymentDecision(
+            candidate: candidate,
+            command: .set(.excluded)
+        )
+
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(
+                    documentID: invoice.id,
+                    candidates: [
+                        InvoicePaymentCandidateWithDecision(
+                            candidate: candidate,
+                            decision: .excluded
+                        ),
+                    ]
+                )
+        )
+
+        await model.updateInvoicePaymentDecision(candidate: candidate, command: .reset)
+
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: invoice.id, candidates: [initial])
+        )
+    }
+
+    @Test @MainActor func failedDecisionUpdatePreservesStateAndSuccessfulRetryClearsFailure() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let invoice = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        let payment = fixture.document(sourceRootID: source.id, path: "payment.pdf")
+        try await fixture.documents.save(invoice)
+        let snapshot = try testDocumentDNA(document: invoice)
+        let annotated = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(invoice: invoice, payment: payment),
+            decision: .undecided
+        )
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [DocumentDNAAnalysisStatus(documentID: invoice.id, phase: .ready)],
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            invoice.id: [.snapshot(snapshot)],
+        ])
+        let candidateLoader = ScriptedInvoicePaymentCandidateLoader(stepsByDocument: [
+            invoice.id: [.candidates([annotated])],
+        ])
+        let updater = ScriptedInvoicePaymentDecisionUpdater(steps: [.failure, .success])
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses,
+            dnaSnapshots: dnaSnapshots,
+            invoicePaymentCandidates: candidateLoader,
+            invoicePaymentDecisions: updater,
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+
+        await model.updateInvoicePaymentDecision(
+            candidate: annotated.candidate,
+            command: .set(.confirmed)
+        )
+
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: invoice.id, candidates: [annotated])
+        )
+        #expect(model.invoicePaymentDecisionUpdatingCandidate == nil)
+        #expect(model.lastErrorCode == "invoicePaymentDecisionUpdateFailure")
+        #expect(
+            model.lastErrorMessage
+                == "Die Entscheidung konnte nicht gespeichert werden. Bitte versuche es erneut."
+        )
+        #expect(diagnostics.values.map(\.category) == [.invoicePaymentDecisionUpdate])
+        #expect(diagnostics.values.map(\.reason) == [.unexpected])
+
+        await model.updateInvoicePaymentDecision(
+            candidate: annotated.candidate,
+            command: .set(.confirmed)
+        )
+
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(
+                    documentID: invoice.id,
+                    candidates: [
+                        InvoicePaymentCandidateWithDecision(
+                            candidate: annotated.candidate,
+                            decision: .confirmed
+                        ),
+                    ]
+                )
+        )
+        #expect(model.lastErrorCode == nil)
+        #expect(diagnostics.values.count == 1)
+    }
+
+    @Test @MainActor func cancelledDecisionUpdatePreservesStateWithoutReportingFailure() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let invoice = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        let payment = fixture.document(sourceRootID: source.id, path: "payment.pdf")
+        try await fixture.documents.save(invoice)
+        let snapshot = try testDocumentDNA(document: invoice)
+        let annotated = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(invoice: invoice, payment: payment),
+            decision: .undecided
+        )
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [DocumentDNAAnalysisStatus(documentID: invoice.id, phase: .ready)],
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            invoice.id: [.snapshot(snapshot)],
+        ])
+        let candidateLoader = ScriptedInvoicePaymentCandidateLoader(stepsByDocument: [
+            invoice.id: [.candidates([annotated])],
+        ])
+        let updater = ScriptedInvoicePaymentDecisionUpdater(steps: [.cancellation])
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses,
+            dnaSnapshots: dnaSnapshots,
+            invoicePaymentCandidates: candidateLoader,
+            invoicePaymentDecisions: updater,
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+
+        await model.updateInvoicePaymentDecision(
+            candidate: annotated.candidate,
+            command: .set(.confirmed)
+        )
+
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: invoice.id, candidates: [annotated])
+        )
+        #expect(model.invoicePaymentDecisionUpdatingCandidate == nil)
+        #expect(model.lastErrorCode == nil)
+        #expect(diagnostics.values.isEmpty)
+    }
+
+    @Test @MainActor func duplicateDecisionUpdateIsIgnoredWhilePersistenceIsInFlight() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let invoice = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        let payment = fixture.document(sourceRootID: source.id, path: "payment.pdf")
+        try await fixture.documents.save(invoice)
+        let snapshot = try testDocumentDNA(document: invoice)
+        let annotated = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(invoice: invoice, payment: payment),
+            decision: .undecided
+        )
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [DocumentDNAAnalysisStatus(documentID: invoice.id, phase: .ready)],
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            invoice.id: [.snapshot(snapshot)],
+        ])
+        let candidateLoader = ScriptedInvoicePaymentCandidateLoader(stepsByDocument: [
+            invoice.id: [.candidates([annotated])],
+        ])
+        let updater = ScriptedInvoicePaymentDecisionUpdater(steps: [
+            .blocked(.success(())),
+            .success,
+        ])
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses,
+            dnaSnapshots: dnaSnapshots,
+            invoicePaymentCandidates: candidateLoader,
+            invoicePaymentDecisions: updater
+        )
+        try await model.reload()
+        await model.selectDocument(id: invoice.id)
+
+        let firstUpdate = Task {
+            await model.updateInvoicePaymentDecision(
+                candidate: annotated.candidate,
+                command: .set(.confirmed)
+            )
+        }
+        await updater.waitUntilBlockedUpdateStarts()
+
+        await model.updateInvoicePaymentDecision(
+            candidate: annotated.candidate,
+            command: .set(.excluded)
+        )
+
+        let invocationsBeforeRelease = await updater.invocations
+        await updater.releaseBlockedUpdate()
+        await firstUpdate.value
+
+        #expect(invocationsBeforeRelease == [
+            .init(candidate: annotated.candidate, command: .set(.confirmed)),
+        ])
+    }
+
+    @Test @MainActor func staleDecisionCompletionCannotOverlapOrOverwriteReselectedDocument() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let firstInvoice = fixture.document(sourceRootID: source.id, path: "first-invoice.pdf")
+        let firstPayment = fixture.document(sourceRootID: source.id, path: "first-payment.pdf")
+        let secondInvoice = fixture.document(sourceRootID: source.id, path: "second-invoice.pdf")
+        let secondPayment = fixture.document(sourceRootID: source.id, path: "second-payment.pdf")
+        try await fixture.documents.save(firstInvoice)
+        try await fixture.documents.save(secondInvoice)
+        let firstSnapshot = try testDocumentDNA(document: firstInvoice)
+        let secondSnapshot = try testDocumentDNA(document: secondInvoice)
+        let firstCandidate = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(
+                invoice: firstInvoice,
+                payment: firstPayment
+            ),
+            decision: .undecided
+        )
+        let secondCandidate = InvoicePaymentCandidateWithDecision(
+            candidate: try testInvoicePaymentCandidate(
+                invoice: secondInvoice,
+                payment: secondPayment
+            ),
+            decision: .undecided
+        )
+        let dnaStatuses = MutableDocumentDNAStatusLoader(statusesBySource: [
+            source.id: [firstInvoice, secondInvoice].map {
+                DocumentDNAAnalysisStatus(documentID: $0.id, phase: .ready)
+            },
+        ])
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            firstInvoice.id: [.snapshot(firstSnapshot), .snapshot(firstSnapshot)],
+            secondInvoice.id: [.snapshot(secondSnapshot)],
+        ])
+        let candidateLoader = ScriptedInvoicePaymentCandidateLoader(stepsByDocument: [
+            firstInvoice.id: [.candidates([firstCandidate]), .candidates([firstCandidate])],
+            secondInvoice.id: [.candidates([secondCandidate])],
+        ])
+        let updater = ScriptedInvoicePaymentDecisionUpdater(steps: [
+            .blocked(.success(())),
+            .success,
+        ])
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses,
+            dnaSnapshots: dnaSnapshots,
+            invoicePaymentCandidates: candidateLoader,
+            invoicePaymentDecisions: updater,
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        await model.selectDocument(id: firstInvoice.id)
+
+        let staleUpdate = Task {
+            await model.updateInvoicePaymentDecision(
+                candidate: firstCandidate.candidate,
+                command: .set(.confirmed)
+            )
+        }
+        await updater.waitUntilBlockedUpdateStarts()
+
+        await model.selectDocument(id: secondInvoice.id)
+        await model.selectDocument(id: firstInvoice.id)
+        #expect(model.isInvoicePaymentDecisionUpdateInFlight)
+        #expect(model.invoicePaymentDecisionUpdatingCandidate == nil)
+        await model.updateInvoicePaymentDecision(
+            candidate: firstCandidate.candidate,
+            command: .set(.excluded)
+        )
+
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: firstInvoice.id, candidates: [firstCandidate])
+        )
+        #expect(await updater.invocations == [
+            .init(candidate: firstCandidate.candidate, command: .set(.confirmed)),
+        ])
+
+        await updater.releaseBlockedUpdate()
+        await staleUpdate.value
+
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: firstInvoice.id, candidates: [firstCandidate])
+        )
+        #expect(model.invoicePaymentDecisionUpdatingCandidate == nil)
+        #expect(!model.isInvoicePaymentDecisionUpdateInFlight)
+        #expect(diagnostics.values.isEmpty)
+
+        await model.updateInvoicePaymentDecision(
+            candidate: firstCandidate.candidate,
+            command: .set(.excluded)
+        )
+
+        let expected = InvoicePaymentCandidateWithDecision(
+            candidate: firstCandidate.candidate,
+            decision: .excluded
+        )
+        #expect(
+            model.invoicePaymentCandidateState
+                == .available(documentID: firstInvoice.id, candidates: [expected])
+        )
+        #expect(await updater.invocations == [
+            .init(candidate: firstCandidate.candidate, command: .set(.confirmed)),
+            .init(candidate: firstCandidate.candidate, command: .set(.excluded)),
+        ])
     }
 
     @Test @MainActor func staleCandidateResultCannotReplaceNewerDocumentSelection() async throws {
@@ -3322,6 +3776,62 @@ private actor ScriptedInvoicePaymentCandidateLoader: InvoicePaymentCandidateLoad
     }
 }
 
+private actor ScriptedInvoicePaymentDecisionUpdater: InvoicePaymentDecisionUpdating {
+    struct Invocation: Sendable, Equatable {
+        let candidate: InvoicePaymentCandidate
+        let command: InvoicePaymentDecisionCommand
+    }
+
+    enum Step: Sendable {
+        case success
+        case failure
+        case cancellation
+        case blocked(Result<Void, AppModelTestError>)
+    }
+
+    private var steps: [Step]
+    private(set) var invocations: [Invocation] = []
+    private var blockedUpdateStarted = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(steps: [Step]) {
+        self.steps = steps
+    }
+
+    func update(
+        candidate: InvoicePaymentCandidate,
+        command: InvoicePaymentDecisionCommand
+    ) async throws {
+        invocations.append(.init(candidate: candidate, command: command))
+        let step = steps.isEmpty ? .success : steps.removeFirst()
+        switch step {
+        case .success:
+            return
+        case .failure:
+            throw AppModelTestError.invoicePaymentDecisionUpdateFailed
+        case .cancellation:
+            throw CancellationError()
+        case .blocked(let result):
+            blockedUpdateStarted = true
+            startWaiters.forEach { $0.resume() }
+            startWaiters.removeAll()
+            await withCheckedContinuation { releaseWaiters.append($0) }
+            return try result.get()
+        }
+    }
+
+    func waitUntilBlockedUpdateStarts() async {
+        guard !blockedUpdateStarted else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func releaseBlockedUpdate() {
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters.removeAll()
+    }
+}
+
 private func testDocumentDNA(document: DocumentRecord) throws -> DocumentDNA {
     let classification = try DocumentDNAFinding(
         kind: .documentType,
@@ -3486,6 +3996,7 @@ private enum AppModelTestError: Error, Sendable {
     case documentDNAStatusLoadFailed
     case documentDNASnapshotLoadFailed
     case invoicePaymentCandidateLoadFailed
+    case invoicePaymentDecisionUpdateFailed
     case unusedSourceResolution
     case timeout
 }

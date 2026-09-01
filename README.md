@@ -57,8 +57,9 @@ The current catalog acceptance boundary is 10,000 documents in one selected sour
 4. Select the temporary folder in the source picker.
 5. Start a scan, select a ready document, and inspect its local Document DNA and source-backed evidence.
 6. Select an invoice or payment confirmation to inspect any locally computed,
-   source-backed linking candidates. Candidates are read-only and explicitly
-   marked as not yet stored relationships.
+   source-backed linking candidates, then confirm, exclude, or reset a candidate.
+   Candidates remain transient and are never stored relationships; LinkLoom stores
+   only your local, content-bound decision.
 
 LinkLoom reads selected originals in place. It does not import them into a proprietary archive. Cataloging and text extraction run locally, and removing LinkLoom's rebuildable database does not remove source documents.
 
