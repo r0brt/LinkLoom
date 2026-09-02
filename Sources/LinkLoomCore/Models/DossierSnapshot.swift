@@ -50,3 +50,27 @@ public struct DossierSnapshot: Sendable, Equatable {
     public let corrections: [DossierCorrection]
     public let token: DossierProjectionToken
 }
+
+public struct DossierSummary: Identifiable, Sendable, Equatable {
+    public var id: UUID { dossier.id }
+    public let dossier: DossierRecord
+    public let anchor: DocumentRecord
+}
+
+public enum DossierEntryDisposition: Sendable, Equatable {
+    case create
+    case open(DossierSummary)
+    case choose([DossierSummary])
+}
+
+public enum DossierOpenResult: Sendable, Equatable {
+    case opened(DossierSnapshot)
+    case choose([DossierSummary])
+}
+
+public enum DossierRepositoryError: Error, Sendable, Equatable {
+    case invalidAnchor
+    case dossierNotFound
+    case staleInput
+    case invalidStoredState
+}
