@@ -48,36 +48,146 @@ public actor InvoicePaymentDecisionRepository {
         for key: InvoicePaymentDecisionKey
     ) async throws -> InvoicePaymentDecisionRecord? {
         try await dbWriter.read { db in
-            guard let row = try Row.fetchOne(
-                db,
-                sql: """
-                    SELECT relationshipType, invoiceDocumentID, paymentDocumentID,
-                           invoiceContentHash, paymentContentHash, decision, updatedAt
-                    FROM invoicePaymentUserDecision AS userDecision
-                    JOIN document AS invoice
-                        ON invoice.id = userDecision.invoiceDocumentID
-                    JOIN document AS payment
-                        ON payment.id = userDecision.paymentDocumentID
-                    WHERE userDecision.relationshipType = ?
-                        AND userDecision.invoiceDocumentID = ?
-                        AND userDecision.paymentDocumentID = ?
-                        AND userDecision.invoiceContentHash = ?
-                        AND userDecision.paymentContentHash = ?
-                        AND invoice.contentHash = userDecision.invoiceContentHash
-                        AND payment.contentHash = userDecision.paymentContentHash
-                    """,
-                arguments: [
-                    key.relationshipType.rawValue,
-                    key.invoiceDocumentID,
-                    key.paymentDocumentID,
-                    key.invoiceContentHash,
-                    key.paymentContentHash,
-                ]
-            ) else {
-                return nil
-            }
-            let relationshipTypeValue: String = row["relationshipType"]
-            let decisionValue: String = row["decision"]
+            try Self.currentRecords(in: db, keys: [key])[key]
+        }
+    }
+
+    static func currentRecords(
+        in db: Database,
+        keys: [InvoicePaymentDecisionKey]
+    ) throws -> [InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord] {
+        guard !keys.isEmpty else { return [:] }
+        var uniqueKeys: [InvoicePaymentDecisionKey] = []
+        var seenKeys: Set<InvoicePaymentDecisionKey> = []
+        for key in keys where seenKeys.insert(key).inserted {
+            uniqueKeys.append(key)
+        }
+        let keysPerStatement = db.maximumStatementArgumentCount / 5
+        guard keysPerStatement > 0 else {
+            return try currentRecordsWithoutArguments(
+                in: db,
+                requestedKeys: Set(uniqueKeys)
+            )
+        }
+        var records: [InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord] = [:]
+        var startIndex = 0
+        while startIndex < uniqueKeys.count {
+            let endIndex = min(startIndex + keysPerStatement, uniqueKeys.count)
+            let chunkRecords = try currentRecordsChunk(
+                in: db,
+                keys: Array(uniqueKeys[startIndex..<endIndex])
+            )
+            records.merge(chunkRecords) { _, replacement in replacement }
+            startIndex = endIndex
+        }
+        return records
+    }
+
+    private static func currentRecordsWithoutArguments(
+        in db: Database,
+        requestedKeys: Set<InvoicePaymentDecisionKey>
+    ) throws -> [InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord] {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT userDecision.relationshipType, userDecision.invoiceDocumentID,
+                       userDecision.paymentDocumentID, userDecision.invoiceContentHash,
+                       userDecision.paymentContentHash, userDecision.decision,
+                       userDecision.updatedAt
+                FROM invoicePaymentUserDecision AS userDecision
+                JOIN document AS invoice
+                    ON invoice.id = userDecision.invoiceDocumentID
+                    AND invoice.contentHash = userDecision.invoiceContentHash
+                JOIN document AS payment
+                    ON payment.id = userDecision.paymentDocumentID
+                    AND payment.contentHash = userDecision.paymentContentHash
+                """
+        )
+        var records: [InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord] = [:]
+        for row in rows {
+            let record = try decodeRecord(row)
+            guard requestedKeys.contains(record.key) else { continue }
+            records[record.key] = record
+        }
+        return records
+    }
+
+    private static func currentRecordsChunk(
+        in db: Database,
+        keys: [InvoicePaymentDecisionKey]
+    ) throws -> [InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord] {
+        var arguments = StatementArguments()
+        let requestedRows = keys.map { key in
+            _ = arguments.append(contentsOf: [
+                key.relationshipType.rawValue,
+                key.invoiceDocumentID,
+                key.paymentDocumentID,
+                key.invoiceContentHash,
+                key.paymentContentHash,
+            ])
+            return "(?, ?, ?, ?, ?)"
+        }.joined(separator: ", ")
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                WITH requested (
+                    relationshipType, invoiceDocumentID, paymentDocumentID,
+                    invoiceContentHash, paymentContentHash
+                ) AS (
+                    VALUES \(requestedRows)
+                )
+                SELECT userDecision.relationshipType, userDecision.invoiceDocumentID,
+                       userDecision.paymentDocumentID, userDecision.invoiceContentHash,
+                       userDecision.paymentContentHash, userDecision.decision,
+                       userDecision.updatedAt
+                FROM requested
+                JOIN document AS invoice
+                    ON invoice.id = requested.invoiceDocumentID
+                    AND invoice.contentHash = requested.invoiceContentHash
+                JOIN document AS payment
+                    ON payment.id = requested.paymentDocumentID
+                    AND payment.contentHash = requested.paymentContentHash
+                JOIN invoicePaymentUserDecision AS userDecision
+                    ON userDecision.relationshipType = requested.relationshipType
+                    AND userDecision.invoiceDocumentID = requested.invoiceDocumentID
+                    AND userDecision.paymentDocumentID = requested.paymentDocumentID
+                    AND userDecision.invoiceContentHash = requested.invoiceContentHash
+                    AND userDecision.paymentContentHash = requested.paymentContentHash
+                """,
+            arguments: arguments
+        )
+        var records: [InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord] = [:]
+        for row in rows {
+            let record = try decodeRecord(row)
+            records[record.key] = record
+        }
+        return records
+    }
+
+    private static func decodeRecord(_ row: Row) throws -> InvoicePaymentDecisionRecord {
+        do {
+            let relationshipTypeValue = try row.decode(
+                String.self,
+                forColumn: "relationshipType"
+            )
+            let invoiceDocumentID = try row.decode(
+                UUID.self,
+                forColumn: "invoiceDocumentID"
+            )
+            let paymentDocumentID = try row.decode(
+                UUID.self,
+                forColumn: "paymentDocumentID"
+            )
+            let invoiceContentHash = try row.decode(
+                String.self,
+                forColumn: "invoiceContentHash"
+            )
+            let paymentContentHash = try row.decode(
+                String.self,
+                forColumn: "paymentContentHash"
+            )
+            let decisionValue = try row.decode(String.self, forColumn: "decision")
+            let updatedAt = try row.decode(Date.self, forColumn: "updatedAt")
             guard let relationshipType = DocumentRelationshipType(
                 rawValue: relationshipTypeValue
             ),
@@ -85,17 +195,20 @@ public actor InvoicePaymentDecisionRepository {
             else {
                 throw InvoicePaymentDecisionRepositoryError.invalidStoredState
             }
-            return InvoicePaymentDecisionRecord(
-                key: try InvoicePaymentDecisionKey(
-                    relationshipType: relationshipType,
-                    invoiceDocumentID: row["invoiceDocumentID"],
-                    paymentDocumentID: row["paymentDocumentID"],
-                    invoiceContentHash: row["invoiceContentHash"],
-                    paymentContentHash: row["paymentContentHash"]
-                ),
-                decision: decision,
-                updatedAt: row["updatedAt"]
+            let key = try InvoicePaymentDecisionKey(
+                relationshipType: relationshipType,
+                invoiceDocumentID: invoiceDocumentID,
+                paymentDocumentID: paymentDocumentID,
+                invoiceContentHash: invoiceContentHash,
+                paymentContentHash: paymentContentHash
             )
+            return InvoicePaymentDecisionRecord(
+                key: key,
+                decision: decision,
+                updatedAt: updatedAt
+            )
+        } catch {
+            throw InvoicePaymentDecisionRepositoryError.invalidStoredState
         }
     }
 
@@ -112,85 +225,18 @@ public actor InvoicePaymentDecisionRepository {
                 paymentContentHash: candidate.payment.document.contentHash
             )
         }
-        var collectedKeys: [InvoicePaymentDecisionKey] = []
-        var seenKeys: Set<InvoicePaymentDecisionKey> = []
-        for key in keys where seenKeys.insert(key).inserted {
-            collectedKeys.append(key)
-        }
-        let uniqueKeys = collectedKeys
-        let decisionsByKey = try await dbWriter.read { db in
-            var arguments = StatementArguments()
-            let requestedRows = uniqueKeys.enumerated().map { index, key in
-                _ = arguments.append(contentsOf: [
-                    index,
-                    key.relationshipType.rawValue,
-                    key.invoiceDocumentID,
-                    key.paymentDocumentID,
-                    key.invoiceContentHash,
-                    key.paymentContentHash,
-                ])
-                return "(?, ?, ?, ?, ?, ?)"
-            }.joined(separator: ", ")
-            let rows = try Row.fetchAll(
-                db,
-                sql: """
-                    WITH requested (
-                        requestOrder, relationshipType, invoiceDocumentID,
-                        paymentDocumentID, invoiceContentHash, paymentContentHash
-                    ) AS (
-                        VALUES \(requestedRows)
-                    )
-                    SELECT requested.requestOrder, userDecision.decision
-                    FROM requested
-                    LEFT JOIN document AS invoice
-                        ON invoice.id = requested.invoiceDocumentID
-                        AND invoice.contentHash = requested.invoiceContentHash
-                    LEFT JOIN document AS payment
-                        ON payment.id = requested.paymentDocumentID
-                        AND payment.contentHash = requested.paymentContentHash
-                    LEFT JOIN invoicePaymentUserDecision AS userDecision
-                        ON userDecision.relationshipType = requested.relationshipType
-                        AND userDecision.invoiceDocumentID = requested.invoiceDocumentID
-                        AND userDecision.paymentDocumentID = requested.paymentDocumentID
-                        AND userDecision.invoiceContentHash = requested.invoiceContentHash
-                        AND userDecision.paymentContentHash = requested.paymentContentHash
-                        AND invoice.id IS NOT NULL
-                        AND payment.id IS NOT NULL
-                    ORDER BY requested.requestOrder
-                    """,
-                arguments: arguments
-            )
-            guard rows.count == uniqueKeys.count else {
-                throw InvoicePaymentDecisionRepositoryError.invalidStoredState
-            }
-            var result: [
-                InvoicePaymentDecisionKey: InvoicePaymentCandidateDecisionState
-            ] = [:]
-            for row in rows {
-                let requestOrder: Int = row["requestOrder"]
-                guard uniqueKeys.indices.contains(requestOrder) else {
-                    throw InvoicePaymentDecisionRepositoryError.invalidStoredState
-                }
-                let decisionValue: String? = row["decision"]
-                let decision: InvoicePaymentCandidateDecisionState
-                switch decisionValue.flatMap(InvoicePaymentUserDecision.init(rawValue:)) {
-                case .confirmed:
-                    decision = .confirmed
-                case .excluded:
-                    decision = .excluded
-                case nil where decisionValue == nil:
-                    decision = .undecided
-                case nil:
-                    throw InvoicePaymentDecisionRepositoryError.invalidStoredState
-                }
-                result[uniqueKeys[requestOrder]] = decision
-            }
-            return result
+        let recordsByKey = try await dbWriter.read { db in
+            try Self.currentRecords(in: db, keys: keys)
         }
         return zip(candidates, keys).map { candidate, key in
             InvoicePaymentCandidateWithDecision(
                 candidate: candidate,
-                decision: decisionsByKey[key] ?? .undecided
+                decision: recordsByKey[key].map { record in
+                    switch record.decision {
+                    case .confirmed: .confirmed
+                    case .excluded: .excluded
+                    }
+                } ?? .undecided
             )
         }
     }

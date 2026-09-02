@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import SQLite3
 import Testing
 @testable import LinkLoomCore
 
@@ -83,6 +84,242 @@ struct InvoicePaymentDecisionRepositoryTests {
 
         #expect(try await fixture.repository.currentDecision(for: key) == excluded)
         #expect(try await fixture.rowCount() == 1)
+    }
+
+    @Test func currentRecordsReturnsOnlyExactCurrentRowsAndPreservesUpdatedAt() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let currentKey = try fixture.key()
+        let stalePayment = try await fixture.insertPayment(
+            path: "stale-payment.pdf",
+            contentHash: "hash-stale-payment-v1"
+        )
+        let staleKey = try fixture.key(payment: stalePayment)
+        let currentRecord = InvoicePaymentDecisionRecord(
+            key: currentKey,
+            decision: .confirmed,
+            updatedAt: fixture.date.addingTimeInterval(60)
+        )
+        let staleRecord = InvoicePaymentDecisionRecord(
+            key: staleKey,
+            decision: .excluded,
+            updatedAt: fixture.date.addingTimeInterval(120)
+        )
+        try await fixture.repository.save(currentRecord)
+        try await fixture.repository.save(staleRecord)
+        try await fixture.changeContentHash(
+            documentID: stalePayment.id,
+            to: "hash-stale-payment-v2"
+        )
+
+        let records = try await fixture.db.read { db in
+            try InvoicePaymentDecisionRepository.currentRecords(
+                in: db,
+                keys: [staleKey, currentKey]
+            )
+        }
+
+        #expect(records == [currentKey: currentRecord])
+        #expect(records[currentKey]?.updatedAt == currentRecord.updatedAt)
+    }
+
+    @Test func currentRecordsReturnsEmptyWithoutAStatementForEmptyInput() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let counter = DecisionSQLReadCounter()
+        try await fixture.db.write { database in
+            database.trace(options: .statement) { event in
+                counter.record(event)
+            }
+        }
+        counter.reset()
+
+        let records = try await fixture.db.read { db in
+            try InvoicePaymentDecisionRepository.currentRecords(in: db, keys: [])
+        }
+        let readCount = counter.value
+        try await fixture.db.write { database in
+            database.trace(options: [])
+        }
+
+        #expect(records.isEmpty)
+        #expect(readCount == 0)
+    }
+
+    @Test func currentRecordsDeduplicatesRepeatedKeys() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let key = try fixture.key()
+        let record = InvoicePaymentDecisionRecord(
+            key: key,
+            decision: .confirmed,
+            updatedAt: fixture.date
+        )
+        try await fixture.repository.save(record)
+        let counter = DecisionSQLReadCounter()
+        try await fixture.db.write { database in
+            database.trace(options: .statement) { event in
+                counter.record(event)
+            }
+        }
+        counter.reset()
+
+        let records = try await fixture.db.read { db in
+            try InvoicePaymentDecisionRepository.currentRecords(
+                in: db,
+                keys: [key, key]
+            )
+        }
+        let readCount = counter.value
+        try await fixture.db.write { database in
+            database.trace(options: [])
+        }
+
+        #expect(records == [key: record])
+        #expect(readCount == 1)
+    }
+
+    @Test func currentRecordsChunksAtSQLiteStatementArgumentLimit() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let keysPerStatement = try await fixture.db.read { db in
+            db.maximumStatementArgumentCount / 5
+        }
+        let keys = try (0...keysPerStatement).map { index in
+            try InvoicePaymentDecisionKey(
+                relationshipType: .paymentSettlesInvoice,
+                invoiceDocumentID: UUID(),
+                paymentDocumentID: UUID(),
+                invoiceContentHash: "invoice-hash-\(index)",
+                paymentContentHash: "payment-hash-\(index)"
+            )
+        }
+        let counter = DecisionSQLReadCounter()
+        try await fixture.db.write { database in
+            database.trace(options: .statement) { event in
+                counter.record(event)
+            }
+        }
+        counter.reset()
+
+        let atLimitRecords = try await fixture.db.read { db in
+            try InvoicePaymentDecisionRepository.currentRecords(
+                in: db,
+                keys: Array(keys.dropLast())
+            )
+        }
+        let atLimitReadCount = counter.value
+        counter.reset()
+        let overLimitRecords = try await fixture.db.read { db in
+            try InvoicePaymentDecisionRepository.currentRecords(in: db, keys: keys)
+        }
+        let overLimitReadCount = counter.value
+        try await fixture.db.write { database in
+            database.trace(options: [])
+        }
+
+        #expect(atLimitRecords.isEmpty)
+        #expect(atLimitReadCount == 1)
+        #expect(overLimitRecords.isEmpty)
+        #expect(overLimitReadCount == 2)
+    }
+
+    @Test func currentRecordsFallsBackBelowFiveSQLiteVariables() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let key = try fixture.key()
+        let record = InvoicePaymentDecisionRecord(
+            key: key,
+            decision: .confirmed,
+            updatedAt: fixture.date
+        )
+        try await fixture.repository.save(record)
+        let counter = DecisionSQLReadCounter()
+        try await fixture.db.write { database in
+            database.trace(options: .statement) { event in
+                counter.record(event)
+            }
+        }
+        counter.reset()
+
+        let records = try await fixture.db.read { db in
+            guard let connection = db.sqliteConnection else {
+                throw SQLiteLimitTestError.connectionUnavailable
+            }
+            let originalLimit = sqlite3_limit(
+                connection,
+                SQLITE_LIMIT_VARIABLE_NUMBER,
+                4
+            )
+            defer {
+                _ = sqlite3_limit(
+                    connection,
+                    SQLITE_LIMIT_VARIABLE_NUMBER,
+                    originalLimit
+                )
+            }
+            return try InvoicePaymentDecisionRepository.currentRecords(
+                in: db,
+                keys: [key, key]
+            )
+        }
+        let readCount = counter.value
+        try await fixture.db.write { database in
+            database.trace(options: [])
+        }
+
+        #expect(records == [key: record])
+        #expect(readCount == 1)
+    }
+
+    @Test func currentRecordsMapsMalformedTimestampToInvalidStoredState() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let key = try fixture.key()
+        try await fixture.repository.save(InvoicePaymentDecisionRecord(
+            key: key,
+            decision: .confirmed,
+            updatedAt: fixture.date
+        ))
+        try await fixture.corruptDecisionUpdatedAt()
+
+        await #expect(throws: InvoicePaymentDecisionRepositoryError.invalidStoredState) {
+            try await fixture.db.read { db in
+                try InvoicePaymentDecisionRepository.currentRecords(
+                    in: db,
+                    keys: [key]
+                )
+            }
+        }
+    }
+
+    @Test func currentRecordsFallbackMapsMalformedTimestampToInvalidStoredState() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let key = try fixture.key()
+        try await fixture.repository.save(InvoicePaymentDecisionRecord(
+            key: key,
+            decision: .confirmed,
+            updatedAt: fixture.date
+        ))
+        try await fixture.corruptDecisionUpdatedAt()
+
+        await #expect(throws: InvoicePaymentDecisionRepositoryError.invalidStoredState) {
+            try await fixture.db.read { db in
+                guard let connection = db.sqliteConnection else {
+                    throw SQLiteLimitTestError.connectionUnavailable
+                }
+                let originalLimit = sqlite3_limit(
+                    connection,
+                    SQLITE_LIMIT_VARIABLE_NUMBER,
+                    4
+                )
+                defer {
+                    _ = sqlite3_limit(
+                        connection,
+                        SQLITE_LIMIT_VARIABLE_NUMBER,
+                        originalLimit
+                    )
+                }
+                return try InvoicePaymentDecisionRepository.currentRecords(
+                    in: db,
+                    keys: [key]
+                )
+            }
+        }
     }
 
     @Test func deletingDecisionTwiceIsIdempotent() async throws {
@@ -346,6 +583,10 @@ private enum ChangedDecisionDocument {
     case payment
 }
 
+private enum SQLiteLimitTestError: Error {
+    case connectionUnavailable
+}
+
 private final class DecisionSQLReadCounter: @unchecked Sendable {
     private let lock = NSLock()
     private var count = 0
@@ -563,6 +804,17 @@ private struct InvoicePaymentDecisionRepositoryFixture {
                 connection,
                 sql: "SELECT COUNT(*) FROM invoicePaymentUserDecision"
             ) ?? 0
+        }
+    }
+
+    func corruptDecisionUpdatedAt() async throws {
+        try await db.write { connection in
+            try connection.execute(
+                sql: """
+                    UPDATE invoicePaymentUserDecision
+                    SET updatedAt = 'not-a-timestamp'
+                    """
+            )
         }
     }
 

@@ -127,6 +127,113 @@ struct InvoicePaymentCandidateLookupTests {
         #expect(candidates.count == 2)
         #expect(candidates.allSatisfy { $0.disposition == .suggestion })
     }
+
+    @Test func lookupDeduplicatesDuplicateNormalizedReferences() async throws {
+        let fixture = try await InvoicePaymentCandidateLookupFixture.make()
+        let invoice = try await fixture.addDocument(
+            path: "invoice.pdf",
+            type: .invoice,
+            referenceQualifier: .invoiceNumber,
+            referenceDisplay: "INV-42",
+            amount: "1250",
+            currency: "CHF",
+            organizationQualifier: "issuer",
+            organization: "alpha ag",
+            additionalReference: (.invoiceNumber, "INV 42", "INV42")
+        )
+        let firstPayment = try await fixture.addDocument(
+            path: "a-payment.pdf",
+            type: .paymentConfirmation,
+            referenceQualifier: .paymentReference,
+            referenceDisplay: "INV-42",
+            amount: "1250",
+            currency: "CHF",
+            organizationQualifier: "payee",
+            organization: "alpha ag"
+        )
+        let secondPayment = try await fixture.addDocument(
+            path: "b-payment.pdf",
+            type: .paymentConfirmation,
+            referenceQualifier: .paymentReference,
+            referenceDisplay: "INV 42",
+            amount: "1250",
+            currency: "CHF",
+            organizationQualifier: "payee",
+            organization: "alpha ag"
+        )
+
+        let candidates = try await fixture.lookup.candidates(involving: invoice.id)
+
+        #expect(candidates.map {
+            "\($0.invoice.document.id.uuidString)/\($0.payment.document.id.uuidString)"
+        } == [
+            "\(invoice.id.uuidString)/\(firstPayment.id.uuidString)",
+            "\(invoice.id.uuidString)/\(secondPayment.id.uuidString)",
+        ])
+        #expect(candidates.allSatisfy { $0.disposition == .suggestion })
+    }
+
+    @Test func lookupLoadsOnlyQualifierSelectedReferenceCohortsOnce() async throws {
+        let fixture = try await InvoicePaymentCandidateLookupFixture.make()
+        let invoice = try await fixture.addDocument(
+            path: "invoice.pdf",
+            type: .invoice,
+            referenceQualifier: .invoiceNumber,
+            referenceDisplay: "INV-42",
+            amount: "1250",
+            currency: "CHF",
+            organizationQualifier: "issuer",
+            organization: "alpha ag",
+            additionalReference: (.paymentReference, "ignored", "AAAA")
+        )
+        _ = try await fixture.addDocument(
+            path: "payment.pdf",
+            type: .paymentConfirmation,
+            referenceQualifier: .paymentReference,
+            referenceDisplay: "INV 42",
+            amount: "1250",
+            currency: "CHF",
+            organizationQualifier: "payee",
+            organization: "alpha ag"
+        )
+        let counter = CandidateLookupReferenceReadCounter()
+        try await fixture.database.write { db in
+            db.trace(options: .statement) { event in
+                counter.record(event)
+            }
+        }
+        counter.reset()
+
+        _ = try await fixture.lookup.candidates(involving: invoice.id)
+        let readCount = counter.value
+        try await fixture.database.write { db in
+            db.trace(options: [])
+        }
+
+        #expect(readCount == 1)
+    }
+}
+
+private final class CandidateLookupReferenceReadCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var value: Int {
+        lock.withLock { count }
+    }
+
+    func reset() {
+        lock.withLock { count = 0 }
+    }
+
+    func record(_ event: Database.TraceEvent) {
+        guard case let .statement(statement) = event,
+              statement.sql.contains("FROM documentDNAFinding AS finding")
+        else {
+            return
+        }
+        lock.withLock { count += 1 }
+    }
 }
 
 private struct InvoicePaymentCandidateLookupFixture {
