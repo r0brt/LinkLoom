@@ -141,6 +141,80 @@ public actor DossierRepository {
         }
     }
 
+    public func excludeMember(
+        dossierID: UUID,
+        documentID: UUID,
+        expectedSupport: DossierMembershipSupportIdentity
+    ) async throws -> DossierSnapshot {
+        let makeUUID = self.makeUUID
+        let now = self.now
+        do {
+            return try await dbWriter.write { db in
+                guard let dossier = try DossierStore.record(in: db, id: dossierID) else {
+                    throw DossierRepositoryError.dossierNotFound
+                }
+                let snapshot = try self.projectionReader.snapshot(
+                    in: db,
+                    dossier: dossier
+                )
+                guard let current = snapshot.members.first(where: {
+                    $0.document.id == documentID && $0.support == expectedSupport
+                }), current.explanation.role != .anchor else {
+                    throw DossierRepositoryError.staleInput
+                }
+                let exclusion = DossierMembershipExclusion(
+                    dossierID: dossierID,
+                    documentID: documentID,
+                    revisionID: makeUUID(),
+                    excludedAt: now()
+                )
+                do {
+                    try DossierStore.insertExclusion(in: db, exclusion: exclusion)
+                } catch let error as DatabaseError
+                    where error.extendedResultCode == .SQLITE_CONSTRAINT_PRIMARYKEY
+                        || error.extendedResultCode == .SQLITE_CONSTRAINT_UNIQUE
+                {
+                    throw DossierRepositoryError.staleInput
+                }
+                return try self.projectionReader.snapshot(in: db, dossier: dossier)
+            }
+        } catch {
+            throw mappedError(error)
+        }
+    }
+
+    public func resetExclusion(
+        dossierID: UUID,
+        documentID: UUID,
+        expectedRevisionID: UUID
+    ) async throws -> DossierSnapshot {
+        do {
+            return try await dbWriter.write { db in
+                guard let dossier = try DossierStore.record(in: db, id: dossierID) else {
+                    throw DossierRepositoryError.dossierNotFound
+                }
+                let snapshot = try self.projectionReader.snapshot(
+                    in: db,
+                    dossier: dossier
+                )
+                guard snapshot.corrections.contains(where: {
+                    $0.document.id == documentID
+                        && $0.exclusion.revisionID == expectedRevisionID
+                }), try DossierStore.deleteExclusion(
+                    in: db,
+                    dossierID: dossierID,
+                    documentID: documentID,
+                    expectedRevisionID: expectedRevisionID
+                ) else {
+                    throw DossierRepositoryError.staleInput
+                }
+                return try self.projectionReader.snapshot(in: db, dossier: dossier)
+            }
+        } catch {
+            throw mappedError(error)
+        }
+    }
+
     private nonisolated func matchingSummaries(
         in db: Database,
         documentID: UUID,
