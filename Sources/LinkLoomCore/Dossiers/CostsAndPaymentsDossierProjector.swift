@@ -104,7 +104,7 @@ struct CostsAndPaymentsDossierProjector: Sendable {
                     role: counterpart.document.id == candidate.invoice.document.id
                         ? .invoice : .payment,
                     relationshipType: key.relationshipType,
-                    signals: candidate.signals
+                    signals: DossierCandidateTieBreakKey.canonicalSignals(candidate.signals)
                 ),
                 support: DossierMembershipSupportIdentity(
                     decisionKey: key,
@@ -232,10 +232,31 @@ private struct DossierCandidateTieBreakKey: Comparable {
         return lhs.signals.lexicographicallyPrecedes(rhs.signals)
     }
 
+    static func canonicalSignals(
+        _ signals: [InvoicePaymentCandidateSignal]
+    ) -> [InvoicePaymentCandidateSignal] {
+        signals.sorted { lhs, rhs in
+            let lhsKindOrder = signalKindOrder(lhs.kind)
+            let rhsKindOrder = signalKindOrder(rhs.kind)
+            if lhsKindOrder != rhsKindOrder {
+                return lhsKindOrder < rhsKindOrder
+            }
+            return signalKey(lhs) < signalKey(rhs)
+        }
+    }
+
     private static func signalKey(_ signal: InvoicePaymentCandidateSignal) -> String {
         component(signal.kind.rawValue)
             + findingKey(signal.invoiceFinding)
             + findingKey(signal.paymentFinding)
+    }
+
+    private static func signalKindOrder(_ kind: InvoicePaymentCandidateSignalKind) -> Int {
+        switch kind {
+        case .referenceNumber: 0
+        case .monetaryAmount: 1
+        case .organization: 2
+        }
     }
 
     private static func findingKey(_ finding: DocumentDNAFinding) -> String {

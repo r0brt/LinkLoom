@@ -137,6 +137,35 @@ struct DossierProjectorTests {
         #expect(reverse.token == forward.token)
     }
 
+    @Test func canonicalizesEqualStrengthDuplicateSignalPermutations() throws {
+        let fixture = try DossierProjectorFixture.confirmedPair()
+        let candidate = fixture.input.candidates[0]
+        let permutedCandidate = InvoicePaymentCandidate(
+            invoice: candidate.invoice,
+            payment: candidate.payment,
+            disposition: candidate.disposition,
+            resolverVersion: candidate.resolverVersion,
+            signals: [candidate.signals[2], candidate.signals[0], candidate.signals[1]]
+        )
+        let forward = try CostsAndPaymentsDossierProjector().project(
+            fixture.input.replacing(candidates: [permutedCandidate, candidate])
+        )
+        let reverse = try CostsAndPaymentsDossierProjector().project(
+            fixture.input.replacing(candidates: [candidate, permutedCandidate])
+        )
+
+        #expect(forward.members[1].explanation.signals.map(\.kind) == [
+            .referenceNumber,
+            .monetaryAmount,
+            .organization,
+        ])
+        #expect(forward.members[1].support == fixture.expectedSupport)
+        #expect(reverse.members == forward.members)
+        #expect(reverse.members[1].explanation == forward.members[1].explanation)
+        #expect(reverse.members[1].support == forward.members[1].support)
+        #expect(reverse.token == forward.token)
+    }
+
     @Test func ordersMembersBySourceDisplayNameThenPathThenDocumentID() throws {
         let fixture = try DossierProjectorFixture.orderedCounterparts()
 
