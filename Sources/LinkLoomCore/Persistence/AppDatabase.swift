@@ -235,6 +235,35 @@ public enum AppDatabase {
                 columns: ["paymentDocumentID"]
             )
         }
+        migrator.registerMigration("v7_costs_and_payments_dossiers") { db in
+            try db.create(table: "dossier") { table in
+                table.column("id", .text).primaryKey()
+                table.column("kind", .text).notNull()
+                    .check(sql: "kind = 'costsAndPayments'")
+                table.column("displayName", .text).notNull()
+                    .check(sql: "length(trim(displayName)) > 0")
+                table.column("anchorDocumentID", .text).notNull()
+                    .references("document", onDelete: .cascade)
+                table.column("createdAt", .datetime).notNull()
+                table.column("updatedAt", .datetime).notNull()
+                table.uniqueKey(["kind", "anchorDocumentID"])
+                table.check(sql: "updatedAt >= createdAt")
+            }
+            try db.create(
+                index: "dossier_anchor_document",
+                on: "dossier",
+                columns: ["anchorDocumentID"]
+            )
+            try db.create(table: "dossierMembershipExclusion") { table in
+                table.column("dossierID", .text).notNull()
+                    .references("dossier", onDelete: .cascade)
+                table.column("documentID", .text).notNull()
+                    .references("document", onDelete: .cascade)
+                table.column("revisionID", .text).notNull().unique()
+                table.column("excludedAt", .datetime).notNull()
+                table.primaryKey(["dossierID", "documentID"])
+            }
+        }
         return migrator
     }
 }
