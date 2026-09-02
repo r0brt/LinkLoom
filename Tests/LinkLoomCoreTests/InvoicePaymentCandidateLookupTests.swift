@@ -127,6 +127,51 @@ struct InvoicePaymentCandidateLookupTests {
         #expect(candidates.count == 2)
         #expect(candidates.allSatisfy { $0.disposition == .suggestion })
     }
+
+    @Test func lookupDeduplicatesDuplicateNormalizedReferences() async throws {
+        let fixture = try await InvoicePaymentCandidateLookupFixture.make()
+        let invoice = try await fixture.addDocument(
+            path: "invoice.pdf",
+            type: .invoice,
+            referenceQualifier: .invoiceNumber,
+            referenceDisplay: "INV-42",
+            amount: "1250",
+            currency: "CHF",
+            organizationQualifier: "issuer",
+            organization: "alpha ag",
+            additionalReference: (.invoiceNumber, "INV 42", "INV42")
+        )
+        let firstPayment = try await fixture.addDocument(
+            path: "a-payment.pdf",
+            type: .paymentConfirmation,
+            referenceQualifier: .paymentReference,
+            referenceDisplay: "INV-42",
+            amount: "1250",
+            currency: "CHF",
+            organizationQualifier: "payee",
+            organization: "alpha ag"
+        )
+        let secondPayment = try await fixture.addDocument(
+            path: "b-payment.pdf",
+            type: .paymentConfirmation,
+            referenceQualifier: .paymentReference,
+            referenceDisplay: "INV 42",
+            amount: "1250",
+            currency: "CHF",
+            organizationQualifier: "payee",
+            organization: "alpha ag"
+        )
+
+        let candidates = try await fixture.lookup.candidates(involving: invoice.id)
+
+        #expect(candidates.map {
+            "\($0.invoice.document.id.uuidString)/\($0.payment.document.id.uuidString)"
+        } == [
+            "\(invoice.id.uuidString)/\(firstPayment.id.uuidString)",
+            "\(invoice.id.uuidString)/\(secondPayment.id.uuidString)",
+        ])
+        #expect(candidates.allSatisfy { $0.disposition == .suggestion })
+    }
 }
 
 private struct InvoicePaymentCandidateLookupFixture {

@@ -521,35 +521,49 @@ public actor DocumentDNARepository {
         target: DocumentDNAAnalysisTarget
     ) async throws -> DocumentDNA? {
         try await dbWriter.read { db in
-            let isCurrent = try Bool.fetchOne(
-                db,
-                sql: """
-                    SELECT EXISTS (
-                        SELECT 1
-                        FROM documentDNA
-                        JOIN document
-                            ON document.id = documentDNA.documentID
-                        JOIN documentExtraction
-                            ON documentExtraction.documentID = document.id
-                        WHERE documentDNA.documentID = ?
-                            AND documentDNA.schemaVersion = ?
-                            AND documentDNA.analyzerIdentifier = ?
-                            AND documentDNA.analyzerVersion = ?
-                            AND documentDNA.inputContentHash = document.contentHash
-                            AND documentDNA.inputExtractionVersion =
-                                documentExtraction.analysisVersion
-                    )
-                    """,
-                arguments: [
-                    documentID,
-                    target.schemaVersion,
-                    target.analyzerIdentifier,
-                    target.analyzerVersion,
-                ]
-            ) ?? false
-            guard isCurrent else { return nil }
-            return try Self.snapshot(in: db, documentID: documentID)
+            try Self.currentSnapshot(
+                in: db,
+                documentID: documentID,
+                target: target
+            )?.snapshot
         }
+    }
+
+    static func currentSnapshot(
+        in db: Database,
+        documentID: UUID,
+        target: DocumentDNAAnalysisTarget
+    ) throws -> CurrentDocumentDNA? {
+        guard let document = try DocumentRecord.fetchOne(
+            db,
+            sql: """
+                SELECT document.*
+                FROM documentDNA
+                JOIN document
+                    ON document.id = documentDNA.documentID
+                JOIN documentExtraction
+                    ON documentExtraction.documentID = document.id
+                WHERE documentDNA.documentID = ?
+                    AND documentDNA.schemaVersion = ?
+                    AND documentDNA.analyzerIdentifier = ?
+                    AND documentDNA.analyzerVersion = ?
+                    AND documentDNA.inputContentHash = document.contentHash
+                    AND documentDNA.inputExtractionVersion =
+                        documentExtraction.analysisVersion
+                """,
+            arguments: [
+                documentID,
+                target.schemaVersion,
+                target.analyzerIdentifier,
+                target.analyzerVersion,
+            ]
+        ) else {
+            return nil
+        }
+        guard let snapshot = try Self.snapshot(in: db, documentID: document.id) else {
+            throw DocumentDNARepositoryError.invalidStoredState
+        }
+        return try CurrentDocumentDNA(document: document, snapshot: snapshot)
     }
 
     public func currentFindings(
@@ -638,42 +652,54 @@ public actor DocumentDNARepository {
         target: DocumentDNAAnalysisTarget
     ) async throws -> [CurrentDocumentDNA] {
         try await dbWriter.read { db in
-            let documents = try DocumentRecord.fetchAll(
-                db,
-                sql: """
-                    SELECT DISTINCT document.*
-                    FROM documentDNAFinding AS finding
-                        INDEXED BY document_dna_finding_kind_value
-                    JOIN documentDNA
-                        ON documentDNA.documentID = finding.documentID
-                    JOIN document
-                        ON document.id = documentDNA.documentID
-                    JOIN documentExtraction
-                        ON documentExtraction.documentID = document.id
-                    WHERE finding.kind = ?
-                        AND finding.normalizedValue = ?
-                        AND documentDNA.schemaVersion = ?
-                        AND documentDNA.analyzerIdentifier = ?
-                        AND documentDNA.analyzerVersion = ?
-                        AND documentDNA.inputContentHash = document.contentHash
-                        AND documentDNA.inputExtractionVersion =
-                            documentExtraction.analysisVersion
-                    ORDER BY document.sourceRootID, document.relativePath, document.id
-                    """,
-                arguments: [
-                    DocumentDNAFindingKind.referenceNumber.rawValue,
-                    normalizedValue,
-                    target.schemaVersion,
-                    target.analyzerIdentifier,
-                    target.analyzerVersion,
-                ]
+            try Self.currentSnapshotsMatchingReference(
+                in: db,
+                normalizedValue: normalizedValue,
+                target: target
             )
-            return try documents.map { document in
-                guard let snapshot = try Self.snapshot(in: db, documentID: document.id) else {
-                    throw DocumentDNARepositoryError.invalidStoredState
-                }
-                return try CurrentDocumentDNA(document: document, snapshot: snapshot)
+        }
+    }
+
+    static func currentSnapshotsMatchingReference(
+        in db: Database,
+        normalizedValue: String,
+        target: DocumentDNAAnalysisTarget
+    ) throws -> [CurrentDocumentDNA] {
+        let documents = try DocumentRecord.fetchAll(
+            db,
+            sql: """
+                SELECT DISTINCT document.*
+                FROM documentDNAFinding AS finding
+                    INDEXED BY document_dna_finding_kind_value
+                JOIN documentDNA
+                    ON documentDNA.documentID = finding.documentID
+                JOIN document
+                    ON document.id = documentDNA.documentID
+                JOIN documentExtraction
+                    ON documentExtraction.documentID = document.id
+                WHERE finding.kind = ?
+                    AND finding.normalizedValue = ?
+                    AND documentDNA.schemaVersion = ?
+                    AND documentDNA.analyzerIdentifier = ?
+                    AND documentDNA.analyzerVersion = ?
+                    AND documentDNA.inputContentHash = document.contentHash
+                    AND documentDNA.inputExtractionVersion =
+                        documentExtraction.analysisVersion
+                ORDER BY document.sourceRootID, document.relativePath, document.id
+                """,
+            arguments: [
+                DocumentDNAFindingKind.referenceNumber.rawValue,
+                normalizedValue,
+                target.schemaVersion,
+                target.analyzerIdentifier,
+                target.analyzerVersion,
+            ]
+        )
+        return try documents.map { document in
+            guard let snapshot = try Self.snapshot(in: db, documentID: document.id) else {
+                throw DocumentDNARepositoryError.invalidStoredState
             }
+            return try CurrentDocumentDNA(document: document, snapshot: snapshot)
         }
     }
 

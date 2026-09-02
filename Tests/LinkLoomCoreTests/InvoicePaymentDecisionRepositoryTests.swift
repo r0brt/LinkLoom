@@ -85,6 +85,42 @@ struct InvoicePaymentDecisionRepositoryTests {
         #expect(try await fixture.rowCount() == 1)
     }
 
+    @Test func currentRecordsReturnsOnlyExactCurrentRowsAndPreservesUpdatedAt() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let currentKey = try fixture.key()
+        let stalePayment = try await fixture.insertPayment(
+            path: "stale-payment.pdf",
+            contentHash: "hash-stale-payment-v1"
+        )
+        let staleKey = try fixture.key(payment: stalePayment)
+        let currentRecord = InvoicePaymentDecisionRecord(
+            key: currentKey,
+            decision: .confirmed,
+            updatedAt: fixture.date.addingTimeInterval(60)
+        )
+        let staleRecord = InvoicePaymentDecisionRecord(
+            key: staleKey,
+            decision: .excluded,
+            updatedAt: fixture.date.addingTimeInterval(120)
+        )
+        try await fixture.repository.save(currentRecord)
+        try await fixture.repository.save(staleRecord)
+        try await fixture.changeContentHash(
+            documentID: stalePayment.id,
+            to: "hash-stale-payment-v2"
+        )
+
+        let records = try await fixture.db.read { db in
+            try InvoicePaymentDecisionRepository.currentRecords(
+                in: db,
+                keys: [staleKey, currentKey]
+            )
+        }
+
+        #expect(records == [currentKey: currentRecord])
+        #expect(records[currentKey]?.updatedAt == currentRecord.updatedAt)
+    }
+
     @Test func deletingDecisionTwiceIsIdempotent() async throws {
         let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
         let key = try fixture.key()
