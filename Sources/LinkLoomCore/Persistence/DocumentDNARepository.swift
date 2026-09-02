@@ -529,6 +529,19 @@ public actor DocumentDNARepository {
         }
     }
 
+    func currentDocumentSnapshot(
+        documentID: UUID,
+        target: DocumentDNAAnalysisTarget
+    ) async throws -> CurrentDocumentDNA? {
+        try await dbWriter.read { db in
+            try Self.currentSnapshot(
+                in: db,
+                documentID: documentID,
+                target: target
+            )
+        }
+    }
+
     static func currentSnapshot(
         in db: Database,
         documentID: UUID,

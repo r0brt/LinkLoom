@@ -62,8 +62,27 @@ public actor InvoicePaymentDecisionRepository {
         for key in keys where seenKeys.insert(key).inserted {
             uniqueKeys.append(key)
         }
+        let keysPerStatement = max(1, db.maximumStatementArgumentCount / 5)
+        var records: [InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord] = [:]
+        var startIndex = 0
+        while startIndex < uniqueKeys.count {
+            let endIndex = min(startIndex + keysPerStatement, uniqueKeys.count)
+            let chunkRecords = try currentRecordsChunk(
+                in: db,
+                keys: Array(uniqueKeys[startIndex..<endIndex])
+            )
+            records.merge(chunkRecords) { _, replacement in replacement }
+            startIndex = endIndex
+        }
+        return records
+    }
+
+    private static func currentRecordsChunk(
+        in db: Database,
+        keys: [InvoicePaymentDecisionKey]
+    ) throws -> [InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord] {
         var arguments = StatementArguments()
-        let requestedRows = uniqueKeys.map { key in
+        let requestedRows = keys.map { key in
             _ = arguments.append(contentsOf: [
                 key.relationshipType.rawValue,
                 key.invoiceDocumentID,

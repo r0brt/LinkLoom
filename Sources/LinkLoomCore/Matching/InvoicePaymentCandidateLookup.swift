@@ -19,28 +19,12 @@ public struct InvoicePaymentCandidateLookup: Sendable {
     public func candidates(involving documentID: UUID) async throws
         -> [InvoicePaymentCandidate]
     {
-        guard let snapshot = try await repository.currentSnapshot(
+        guard let selected = try await repository.currentDocumentSnapshot(
             documentID: documentID,
             target: target
         ) else {
             return []
         }
-
-        let bootstrapReferences = Set(snapshot.findings.compactMap { finding in
-            finding.kind == .referenceNumber ? finding.normalizedValue : nil
-        }).sorted()
-        var selected: CurrentDocumentDNA?
-        for reference in bootstrapReferences {
-            let matches = try await repository.currentSnapshotsMatchingReference(
-                reference,
-                target: target
-            )
-            if let match = matches.first(where: { $0.document.id == documentID }) {
-                selected = match
-                break
-            }
-        }
-        guard let selected else { return [] }
 
         var matchesByNormalizedReference: [String: [CurrentDocumentDNA]] = [:]
         for reference in projector.normalizedReferences(in: selected) {

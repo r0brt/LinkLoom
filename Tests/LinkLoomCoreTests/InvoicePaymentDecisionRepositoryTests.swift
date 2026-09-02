@@ -121,6 +121,104 @@ struct InvoicePaymentDecisionRepositoryTests {
         #expect(records[currentKey]?.updatedAt == currentRecord.updatedAt)
     }
 
+    @Test func currentRecordsReturnsEmptyWithoutAStatementForEmptyInput() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let counter = DecisionSQLReadCounter()
+        try await fixture.db.write { database in
+            database.trace(options: .statement) { event in
+                counter.record(event)
+            }
+        }
+        counter.reset()
+
+        let records = try await fixture.db.read { db in
+            try InvoicePaymentDecisionRepository.currentRecords(in: db, keys: [])
+        }
+        let readCount = counter.value
+        try await fixture.db.write { database in
+            database.trace(options: [])
+        }
+
+        #expect(records.isEmpty)
+        #expect(readCount == 0)
+    }
+
+    @Test func currentRecordsDeduplicatesRepeatedKeys() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let key = try fixture.key()
+        let record = InvoicePaymentDecisionRecord(
+            key: key,
+            decision: .confirmed,
+            updatedAt: fixture.date
+        )
+        try await fixture.repository.save(record)
+        let counter = DecisionSQLReadCounter()
+        try await fixture.db.write { database in
+            database.trace(options: .statement) { event in
+                counter.record(event)
+            }
+        }
+        counter.reset()
+
+        let records = try await fixture.db.read { db in
+            try InvoicePaymentDecisionRepository.currentRecords(
+                in: db,
+                keys: [key, key]
+            )
+        }
+        let readCount = counter.value
+        try await fixture.db.write { database in
+            database.trace(options: [])
+        }
+
+        #expect(records == [key: record])
+        #expect(readCount == 1)
+    }
+
+    @Test func currentRecordsChunksAtSQLiteStatementArgumentLimit() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let keysPerStatement = try await fixture.db.read { db in
+            db.maximumStatementArgumentCount / 5
+        }
+        let keys = try (0...keysPerStatement).map { index in
+            try InvoicePaymentDecisionKey(
+                relationshipType: .paymentSettlesInvoice,
+                invoiceDocumentID: UUID(),
+                paymentDocumentID: UUID(),
+                invoiceContentHash: "invoice-hash-\(index)",
+                paymentContentHash: "payment-hash-\(index)"
+            )
+        }
+        let counter = DecisionSQLReadCounter()
+        try await fixture.db.write { database in
+            database.trace(options: .statement) { event in
+                counter.record(event)
+            }
+        }
+        counter.reset()
+
+        let atLimitRecords = try await fixture.db.read { db in
+            try InvoicePaymentDecisionRepository.currentRecords(
+                in: db,
+                keys: Array(keys.dropLast())
+            )
+        }
+        let atLimitReadCount = counter.value
+        counter.reset()
+        let overLimitRecords = try await fixture.db.read { db in
+            try InvoicePaymentDecisionRepository.currentRecords(in: db, keys: keys)
+        }
+        let overLimitReadCount = counter.value
+        try await fixture.db.write { database in
+            database.trace(options: [])
+        }
+
+        #expect(atLimitRecords.isEmpty)
+        #expect(atLimitReadCount == 1)
+        #expect(overLimitRecords.isEmpty)
+        #expect(overLimitReadCount == 2)
+    }
+
     @Test func deletingDecisionTwiceIsIdempotent() async throws {
         let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
         let key = try fixture.key()
