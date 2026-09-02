@@ -62,7 +62,13 @@ public actor InvoicePaymentDecisionRepository {
         for key in keys where seenKeys.insert(key).inserted {
             uniqueKeys.append(key)
         }
-        let keysPerStatement = max(1, db.maximumStatementArgumentCount / 5)
+        let keysPerStatement = db.maximumStatementArgumentCount / 5
+        guard keysPerStatement > 0 else {
+            return try currentRecordsWithoutArguments(
+                in: db,
+                requestedKeys: Set(uniqueKeys)
+            )
+        }
         var records: [InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord] = [:]
         var startIndex = 0
         while startIndex < uniqueKeys.count {
@@ -73,6 +79,56 @@ public actor InvoicePaymentDecisionRepository {
             )
             records.merge(chunkRecords) { _, replacement in replacement }
             startIndex = endIndex
+        }
+        return records
+    }
+
+    private static func currentRecordsWithoutArguments(
+        in db: Database,
+        requestedKeys: Set<InvoicePaymentDecisionKey>
+    ) throws -> [InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord] {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT userDecision.relationshipType, userDecision.invoiceDocumentID,
+                       userDecision.paymentDocumentID, userDecision.invoiceContentHash,
+                       userDecision.paymentContentHash, userDecision.decision,
+                       userDecision.updatedAt
+                FROM invoicePaymentUserDecision AS userDecision
+                JOIN document AS invoice
+                    ON invoice.id = userDecision.invoiceDocumentID
+                    AND invoice.contentHash = userDecision.invoiceContentHash
+                JOIN document AS payment
+                    ON payment.id = userDecision.paymentDocumentID
+                    AND payment.contentHash = userDecision.paymentContentHash
+                """
+        )
+        var records: [InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord] = [:]
+        for row in rows {
+            let relationshipTypeValue: String = row["relationshipType"]
+            guard let relationshipType = DocumentRelationshipType(
+                rawValue: relationshipTypeValue
+            ),
+            let key = try? InvoicePaymentDecisionKey(
+                relationshipType: relationshipType,
+                invoiceDocumentID: row["invoiceDocumentID"],
+                paymentDocumentID: row["paymentDocumentID"],
+                invoiceContentHash: row["invoiceContentHash"],
+                paymentContentHash: row["paymentContentHash"]
+            ),
+            requestedKeys.contains(key)
+            else {
+                continue
+            }
+            let decisionValue: String = row["decision"]
+            guard let decision = InvoicePaymentUserDecision(rawValue: decisionValue) else {
+                throw InvoicePaymentDecisionRepositoryError.invalidStoredState
+            }
+            records[key] = InvoicePaymentDecisionRecord(
+                key: key,
+                decision: decision,
+                updatedAt: row["updatedAt"]
+            )
         }
         return records
     }

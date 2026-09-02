@@ -1,5 +1,6 @@
 import Foundation
 import GRDB
+import SQLite3
 import Testing
 @testable import LinkLoomCore
 
@@ -217,6 +218,53 @@ struct InvoicePaymentDecisionRepositoryTests {
         #expect(atLimitReadCount == 1)
         #expect(overLimitRecords.isEmpty)
         #expect(overLimitReadCount == 2)
+    }
+
+    @Test func currentRecordsFallsBackBelowFiveSQLiteVariables() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let key = try fixture.key()
+        let record = InvoicePaymentDecisionRecord(
+            key: key,
+            decision: .confirmed,
+            updatedAt: fixture.date
+        )
+        try await fixture.repository.save(record)
+        let counter = DecisionSQLReadCounter()
+        try await fixture.db.write { database in
+            database.trace(options: .statement) { event in
+                counter.record(event)
+            }
+        }
+        counter.reset()
+
+        let records = try await fixture.db.read { db in
+            guard let connection = db.sqliteConnection else {
+                throw SQLiteLimitTestError.connectionUnavailable
+            }
+            let originalLimit = sqlite3_limit(
+                connection,
+                SQLITE_LIMIT_VARIABLE_NUMBER,
+                4
+            )
+            defer {
+                _ = sqlite3_limit(
+                    connection,
+                    SQLITE_LIMIT_VARIABLE_NUMBER,
+                    originalLimit
+                )
+            }
+            return try InvoicePaymentDecisionRepository.currentRecords(
+                in: db,
+                keys: [key, key]
+            )
+        }
+        let readCount = counter.value
+        try await fixture.db.write { database in
+            database.trace(options: [])
+        }
+
+        #expect(records == [key: record])
+        #expect(readCount == 1)
     }
 
     @Test func deletingDecisionTwiceIsIdempotent() async throws {
@@ -478,6 +526,10 @@ struct InvoicePaymentDecisionRepositoryTests {
 private enum ChangedDecisionDocument {
     case invoice
     case payment
+}
+
+private enum SQLiteLimitTestError: Error {
+    case connectionUnavailable
 }
 
 private final class DecisionSQLReadCounter: @unchecked Sendable {
