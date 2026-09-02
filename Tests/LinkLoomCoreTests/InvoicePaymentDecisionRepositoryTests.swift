@@ -267,6 +267,61 @@ struct InvoicePaymentDecisionRepositoryTests {
         #expect(readCount == 1)
     }
 
+    @Test func currentRecordsMapsMalformedTimestampToInvalidStoredState() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let key = try fixture.key()
+        try await fixture.repository.save(InvoicePaymentDecisionRecord(
+            key: key,
+            decision: .confirmed,
+            updatedAt: fixture.date
+        ))
+        try await fixture.corruptDecisionUpdatedAt()
+
+        await #expect(throws: InvoicePaymentDecisionRepositoryError.invalidStoredState) {
+            try await fixture.db.read { db in
+                try InvoicePaymentDecisionRepository.currentRecords(
+                    in: db,
+                    keys: [key]
+                )
+            }
+        }
+    }
+
+    @Test func currentRecordsFallbackMapsMalformedTimestampToInvalidStoredState() async throws {
+        let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
+        let key = try fixture.key()
+        try await fixture.repository.save(InvoicePaymentDecisionRecord(
+            key: key,
+            decision: .confirmed,
+            updatedAt: fixture.date
+        ))
+        try await fixture.corruptDecisionUpdatedAt()
+
+        await #expect(throws: InvoicePaymentDecisionRepositoryError.invalidStoredState) {
+            try await fixture.db.read { db in
+                guard let connection = db.sqliteConnection else {
+                    throw SQLiteLimitTestError.connectionUnavailable
+                }
+                let originalLimit = sqlite3_limit(
+                    connection,
+                    SQLITE_LIMIT_VARIABLE_NUMBER,
+                    4
+                )
+                defer {
+                    _ = sqlite3_limit(
+                        connection,
+                        SQLITE_LIMIT_VARIABLE_NUMBER,
+                        originalLimit
+                    )
+                }
+                return try InvoicePaymentDecisionRepository.currentRecords(
+                    in: db,
+                    keys: [key]
+                )
+            }
+        }
+    }
+
     @Test func deletingDecisionTwiceIsIdempotent() async throws {
         let fixture = try await InvoicePaymentDecisionRepositoryFixture.make()
         let key = try fixture.key()
@@ -749,6 +804,17 @@ private struct InvoicePaymentDecisionRepositoryFixture {
                 connection,
                 sql: "SELECT COUNT(*) FROM invoicePaymentUserDecision"
             ) ?? 0
+        }
+    }
+
+    func corruptDecisionUpdatedAt() async throws {
+        try await db.write { connection in
+            try connection.execute(
+                sql: """
+                    UPDATE invoicePaymentUserDecision
+                    SET updatedAt = 'not-a-timestamp'
+                    """
+            )
         }
     }
 

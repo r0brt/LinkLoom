@@ -47,13 +47,20 @@ struct DossierProjectionReader: Sendable {
 
         let exclusions = try DossierStore.exclusions(in: db, dossierID: dossier.id)
         var documentsByID = [anchor.id: anchor]
+        var currentDocumentsByID: [UUID: CurrentDocumentDNA] = [:]
         for exclusion in exclusions {
             if let document = try DocumentRecord.fetchOne(db, key: exclusion.documentID) {
                 documentsByID[document.id] = document
             }
+            if let currentDocument = try DocumentDNARepository.currentSnapshot(
+                in: db,
+                documentID: exclusion.documentID,
+                target: target
+            ) {
+                currentDocumentsByID[currentDocument.document.id] = currentDocument
+            }
         }
 
-        var currentDocumentsByID: [UUID: CurrentDocumentDNA] = [:]
         var candidates: [InvoicePaymentCandidate] = []
         if let currentAnchor = try DocumentDNARepository.currentSnapshot(
             in: db,

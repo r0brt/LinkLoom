@@ -105,30 +105,9 @@ public actor InvoicePaymentDecisionRepository {
         )
         var records: [InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord] = [:]
         for row in rows {
-            let relationshipTypeValue: String = row["relationshipType"]
-            guard let relationshipType = DocumentRelationshipType(
-                rawValue: relationshipTypeValue
-            ),
-            let key = try? InvoicePaymentDecisionKey(
-                relationshipType: relationshipType,
-                invoiceDocumentID: row["invoiceDocumentID"],
-                paymentDocumentID: row["paymentDocumentID"],
-                invoiceContentHash: row["invoiceContentHash"],
-                paymentContentHash: row["paymentContentHash"]
-            ),
-            requestedKeys.contains(key)
-            else {
-                continue
-            }
-            let decisionValue: String = row["decision"]
-            guard let decision = InvoicePaymentUserDecision(rawValue: decisionValue) else {
-                throw InvoicePaymentDecisionRepositoryError.invalidStoredState
-            }
-            records[key] = InvoicePaymentDecisionRecord(
-                key: key,
-                decision: decision,
-                updatedAt: row["updatedAt"]
-            )
+            let record = try decodeRecord(row)
+            guard requestedKeys.contains(record.key) else { continue }
+            records[record.key] = record
         }
         return records
     }
@@ -179,8 +158,36 @@ public actor InvoicePaymentDecisionRepository {
         )
         var records: [InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord] = [:]
         for row in rows {
-            let relationshipTypeValue: String = row["relationshipType"]
-            let decisionValue: String = row["decision"]
+            let record = try decodeRecord(row)
+            records[record.key] = record
+        }
+        return records
+    }
+
+    private static func decodeRecord(_ row: Row) throws -> InvoicePaymentDecisionRecord {
+        do {
+            let relationshipTypeValue = try row.decode(
+                String.self,
+                forColumn: "relationshipType"
+            )
+            let invoiceDocumentID = try row.decode(
+                UUID.self,
+                forColumn: "invoiceDocumentID"
+            )
+            let paymentDocumentID = try row.decode(
+                UUID.self,
+                forColumn: "paymentDocumentID"
+            )
+            let invoiceContentHash = try row.decode(
+                String.self,
+                forColumn: "invoiceContentHash"
+            )
+            let paymentContentHash = try row.decode(
+                String.self,
+                forColumn: "paymentContentHash"
+            )
+            let decisionValue = try row.decode(String.self, forColumn: "decision")
+            let updatedAt = try row.decode(Date.self, forColumn: "updatedAt")
             guard let relationshipType = DocumentRelationshipType(
                 rawValue: relationshipTypeValue
             ),
@@ -190,18 +197,19 @@ public actor InvoicePaymentDecisionRepository {
             }
             let key = try InvoicePaymentDecisionKey(
                 relationshipType: relationshipType,
-                invoiceDocumentID: row["invoiceDocumentID"],
-                paymentDocumentID: row["paymentDocumentID"],
-                invoiceContentHash: row["invoiceContentHash"],
-                paymentContentHash: row["paymentContentHash"]
+                invoiceDocumentID: invoiceDocumentID,
+                paymentDocumentID: paymentDocumentID,
+                invoiceContentHash: invoiceContentHash,
+                paymentContentHash: paymentContentHash
             )
-            records[key] = InvoicePaymentDecisionRecord(
+            return InvoicePaymentDecisionRecord(
                 key: key,
                 decision: decision,
-                updatedAt: row["updatedAt"]
+                updatedAt: updatedAt
             )
+        } catch {
+            throw InvoicePaymentDecisionRepositoryError.invalidStoredState
         }
-        return records
     }
 
     public func candidatesWithCurrentDecisions(

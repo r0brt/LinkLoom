@@ -649,7 +649,7 @@ public actor DocumentDNARepository {
                     startUTF16: row["evidenceStartUTF16"],
                     lengthUTF16: row["evidenceLengthUTF16"],
                     exactText: row["evidenceExactText"],
-                    ocrRegionIndexes: try JSONDecoder().decode([Int].self, from: indexesJSON)
+                    ocrRegionIndexes: try Self.decodeOCRRegionIndexes(indexesJSON)
                 ))
             }
             return try accumulators.map { try $0.match() }
@@ -794,7 +794,7 @@ public actor DocumentDNARepository {
                 startUTF16: evidenceRow["startUTF16"],
                 lengthUTF16: evidenceRow["lengthUTF16"],
                 exactText: evidenceRow["exactText"],
-                ocrRegionIndexes: try JSONDecoder().decode([Int].self, from: indexesJSON)
+                ocrRegionIndexes: try Self.decodeOCRRegionIndexes(indexesJSON)
             )
         }
         return try DocumentDNAFinding(
@@ -806,6 +806,14 @@ public actor DocumentDNARepository {
             confidence: row["confidence"],
             evidence: evidence
         )
+    }
+
+    private static func decodeOCRRegionIndexes(_ data: Data) throws -> [Int] {
+        do {
+            return try JSONDecoder().decode([Int].self, from: data)
+        } catch {
+            throw DocumentDNARepositoryError.invalidStoredState
+        }
     }
 
     private static func isEligibleForAnalysis(

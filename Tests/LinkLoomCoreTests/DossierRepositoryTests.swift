@@ -476,6 +476,54 @@ struct DossierRepositoryTests {
         #expect(returnedSupport.paymentDNAAnalyzedAt == DossierFixture.laterDate)
     }
 
+    @Test func correctionKeepsCurrentTypeAfterDifferentReferenceReanalysis() async throws {
+        let values = try await DossierFixture.confirmedPair()
+        let opened = try await values.fixture.repository.snapshot(id: values.dossier.id)
+        let support = try #require(opened.members.first {
+            $0.id == values.payment.id
+        }?.support)
+        let corrected = try await values.fixture.repository.excludeMember(
+            dossierID: values.dossier.id,
+            documentID: values.payment.id,
+            expectedSupport: support
+        )
+        let revision = try #require(corrected.corrections.first?.exclusion.revisionID)
+
+        _ = try await values.fixture.reanalyze(
+            documentID: values.payment.id,
+            contentHash: "hash-payment-different-reference",
+            type: .paymentConfirmation,
+            reference: "OTHER99",
+            analyzedAt: DossierFixture.laterDate
+        )
+        let snapshot = try await values.fixture.repository.snapshot(id: values.dossier.id)
+
+        #expect(snapshot.members.map(\.id) == [values.invoice.id])
+        #expect(snapshot.corrections.map(\.exclusion.revisionID) == [revision])
+        #expect(snapshot.corrections.first?.documentType == .paymentConfirmation)
+    }
+
+    @Test func correctionKeepsCurrentTypeWhenAnchorDNAIsStale() async throws {
+        let values = try await DossierFixture.confirmedPair()
+        let opened = try await values.fixture.repository.snapshot(id: values.dossier.id)
+        let support = try #require(opened.members.first {
+            $0.id == values.payment.id
+        }?.support)
+        let corrected = try await values.fixture.repository.excludeMember(
+            dossierID: values.dossier.id,
+            documentID: values.payment.id,
+            expectedSupport: support
+        )
+        let revision = try #require(corrected.corrections.first?.exclusion.revisionID)
+        try await values.fixture.makeDNAStale(for: values.invoice.id)
+
+        let snapshot = try await values.fixture.repository.snapshot(id: values.dossier.id)
+
+        #expect(snapshot.members.map(\.id) == [values.invoice.id])
+        #expect(snapshot.corrections.map(\.exclusion.revisionID) == [revision])
+        #expect(snapshot.corrections.first?.documentType == .paymentConfirmation)
+    }
+
     @Test func oldSupportCannotExcludeAfterExactContentReturns() async throws {
         let values = try await DossierFixture.confirmedPair()
         let opened = try await values.fixture.repository.snapshot(id: values.dossier.id)
@@ -635,6 +683,24 @@ struct DossierRepositoryTests {
             try await values.fixture.repository.snapshot(id: values.dossier.id)
         }
     }
+
+    @Test func malformedDecisionTimestampIsMappedToInvalidStoredState() async throws {
+        let values = try await DossierFixture.confirmedPair()
+        try await values.fixture.corruptDecisionUpdatedAt()
+
+        await #expect(throws: DossierRepositoryError.invalidStoredState) {
+            try await values.fixture.repository.snapshot(id: values.dossier.id)
+        }
+    }
+
+    @Test func corruptEvidenceRegionIndexesAreMappedToInvalidStoredState() async throws {
+        let values = try await DossierFixture.confirmedPair()
+        try await values.fixture.corruptEvidenceRegionIndexes(for: values.invoice.id)
+
+        await #expect(throws: DossierRepositoryError.invalidStoredState) {
+            try await values.fixture.repository.snapshot(id: values.dossier.id)
+        }
+    }
 }
 
 private extension DossierFixture {
@@ -699,6 +765,34 @@ private extension DossierFixture {
                 database,
                 sql: "SELECT COUNT(*) FROM invoicePaymentUserDecision"
             )!
+        }
+    }
+
+    func corruptDecisionUpdatedAt() async throws {
+        try await db.write { database in
+            try database.execute(
+                sql: """
+                    UPDATE invoicePaymentUserDecision
+                    SET updatedAt = 'not-a-timestamp'
+                    """
+            )
+        }
+    }
+
+    func corruptEvidenceRegionIndexes(for documentID: UUID) async throws {
+        try await db.write { database in
+            try database.execute(
+                sql: """
+                    UPDATE documentDNAEvidence
+                    SET ocrRegionIndexesJSON = ?
+                    WHERE findingID IN (
+                        SELECT id
+                        FROM documentDNAFinding
+                        WHERE documentID = ?
+                    )
+                    """,
+                arguments: [Data("not-json".utf8), documentID]
+            )
         }
     }
 
