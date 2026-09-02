@@ -59,6 +59,36 @@ struct DossierProjectorTests {
         #expect(snapshot.corrections[0].exclusion.revisionID == fixture.exclusionRevisionID)
     }
 
+    @Test func rejectsExclusionBelongingToAnotherDossier() throws {
+        let fixture = try DossierProjectorFixture.confirmedPair()
+        let foreignExclusion = DossierMembershipExclusion(
+            dossierID: UUID(uuidString: "00000000-0000-0000-0000-000000000099")!,
+            documentID: fixture.paymentID,
+            revisionID: UUID(uuidString: "00000000-0000-0000-0000-000000000098")!,
+            excludedAt: Date(timeIntervalSince1970: 1_800_000_100)
+        )
+        let input = fixture.input.replacing(exclusions: [foreignExclusion])
+
+        #expect(throws: DossierProjectionError.invalidStoredState) {
+            try CostsAndPaymentsDossierProjector().project(input)
+        }
+    }
+
+    @Test func rejectsExclusionForAnchor() throws {
+        let fixture = try DossierProjectorFixture.confirmedPair()
+        let anchorExclusion = DossierMembershipExclusion(
+            dossierID: fixture.dossier.id,
+            documentID: fixture.invoiceID,
+            revisionID: UUID(uuidString: "00000000-0000-0000-0000-000000000097")!,
+            excludedAt: Date(timeIntervalSince1970: 1_800_000_100)
+        )
+        let input = fixture.input.replacing(exclusions: [anchorExclusion])
+
+        #expect(throws: DossierProjectionError.invalidStoredState) {
+            try CostsAndPaymentsDossierProjector().project(input)
+        }
+    }
+
     @Test func doesNotTraverseFromDirectMemberToSecondHop() throws {
         let fixture = try DossierProjectorFixture.secondHop()
 
@@ -77,6 +107,34 @@ struct DossierProjectorTests {
 
         #expect(snapshot.members.map(\.document.id) == [fixture.invoiceID, fixture.paymentID])
         #expect(snapshot.token.memberSupports == [fixture.expectedSupport!])
+    }
+
+    @Test func selectsStrongerDuplicateIndependentlyOfCandidateInputOrder() throws {
+        let fixture = try DossierProjectorFixture.confirmedPair()
+        let strongCandidate = fixture.input.candidates[0]
+        let weakCandidate = InvoicePaymentCandidate(
+            invoice: strongCandidate.invoice,
+            payment: strongCandidate.payment,
+            disposition: .suggestion,
+            resolverVersion: "weaker-candidate",
+            signals: [strongCandidate.signals[0]]
+        )
+        let forward = try CostsAndPaymentsDossierProjector().project(
+            fixture.input.replacing(candidates: [weakCandidate, strongCandidate])
+        )
+        let reverse = try CostsAndPaymentsDossierProjector().project(
+            fixture.input.replacing(candidates: [strongCandidate, weakCandidate])
+        )
+
+        #expect(forward.members.map(\.document.id) == [fixture.invoiceID, fixture.paymentID])
+        #expect(forward.members[1].explanation.signals.map(\.kind) == [
+            .referenceNumber,
+            .monetaryAmount,
+            .organization,
+        ])
+        #expect(forward.members[1].support == fixture.expectedSupport)
+        #expect(reverse.members == forward.members)
+        #expect(reverse.token == forward.token)
     }
 
     @Test func ordersMembersBySourceDisplayNameThenPathThenDocumentID() throws {
@@ -571,5 +629,23 @@ private struct DossierProjectorFixture: Sendable {
 
     private static func uuid(_ value: String) -> UUID {
         UUID(uuidString: value)!
+    }
+}
+
+private extension CostsAndPaymentsDossierProjectionInput {
+    func replacing(
+        candidates: [InvoicePaymentCandidate]? = nil,
+        exclusions: [DossierMembershipExclusion]? = nil
+    ) -> Self {
+        Self(
+            dossier: dossier,
+            anchor: anchor,
+            documentsByID: documentsByID,
+            currentDocumentsByID: currentDocumentsByID,
+            candidates: candidates ?? self.candidates,
+            decisionsByKey: decisionsByKey,
+            sourceDisplayNames: sourceDisplayNames,
+            exclusions: exclusions ?? self.exclusions
+        )
     }
 }

@@ -35,7 +35,9 @@ struct InvoicePaymentCandidateProjector: Sendable {
                 || candidate.payment.document.id == input.selected.document.id
             {
                 let pair = InvoicePaymentCandidatePair(candidate)
-                if let old = candidatesByPair[pair], strength(old) >= strength(candidate) {
+                if let old = candidatesByPair[pair],
+                   InvoicePaymentCandidateStrength(old)
+                    >= InvoicePaymentCandidateStrength(candidate) {
                     continue
                 }
                 candidatesByPair[pair] = candidate
@@ -58,12 +60,6 @@ struct InvoicePaymentCandidateProjector: Sendable {
         default:
             return nil
         }
-    }
-
-    private func strength(
-        _ candidate: InvoicePaymentCandidate
-    ) -> (Int, Int) {
-        (candidate.disposition == .automatic ? 1 : 0, candidate.signals.count)
     }
 
     private func normalizeAmbiguityAndSort(
@@ -100,6 +96,20 @@ struct InvoicePaymentCandidateProjector: Sendable {
         _ rhs: InvoicePaymentCandidate
     ) -> Bool {
         InvoicePaymentCandidatePair(lhs).sortKey < InvoicePaymentCandidatePair(rhs).sortKey
+    }
+}
+
+struct InvoicePaymentCandidateStrength: Comparable, Sendable {
+    let automaticRank: Int
+    let signalCount: Int
+
+    init(_ candidate: InvoicePaymentCandidate) {
+        automaticRank = candidate.disposition == .automatic ? 1 : 0
+        signalCount = candidate.signals.count
+    }
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        (lhs.automaticRank, lhs.signalCount) < (rhs.automaticRank, rhs.signalCount)
     }
 }
 

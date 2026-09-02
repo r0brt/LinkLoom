@@ -22,6 +22,11 @@ struct CostsAndPaymentsDossierProjector: Sendable {
         else {
             throw DossierProjectionError.invalidStoredState
         }
+        guard input.exclusions.allSatisfy({ exclusion in
+            exclusion.dossierID == input.dossier.id && exclusion.documentID != anchor.id
+        }) else {
+            throw DossierProjectionError.invalidStoredState
+        }
 
         let excludedDocumentIDs = Set(input.exclusions.map(\.documentID))
         let anchorMember = member(
@@ -35,7 +40,7 @@ struct CostsAndPaymentsDossierProjector: Sendable {
             ),
             support: nil
         )
-        let inferredMembers = deduplicatedAndSortedMembers(
+        let inferredMembers = try deduplicatedAndSortedMembers(
             candidates: input.candidates,
             anchorID: anchor.id,
             decisionsByKey: input.decisionsByKey,
@@ -67,8 +72,8 @@ struct CostsAndPaymentsDossierProjector: Sendable {
         decisionsByKey: [InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord],
         excludedDocumentIDs: Set<UUID>,
         sourceDisplayNames: [UUID: String]
-    ) -> [DossierMember] {
-        var membersByDocumentID: [UUID: DossierMember] = [:]
+    ) throws -> [DossierMember] {
+        var candidatesByDocumentID: [UUID: InvoicePaymentCandidate] = [:]
         for candidate in candidates {
             guard let counterpart = candidate.counterpart(to: anchorID),
                   let key = try? InvoicePaymentDecisionKey(candidate: candidate),
@@ -78,7 +83,20 @@ struct CostsAndPaymentsDossierProjector: Sendable {
             else {
                 continue
             }
-            let member = member(
+            if let existing = candidatesByDocumentID[counterpart.document.id],
+               !isPreferred(candidate, over: existing) {
+                continue
+            }
+            candidatesByDocumentID[counterpart.document.id] = candidate
+        }
+        return try candidatesByDocumentID.values.map { candidate in
+            guard let counterpart = candidate.counterpart(to: anchorID),
+                  let key = try? InvoicePaymentDecisionKey(candidate: candidate),
+                  let decision = decisionsByKey[key]
+            else {
+                throw DossierProjectionError.invalidStoredState
+            }
+            return member(
                 document: counterpart.document,
                 currentDocument: counterpart,
                 sourceDisplayNames: sourceDisplayNames,
@@ -96,9 +114,7 @@ struct CostsAndPaymentsDossierProjector: Sendable {
                     resolverVersion: candidate.resolverVersion
                 )
             )
-            membersByDocumentID[member.document.id] = member
-        }
-        return membersByDocumentID.values.sorted(by: memberOrder)
+        }.sorted(by: memberOrder)
     }
 
     private func sortedCorrections(
@@ -162,6 +178,87 @@ struct CostsAndPaymentsDossierProjector: Sendable {
         document: DocumentRecord
     ) -> (String, String, String) {
         (sourceDisplayName, document.relativePath, document.id.uuidString)
+    }
+
+    private func isPreferred(
+        _ candidate: InvoicePaymentCandidate,
+        over existing: InvoicePaymentCandidate
+    ) -> Bool {
+        let candidateStrength = InvoicePaymentCandidateStrength(candidate)
+        let existingStrength = InvoicePaymentCandidateStrength(existing)
+        guard candidateStrength == existingStrength else {
+            return candidateStrength > existingStrength
+        }
+        return DossierCandidateTieBreakKey(candidate)
+            < DossierCandidateTieBreakKey(existing)
+    }
+}
+
+private struct DossierCandidateTieBreakKey: Comparable {
+    let resolverVersion: String
+    let invoiceAnalyzedAt: UInt64
+    let paymentAnalyzedAt: UInt64
+    let invoiceDocumentType: String
+    let paymentDocumentType: String
+    let signals: [String]
+
+    init(_ candidate: InvoicePaymentCandidate) {
+        resolverVersion = candidate.resolverVersion
+        invoiceAnalyzedAt = candidate.invoice.snapshot.analyzedAt
+            .timeIntervalSinceReferenceDate.bitPattern
+        paymentAnalyzedAt = candidate.payment.snapshot.analyzedAt
+            .timeIntervalSinceReferenceDate.bitPattern
+        invoiceDocumentType = candidate.invoice.documentType?.rawValue ?? ""
+        paymentDocumentType = candidate.payment.documentType?.rawValue ?? ""
+        signals = candidate.signals.map(Self.signalKey).sorted()
+    }
+
+    static func < (lhs: Self, rhs: Self) -> Bool {
+        if lhs.resolverVersion != rhs.resolverVersion {
+            return lhs.resolverVersion < rhs.resolverVersion
+        }
+        if lhs.invoiceAnalyzedAt != rhs.invoiceAnalyzedAt {
+            return lhs.invoiceAnalyzedAt < rhs.invoiceAnalyzedAt
+        }
+        if lhs.paymentAnalyzedAt != rhs.paymentAnalyzedAt {
+            return lhs.paymentAnalyzedAt < rhs.paymentAnalyzedAt
+        }
+        if lhs.invoiceDocumentType != rhs.invoiceDocumentType {
+            return lhs.invoiceDocumentType < rhs.invoiceDocumentType
+        }
+        if lhs.paymentDocumentType != rhs.paymentDocumentType {
+            return lhs.paymentDocumentType < rhs.paymentDocumentType
+        }
+        return lhs.signals.lexicographicallyPrecedes(rhs.signals)
+    }
+
+    private static func signalKey(_ signal: InvoicePaymentCandidateSignal) -> String {
+        component(signal.kind.rawValue)
+            + findingKey(signal.invoiceFinding)
+            + findingKey(signal.paymentFinding)
+    }
+
+    private static func findingKey(_ finding: DocumentDNAFinding) -> String {
+        component(finding.kind.rawValue)
+            + component(finding.qualifier)
+            + component(finding.displayValue)
+            + component(finding.normalizedValue)
+            + component(finding.secondaryNormalizedValue)
+            + component(String(finding.confidence.bitPattern))
+            + finding.evidence.map(evidenceKey).joined()
+    }
+
+    private static func evidenceKey(_ evidence: DocumentDNAEvidence) -> String {
+        component(String(evidence.pageIndex))
+            + component(String(evidence.startUTF16))
+            + component(String(evidence.lengthUTF16))
+            + component(evidence.exactText)
+            + component(evidence.ocrRegionIndexes.map(String.init).joined(separator: ","))
+    }
+
+    private static func component(_ value: String?) -> String {
+        guard let value else { return "-" }
+        return "\(value.utf8.count):\(value)"
     }
 }
 
