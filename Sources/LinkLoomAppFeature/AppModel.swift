@@ -84,6 +84,10 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var scanState: AppScanState = .idle
     @Published public private(set) var lastErrorCode: String?
     @Published public private(set) var unavailableSourceIDs = Set<UUID>()
+    @Published public private(set) var workspaceSelection: AppWorkspaceSelection?
+    @Published public private(set) var dossiers: [DossierSummary] = []
+    @Published public private(set) var dossierEntryState: DossierEntryState = .none
+    @Published public private(set) var dossierDetailState: DossierDetailState = .none
 
     public var lastErrorMessage: String? {
         switch lastErrorCode {
@@ -123,6 +127,8 @@ public final class AppModel: ObservableObject {
     private let dnaRetryer: (any DocumentDNAFailureRetrying)?
     private let invoicePaymentCandidates: (any InvoicePaymentCandidateLoading)?
     private let invoicePaymentDecisions: (any InvoicePaymentDecisionUpdating)?
+    private let dossierLoader: (any DossierLoading)?
+    private let dossierMutator: (any DossierMutating)?
     private let sourceLoader: @Sendable () async throws -> [SourceRootRecord]
     private let documentLoader: @Sendable (UUID) async throws -> [DocumentRecord]
     private let watchScheduler: (any SourceWatchScheduling)?
@@ -153,6 +159,8 @@ public final class AppModel: ObservableObject {
         dnaRetryer: (any DocumentDNAFailureRetrying)? = nil,
         invoicePaymentCandidates: (any InvoicePaymentCandidateLoading)? = nil,
         invoicePaymentDecisions: (any InvoicePaymentDecisionUpdating)? = nil,
+        dossierLoader: (any DossierLoading)? = nil,
+        dossierMutator: (any DossierMutating)? = nil,
         watchScheduler: (any SourceWatchScheduling)? = nil,
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
@@ -165,6 +173,8 @@ public final class AppModel: ObservableObject {
         self.dnaRetryer = dnaRetryer
         self.invoicePaymentCandidates = invoicePaymentCandidates
         self.invoicePaymentDecisions = invoicePaymentDecisions
+        self.dossierLoader = dossierLoader
+        self.dossierMutator = dossierMutator
         sourceLoader = { try await sources.all() }
         self.watchScheduler = watchScheduler
         self.reportRuntimeFailure = reportRuntimeFailure
@@ -187,6 +197,8 @@ public final class AppModel: ObservableObject {
         dnaRetryer: (any DocumentDNAFailureRetrying)? = nil,
         invoicePaymentCandidates: (any InvoicePaymentCandidateLoading)? = nil,
         invoicePaymentDecisions: (any InvoicePaymentDecisionUpdating)? = nil,
+        dossierLoader: (any DossierLoading)? = nil,
+        dossierMutator: (any DossierMutating)? = nil,
         documentLoader: @escaping @Sendable (UUID) async throws -> [DocumentRecord],
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
@@ -199,6 +211,8 @@ public final class AppModel: ObservableObject {
         self.dnaRetryer = dnaRetryer
         self.invoicePaymentCandidates = invoicePaymentCandidates
         self.invoicePaymentDecisions = invoicePaymentDecisions
+        self.dossierLoader = dossierLoader
+        self.dossierMutator = dossierMutator
         sourceLoader = { try await sources.all() }
         self.documentLoader = documentLoader
         watchScheduler = nil
@@ -217,6 +231,8 @@ public final class AppModel: ObservableObject {
         dnaRetryer: (any DocumentDNAFailureRetrying)? = nil,
         invoicePaymentCandidates: (any InvoicePaymentCandidateLoading)? = nil,
         invoicePaymentDecisions: (any InvoicePaymentDecisionUpdating)? = nil,
+        dossierLoader: (any DossierLoading)? = nil,
+        dossierMutator: (any DossierMutating)? = nil,
         watchScheduler: any SourceWatchScheduling,
         sourceResolver: @escaping @Sendable (SourceRootRecord) throws -> URL,
         sourceLoader: (@Sendable () async throws -> [SourceRootRecord])? = nil,
@@ -232,6 +248,8 @@ public final class AppModel: ObservableObject {
         self.dnaRetryer = dnaRetryer
         self.invoicePaymentCandidates = invoicePaymentCandidates
         self.invoicePaymentDecisions = invoicePaymentDecisions
+        self.dossierLoader = dossierLoader
+        self.dossierMutator = dossierMutator
         self.sourceLoader = sourceLoader ?? { try await sources.all() }
         self.documentLoader = documentLoader ?? { sourceID in
             try await documents.all(sourceRootID: sourceID)
@@ -250,6 +268,7 @@ public final class AppModel: ObservableObject {
             let targetSourceID = loadedSources.contains(where: { $0.id == selectedSourceID })
                 ? selectedSourceID
                 : loadedSources.first?.id
+            let loadedDossiers = try await dossierLoader?.summaries() ?? []
             let presentation = try await loadDocumentPresentation(sourceID: targetSourceID)
             guard !Task.isCancelled,
                   generation == incrementalRefreshGeneration
@@ -258,6 +277,7 @@ public final class AppModel: ObservableObject {
                 return
             }
             sources = loadedSources
+            dossiers = loadedDossiers
             publishSelection(targetSourceID, presentation: presentation)
             await startWatchingSavedSources()
             await finishReload()
@@ -389,6 +409,7 @@ public final class AppModel: ObservableObject {
         invalidateInvoicePaymentCounterpartNavigation()
         let generation = documentDNADetailGeneration
         invoicePaymentCandidateState = .none
+        dossierEntryState = .none
         clearDocumentScopedFailure()
         guard let id else {
             selectedDocumentID = nil
@@ -431,6 +452,11 @@ public final class AppModel: ObservableObject {
             }
             await loadInvoicePaymentCandidates(
                 involving: id,
+                generation: generation
+            )
+            await loadDossierEntryDisposition(
+                documentID: id,
+                snapshot: snapshot,
                 generation: generation
             )
         } catch is CancellationError {
@@ -810,6 +836,7 @@ public final class AppModel: ObservableObject {
         selectedDocumentID = nil
         documentDNADetailState = .none
         invoicePaymentCandidateState = .none
+        dossierEntryState = .none
         clearDocumentScopedFailure()
     }
 
@@ -931,6 +958,63 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    private func loadDossierEntryDisposition(
+        documentID: UUID,
+        snapshot: DocumentDNA,
+        generation: Int
+    ) async {
+        guard let dossierLoader,
+              snapshot.findings.contains(where: {
+                  $0.kind == .documentType
+                      && ($0.normalizedValue == DocumentType.invoice.rawValue
+                          || $0.normalizedValue
+                            == DocumentType.paymentConfirmation.rawValue)
+              })
+        else {
+            guard generation == documentDNADetailGeneration,
+                  selectedDocumentID == documentID
+            else {
+                return
+            }
+            dossierEntryState = .none
+            return
+        }
+        dossierEntryState = .loading(documentID: documentID)
+        do {
+            let disposition = try await dossierLoader.entryDisposition(for: documentID)
+            guard !Task.isCancelled,
+                  generation == documentDNADetailGeneration,
+                  selectedDocumentID == documentID
+            else {
+                return
+            }
+            dossierEntryState = .available(
+                documentID: documentID,
+                disposition: disposition
+            )
+        } catch is CancellationError {
+            guard generation == documentDNADetailGeneration,
+                  selectedDocumentID == documentID
+            else {
+                return
+            }
+            dossierEntryState = .none
+        } catch {
+            guard !Task.isCancelled,
+                  generation == documentDNADetailGeneration,
+                  selectedDocumentID == documentID
+            else {
+                return
+            }
+            dossierEntryState = .failed(documentID: documentID)
+            publishRuntimeFailure(
+                code: "dossierEntryLoadFailure",
+                category: .dossierLoad,
+                error: error
+            )
+        }
+    }
+
     private static func isDocumentDNACancellation(_ error: any Error) -> Bool {
         if error is CancellationError {
             return true
@@ -943,6 +1027,7 @@ public final class AppModel: ObservableObject {
         presentation: DocumentPresentation
     ) {
         selectedSourceID = sourceID
+        workspaceSelection = sourceID.map(AppWorkspaceSelection.source)
         publish(presentation)
     }
 

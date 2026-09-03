@@ -15,6 +15,152 @@ struct AppModelTests {
         #expect(diagnostic.reason == .staleDocument)
     }
 
+    @Test @MainActor func reloadPublishesDossiersWithSourceWorkspace() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let summary = try testDossierSummary(
+            anchor: fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        )
+        let loader = ScriptedDossierLoader(
+            summaries: .success([summary])
+        )
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dossierLoader: loader
+        )
+
+        try await model.reload()
+
+        #expect(model.sources == [source])
+        #expect(model.dossiers == [summary])
+        #expect(model.workspaceSelection == .source(source.id))
+    }
+
+    @Test @MainActor func failedDossierReloadPublishesNoPartialSourceState() async throws {
+        let fixture = try AppModelFixture()
+        _ = try await fixture.addSource(named: "Archive")
+        let loader = ScriptedDossierLoader(
+            summaries: .failure(AppModelTestError.dossierLoadFailed)
+        )
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dossierLoader: loader
+        )
+
+        await #expect(throws: AppModelTestError.self) {
+            try await model.reload()
+        }
+
+        #expect(model.sources.isEmpty)
+        #expect(model.dossiers.isEmpty)
+        #expect(model.workspaceSelection == nil)
+    }
+
+    @Test @MainActor func selectingSourceSetsExplicitSourceWorkspace() async throws {
+        let fixture = try AppModelFixture()
+        let first = try await fixture.addSource(named: "First")
+        let second = try await fixture.addSource(named: "Second")
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester()
+        )
+        try await model.reload()
+
+        await model.selectSource(id: second.id)
+
+        #expect(model.selectedSourceID == second.id)
+        #expect(model.workspaceSelection == .source(second.id))
+        #expect(model.workspaceSelection != .source(first.id))
+    }
+
+    @Test @MainActor func selectingEligibleDocumentPublishesOnlyLatestEntryDisposition() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let first = fixture.document(sourceRootID: source.id, path: "first.pdf")
+        let second = fixture.document(sourceRootID: source.id, path: "second.pdf")
+        try await fixture.documents.save(first)
+        try await fixture.documents.save(second)
+        let firstDNA = try testDocumentDNA(document: first, type: .invoice)
+        let secondDNA = try testDocumentDNA(document: second, type: .paymentConfirmation)
+        let secondSummary = try testDossierSummary(anchor: second)
+        let statuses = MutableDocumentDNAStatusLoader(statusesBySource: [source.id: [
+            DocumentDNAAnalysisStatus(documentID: first.id, phase: .ready),
+            DocumentDNAAnalysisStatus(documentID: second.id, phase: .ready),
+        ]])
+        let loader = ScriptedDossierLoader(
+            entrySteps: [
+                .blocked(.success(.create)),
+                .disposition(.open(secondSummary)),
+            ]
+        )
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: statuses,
+            dnaSnapshots: ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                first.id: [.snapshot(firstDNA)],
+                second.id: [.snapshot(secondDNA)],
+            ]),
+            dossierLoader: loader
+        )
+        try await model.reload()
+
+        let staleSelection = Task { await model.selectDocument(id: first.id) }
+        await loader.waitUntilBlockedEntryStarts()
+        await model.selectDocument(id: second.id)
+        await loader.releaseBlockedEntry()
+        await staleSelection.value
+
+        #expect(model.dossierEntryState == .available(
+            documentID: second.id,
+            disposition: .open(secondSummary)
+        ))
+    }
+
+    @Test @MainActor func entryCancellationClearsOnlyMatchingLoadingState() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        try await fixture.documents.save(document)
+        let dna = try testDocumentDNA(document: document, type: .invoice)
+        let statuses = MutableDocumentDNAStatusLoader(statusesBySource: [source.id: [
+            DocumentDNAAnalysisStatus(documentID: document.id, phase: .ready),
+        ]])
+        let loader = ScriptedDossierLoader(entrySteps: [.cancellation])
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: statuses,
+            dnaSnapshots: ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                document.id: [.snapshot(dna)],
+            ]),
+            dossierLoader: loader
+        )
+        try await model.reload()
+
+        await model.selectDocument(id: document.id)
+
+        #expect(model.dossierEntryState == .none)
+        #expect(model.lastErrorCode == nil)
+    }
+
     @Test @MainActor func scanPublishesProgressAndReloadsDocuments() async throws {
         let fixture = try AppModelFixture()
         let source = try await fixture.addSource(named: "Archive")
@@ -4423,15 +4569,85 @@ private actor ScriptedInvoicePaymentDecisionUpdater: InvoicePaymentDecisionUpdat
     }
 }
 
-private func testDocumentDNA(document: DocumentRecord) throws -> DocumentDNA {
+private actor ScriptedDossierLoader: DossierLoading {
+    enum EntryStep: Sendable {
+        case disposition(DossierEntryDisposition)
+        case failure
+        case cancellation
+        case blocked(Result<DossierEntryDisposition, AppModelTestError>)
+    }
+
+    private let summariesResult: Result<[DossierSummary], AppModelTestError>
+    private var entrySteps: [EntryStep]
+    private var blockedEntryStarted = false
+    private var entryStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var entryReleaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(
+        summaries: Result<[DossierSummary], AppModelTestError> = .success([]),
+        entrySteps: [EntryStep] = []
+    ) {
+        summariesResult = summaries
+        self.entrySteps = entrySteps
+    }
+
+    func summaries() async throws -> [DossierSummary] {
+        try summariesResult.get()
+    }
+
+    func entryDisposition(for documentID: UUID) async throws -> DossierEntryDisposition {
+        let step = entrySteps.isEmpty ? .disposition(.create) : entrySteps.removeFirst()
+        switch step {
+        case .disposition(let disposition):
+            return disposition
+        case .failure:
+            throw AppModelTestError.dossierLoadFailed
+        case .cancellation:
+            throw CancellationError()
+        case .blocked(let result):
+            blockedEntryStarted = true
+            entryStartWaiters.forEach { $0.resume() }
+            entryStartWaiters.removeAll()
+            await withCheckedContinuation { entryReleaseWaiters.append($0) }
+            return try result.get()
+        }
+    }
+
+    func snapshot(id: UUID) async throws -> DossierSnapshot {
+        throw AppModelTestError.dossierLoadFailed
+    }
+
+    func waitUntilBlockedEntryStarts() async {
+        guard !blockedEntryStarted else { return }
+        await withCheckedContinuation { entryStartWaiters.append($0) }
+    }
+
+    func releaseBlockedEntry() {
+        entryReleaseWaiters.forEach { $0.resume() }
+        entryReleaseWaiters.removeAll()
+    }
+}
+
+private func testDocumentDNA(
+    document: DocumentRecord,
+    type: DocumentType = .unknown
+) throws -> DocumentDNA {
+    let displayValue = type == .unknown ? "" : type.rawValue
+    let evidence = type == .unknown ? [] : [try DocumentDNAEvidence(
+        pageIndex: 0,
+        startUTF16: 0,
+        lengthUTF16: displayValue.utf16.count,
+        exactText: displayValue,
+        ocrRegionIndexes: []
+    )]
     let classification = try DocumentDNAFinding(
         kind: .documentType,
         qualifier: nil,
-        displayValue: "",
-        normalizedValue: DocumentType.unknown.rawValue,
+        displayValue: displayValue,
+        normalizedValue: type.rawValue,
         secondaryNormalizedValue: nil,
-        confidence: 0,
-        evidence: []
+        confidence: type == .unknown ? 0 : 0.9,
+        evidence: evidence
     )
     return try DocumentDNA(
         documentID: document.id,
@@ -4442,6 +4658,20 @@ private func testDocumentDNA(document: DocumentRecord) throws -> DocumentDNA {
         inputExtractionVersion: "text-v1",
         findings: [classification],
         analyzedAt: Date(timeIntervalSince1970: 300)
+    )
+}
+
+private func testDossierSummary(anchor: DocumentRecord) throws -> DossierSummary {
+    DossierSummary(
+        dossier: try DossierRecord(
+            id: UUID(),
+            kind: .costsAndPayments,
+            displayName: "Kosten und Zahlungen",
+            anchorDocumentID: anchor.id,
+            createdAt: Date(timeIntervalSince1970: 100),
+            updatedAt: Date(timeIntervalSince1970: 100)
+        ),
+        anchor: anchor
     )
 }
 
@@ -4588,6 +4818,7 @@ private enum AppModelTestError: Error, Sendable {
     case documentDNASnapshotLoadFailed
     case invoicePaymentCandidateLoadFailed
     case invoicePaymentDecisionUpdateFailed
+    case dossierLoadFailed
     case unusedSourceResolution
     case timeout
 }
