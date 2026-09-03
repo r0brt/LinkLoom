@@ -42,6 +42,9 @@ final class LinkLoomUISmokeTests: XCTestCase {
         let fixture = try SmokeFixture()
         self.fixture = fixture
         let initialSnapshot = try fixture.snapshot()
+        var invoiceDocumentID = ""
+        var paymentDocumentID = ""
+        var dossierID = ""
 
         let app = launch(fixture: fixture)
 
@@ -53,7 +56,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireExists(element("scan.start", in: app), timeout: 20, description: "scan.start")
         }
 
-        XCTContext.runActivity(named: "Scan and extract generated documents") { _ in
+        try XCTContext.runActivity(named: "Scan, relate, and create a dossier") { _ in
             element("scan.start", in: app).click()
             requireLabel("Entdeckt: 0", for: element("status.discovered", in: app), timeout: 90)
             requireLabel("Extraktion: 0", for: element("status.extracting", in: app), timeout: 90)
@@ -69,7 +72,11 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 requireExists(app.staticTexts[text], description: text)
             }
             XCTAssertFalse(app.staticTexts["unsupported.txt"].exists)
-            app.staticTexts["selectable.pdf"].click()
+            let selectableDocument = element("documents.table", in: app)
+                .staticTexts["selectable.pdf"]
+                .firstMatch
+            requireExists(selectableDocument, description: "selectable document row")
+            selectableDocument.click()
             let inspector = element("document-dna.inspector", in: app)
             requireExists(inspector, description: "document-dna.inspector")
             let splitterCount = app.splitters.count
@@ -206,6 +213,37 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 element("invoice-payment-candidates.0.reset", in: app),
                 description: "candidate reset action"
             )
+            let probe = try SQLiteProbe(databaseURL: fixture.databaseURL)
+            invoiceDocumentID = try probe.documentID(relativePath: "selectable.pdf")
+            paymentDocumentID = try probe.documentID(
+                relativePath: "payments/payment-confirmation.pdf"
+            )
+
+            let dossierEntry = element("document-dna.costs-dossier", in: app)
+            requireFullyVisibleInInspector(
+                dossierEntry,
+                scrollingIn: inspectorScroll,
+                splitter: inspectorSplitter,
+                window: app.windows.firstMatch,
+                description: "dossier entry action"
+            )
+            dossierEntry.click()
+
+            let workspace = element("dossier.workspace", in: app)
+            requireExists(workspace, timeout: 20, description: "dossier.workspace")
+            requireExists(
+                element("dossier.member.\(invoiceDocumentID)", in: app),
+                description: "dossier anchor"
+            )
+            let paymentMember = element("dossier.member.\(paymentDocumentID)", in: app)
+            requireExists(paymentMember, description: "dossier payment member")
+            dossierID = try SQLiteProbe(databaseURL: fixture.databaseURL).onlyDossierID()
+
+            paymentMember.click()
+            requireExists(
+                inspector.staticTexts["payments/payment-confirmation.pdf"],
+                description: "payment dossier member inspector title"
+            )
             let showCounterpart = element(
                 "invoice-payment-candidates.0.show-counterpart",
                 in: app
@@ -219,28 +257,47 @@ final class LinkLoomUISmokeTests: XCTestCase {
             )
             showCounterpart.click()
             requireExists(
-                inspector.staticTexts["payments/payment-confirmation.pdf"],
-                description: "payment counterpart inspector title"
+                inspector.staticTexts["selectable.pdf"],
+                description: "invoice counterpart inspector title"
             )
-            requireValue(
-                "Bestätigt",
-                for: element("invoice-payment-candidates.0.decision", in: app)
+            requireExists(
+                element("dossier.workspace", in: app),
+                description: "dossier workspace after counterpart navigation"
             )
-            requireValue(
-                "selectable.pdf",
-                for: element("invoice-payment-candidates.0.counterpart", in: app)
+
+            let removePayment = element(
+                "dossier.member.remove.\(paymentDocumentID)",
+                in: app
+            )
+            requireHittable(
+                removePayment,
+                scrollingIn: workspace,
+                description: "remove payment from dossier"
+            )
+            removePayment.click()
+            requireDisappearance(
+                paymentMember,
+                timeout: 20,
+                description: "excluded dossier payment member"
+            )
+            requireExists(
+                element("dossier.correction.\(paymentDocumentID)", in: app),
+                description: "dossier payment correction"
             )
             let screenshot = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
-            screenshot.name = "Invoice payment counterpart navigation"
+            screenshot.name = "Dossier correction after counterpart navigation"
             screenshot.lifetime = .keepAlways
             add(screenshot)
         }
 
         terminateAndWait(app)
 
-        try XCTContext.runActivity(named: "Verify durable extraction read-only") { _ in
+        try XCTContext.runActivity(named: "Verify durable dossier correction") { _ in
             let evidence = try SQLiteProbe(databaseURL: fixture.databaseURL).collectEvidence()
-            XCTAssertTrue(evidence.matchesCompletedWorkflow, "Unexpected database evidence: \(evidence)")
+            XCTAssertTrue(
+                evidence.matchesCompletedWorkflowWithCorrection,
+                "Unexpected database evidence: \(evidence)"
+            )
         }
 
         try XCTContext.runActivity(named: "Prepare a retryable DNA failure in the test database") { _ in
@@ -254,6 +311,19 @@ final class LinkLoomUISmokeTests: XCTestCase {
 
         XCTContext.runActivity(named: "Verify persistence after process restart") { _ in
             requireExists(sourceRow(in: relaunchedApp), timeout: 20, description: "persisted source row")
+            let dossierRow = element("dossier.row.\(dossierID)", in: relaunchedApp)
+            requireExists(dossierRow, timeout: 20, description: "persisted dossier row")
+            dossierRow.click()
+            requireExists(
+                element("dossier.workspace", in: relaunchedApp),
+                description: "persisted dossier workspace"
+            )
+            requireExists(
+                element("dossier.correction.\(paymentDocumentID)", in: relaunchedApp),
+                description: "persisted dossier correction"
+            )
+
+            sourceRow(in: relaunchedApp).click()
             requireLabel("Entdeckt: 0", for: element("status.discovered", in: relaunchedApp))
             requireLabel("Extraktion: 0", for: element("status.extracting", in: relaunchedApp))
             requireLabel("Bereit: 3", for: element("status.ready", in: relaunchedApp))
@@ -267,7 +337,11 @@ final class LinkLoomUISmokeTests: XCTestCase {
             ] {
                 requireExists(relaunchedApp.staticTexts[text], description: "persisted \(text)")
             }
-            relaunchedApp.staticTexts["selectable.pdf"].click()
+            let selectableDocument = element("documents.table", in: relaunchedApp)
+                .staticTexts["selectable.pdf"]
+                .firstMatch
+            requireExists(selectableDocument, description: "selectable document row")
+            selectableDocument.click()
             requireExists(
                 element("document-dna.inspector", in: relaunchedApp),
                 description: "persisted document-dna.inspector"
@@ -306,11 +380,40 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 "Bestätigt",
                 for: element("invoice-payment-candidates.0.decision", in: relaunchedApp)
             )
+
+            dossierRow.click()
+            let workspace = element("dossier.workspace", in: relaunchedApp)
+            requireExists(workspace, description: "restored dossier workspace")
+            let reset = element(
+                "dossier.correction.reset.\(paymentDocumentID)",
+                in: relaunchedApp
+            )
+            requireHittable(
+                reset,
+                scrollingIn: workspace,
+                description: "reset dossier correction"
+            )
+            reset.click()
+            requireDisappearance(
+                element("dossier.correction.\(paymentDocumentID)", in: relaunchedApp),
+                timeout: 20,
+                description: "reset dossier correction"
+            )
+            requireExists(
+                element("dossier.member.\(paymentDocumentID)", in: relaunchedApp),
+                description: "restored dossier payment member"
+            )
+            let screenshot = XCTAttachment(
+                screenshot: relaunchedApp.windows.firstMatch.screenshot()
+            )
+            screenshot.name = "Persistent dossier after correction reset"
+            screenshot.lifetime = .keepAlways
+            add(screenshot)
         }
 
         try XCTContext.runActivity(named: "Verify retry restored coherent DNA state") { _ in
             let evidence = try SQLiteProbe(databaseURL: fixture.databaseURL).collectEvidence()
-            XCTAssertTrue(evidence.matchesCompletedWorkflow, "Retry left incoherent DNA: \(evidence)")
+            XCTAssertTrue(evidence.matchesRestoredWorkflow, "Retry left incoherent DNA: \(evidence)")
             XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
         }
 
@@ -552,6 +655,20 @@ final class LinkLoomUISmokeTests: XCTestCase {
             window.frame.maxX,
             "\(description) extends beyond the window's right edge"
         )
+    }
+
+    private func requireHittable(
+        _ element: XCUIElement,
+        scrollingIn scrollView: XCUIElement,
+        description: String
+    ) {
+        requireExists(element, description: description)
+        scrollVerticallyUntilVisible(
+            element,
+            in: scrollView,
+            description: description
+        )
+        XCTAssertTrue(element.isHittable, "\(description) is not hittable")
     }
 
     private func scrollVerticallyUntilVisible(
