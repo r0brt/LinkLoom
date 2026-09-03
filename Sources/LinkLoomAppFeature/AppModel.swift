@@ -853,6 +853,18 @@ public final class AppModel: ObservableObject {
         else {
             return
         }
+        let expectedDossierToken: DossierProjectionToken?
+        switch workspace {
+        case .source:
+            expectedDossierToken = nil
+        case .dossier(let dossierID):
+            guard let snapshot = dossierDetailState.snapshot,
+                  snapshot.dossier.id == dossierID
+            else {
+                return
+            }
+            expectedDossierToken = snapshot.token
+        }
         invalidateDossierLoad()
         invoicePaymentCounterpartNavigationGeneration &+= 1
         let navigationGeneration = invoicePaymentCounterpartNavigationGeneration
@@ -886,7 +898,11 @@ public final class AppModel: ObservableObject {
                   selectionGeneration == documentDNADetailGeneration,
                   self.selectedSourceID == sourceID,
                   self.selectedDocumentID == selectedDocumentID,
-                  workspaceSelection == workspace
+                  workspaceSelection == workspace,
+                  matchesDossierContext(
+                    workspace,
+                    expectedToken: expectedDossierToken
+                  )
             else {
                 return
             }
@@ -914,7 +930,11 @@ public final class AppModel: ObservableObject {
                   selectionGeneration == documentDNADetailGeneration,
                   self.selectedSourceID == sourceID,
                   self.selectedDocumentID == selectedDocumentID,
-                  workspaceSelection == workspace
+                  workspaceSelection == workspace,
+                  matchesDossierContext(
+                    workspace,
+                    expectedToken: expectedDossierToken
+                  )
             else {
                 return
             }
@@ -1109,8 +1129,26 @@ public final class AppModel: ObservableObject {
     }
 
     public func refreshSelectedDossier() async {
-        guard case .dossier(let dossierID) = workspaceSelection else { return }
+        guard !isExclusiveSourceOperationActive,
+              case .dossier(let dossierID) = workspaceSelection
+        else {
+            return
+        }
         await refreshDossier(id: dossierID)
+    }
+
+    private func matchesDossierContext(
+        _ workspace: AppWorkspaceSelection,
+        expectedToken: DossierProjectionToken?
+    ) -> Bool {
+        switch workspace {
+        case .source:
+            return expectedToken == nil
+        case .dossier(let dossierID):
+            guard let expectedToken else { return false }
+            return dossierDetailState.snapshot?.dossier.id == dossierID
+                && dossierDetailState.snapshot?.token == expectedToken
+        }
     }
 
     public func updateInvoicePaymentDecision(

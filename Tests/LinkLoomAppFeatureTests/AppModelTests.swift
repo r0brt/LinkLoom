@@ -833,6 +833,30 @@ struct AppModelTests {
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
     }
 
+    @Test @MainActor func dossierCorrectionInvalidatesInFlightCounterpartNavigation() async throws {
+        let context = try await DossierNavigationContext.make(
+            crossSource: true,
+            paymentStatusBehavior: .blockedThenReady
+        )
+        let member = try #require(context.snapshot.members.last)
+        let corrected = try snapshotByExcluding(member: member, from: context.snapshot)
+        await context.service.setExcludeSteps([.result(corrected)])
+        let navigation = Task {
+            await context.model.showInvoicePaymentCounterpart(
+                candidate: context.annotatedCandidate.candidate
+            )
+        }
+        await context.statuses.waitUntilBlockedLoadStarts()
+
+        await context.model.excludeDossierMember(member)
+        await context.statuses.releaseBlockedLoad()
+        await navigation.value
+
+        #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
+        #expect(context.model.selectedDocumentID == context.invoice.id)
+        #expect(context.model.dossierDetailState == .available(corrected))
+    }
+
     @Test @MainActor func failedWatcherRefreshKeepsSnapshotAndPublishesLoadFailure() async throws {
         let context = try await DossierNavigationContext.make(crossSource: true)
         await context.service.setSnapshotSteps([.failure])
@@ -3742,6 +3766,42 @@ struct AppModelTests {
         await add.value
     }
 
+    @Test @MainActor func dossierRefreshDoesNotStartWhileSourceMutationIsSuspended() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "First")
+        let document = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        try await fixture.documents.save(document)
+        let sourceAccess = BlockingBookmarkSourceAccess()
+        let service = ScriptedDossierService()
+        let snapshot = try testDossierSnapshot(anchor: document)
+        await service.setSnapshotSteps([.result(snapshot)])
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dossierLoader: service,
+            dossierMutator: service
+        )
+        try await model.reload()
+        await model.selectDossier(id: snapshot.dossier.id)
+        let invocationCount = await service.snapshotInvocationCount
+        let add = Task {
+            await model.addSource(
+                fixture.directory.appendingPathComponent("Second", isDirectory: true)
+            )
+        }
+        await sourceAccess.waitUntilBookmarkCreationStarts()
+
+        await model.refreshSelectedDossier()
+
+        #expect(await service.snapshotInvocationCount == invocationCount)
+        #expect(model.dossierDetailState == .available(snapshot))
+        sourceAccess.releaseBookmarkCreation()
+        await add.value
+    }
+
     @Test @MainActor func reloadStartsWatchingEachResolvedSource() async throws {
         let fixture = try AppModelFixture()
         let first = try await fixture.addSource(named: "First")
@@ -5919,6 +5979,7 @@ private actor ScriptedDossierService: DossierLoading, DossierMutating {
     private var excludeSteps: [MutationStep] = []
     private var resetSteps: [MutationStep] = []
     private var summariesValue: [DossierSummary] = []
+    private(set) var snapshotInvocationCount = 0
     private var blockedOperationStarted = false
     private var operationStartWaiters: [CheckedContinuation<Void, Never>] = []
     private var operationReleaseWaiters: [CheckedContinuation<Void, Never>] = []
@@ -5953,6 +6014,7 @@ private actor ScriptedDossierService: DossierLoading, DossierMutating {
     }
 
     func snapshot(id: UUID) async throws -> DossierSnapshot {
+        snapshotInvocationCount += 1
         let step = snapshotSteps.isEmpty ? .failure : snapshotSteps.removeFirst()
         switch step {
         case .result(let snapshot):
