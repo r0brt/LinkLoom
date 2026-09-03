@@ -11,9 +11,14 @@ public struct ContentView: View {
 
     public var body: some View {
         NavigationSplitView {
-            SourceSidebar(model: model, folderPicker: folderPicker)
+            WorkspaceSidebar(model: model, folderPicker: folderPicker)
         } detail: {
-            ScanDashboard(model: model)
+            switch model.workspaceSelection {
+            case .dossier:
+                CostsAndPaymentsDossierView(model: model)
+            case .source, nil:
+                ScanDashboard(model: model)
+            }
         }
         .inspector(isPresented: Binding(
             get: { model.selectedDocumentID != nil },

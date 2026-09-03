@@ -140,6 +140,7 @@ struct DocumentDNAInspector: View {
                     }
                 }
                 invoicePaymentCandidateContent
+                dossierEntryContent
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -347,6 +348,63 @@ struct DocumentDNAInspector: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                     .accessibilityIdentifier("\(identifierPrefix).\(index)")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var dossierEntryContent: some View {
+        switch model.dossierEntryState {
+        case .none:
+            EmptyView()
+        case .loading(let documentID):
+            if documentID == document?.id {
+                Divider()
+                Button("Dossier wird geprüft …") {}
+                    .disabled(true)
+                    .accessibilityIdentifier("document-dna.costs-dossier")
+            }
+        case .available(let documentID, let disposition):
+            if documentID == document?.id {
+                Divider()
+                VStack(alignment: .leading, spacing: 10) {
+                    Button(DossierEntryPresentation(
+                        disposition: disposition
+                    ).actionTitle) {
+                        Task { await model.openOrCreateDossierForSelectedDocument() }
+                    }
+                    .disabled(model.dossierMutationState != .idle)
+                    .accessibilityIdentifier("document-dna.costs-dossier")
+
+                    if !model.dossierChoices.isEmpty {
+                        Text("Dossier auswählen")
+                            .font(.headline)
+                        ForEach(model.dossierChoices) { summary in
+                            Button {
+                                Task { await model.chooseDossier(id: summary.id) }
+                            } label: {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(summary.dossier.displayName)
+                                    Text(summary.anchor.relativePath)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            .accessibilityIdentifier(
+                                DossierAccessibilityIdentifier.row(summary.id)
+                            )
+                        }
+                    }
+                }
+            }
+        case .failed(let documentID):
+            if documentID == document?.id {
+                Divider()
+                Text(
+                    model.lastErrorMessage
+                        ?? "Das Dossier konnte nicht geladen werden. Bitte versuche es erneut."
+                )
+                .foregroundStyle(.red)
             }
         }
     }
