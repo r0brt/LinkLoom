@@ -161,6 +161,145 @@ struct AppModelTests {
         #expect(model.lastErrorCode == nil)
     }
 
+    @Test @MainActor func openedDossierPublishesWorkspaceSummaryAndSnapshotTogether() async throws {
+        let context = try await DossierModelContext.make()
+        let snapshot = try testDossierSnapshot(anchor: context.firstDocument)
+        await context.service.setOpenSteps([.result(.opened(snapshot))])
+        await context.service.setSummaries([try summary(for: snapshot)])
+
+        await context.model.openOrCreateDossierForSelectedDocument()
+
+        #expect(context.model.workspaceSelection == .dossier(snapshot.dossier.id))
+        #expect(context.model.dossierDetailState == .available(snapshot))
+        #expect(context.model.dossiers == [try summary(for: snapshot)])
+        #expect(context.model.dossierChoices.isEmpty)
+        #expect(context.model.dossierMutationState == .idle)
+    }
+
+    @Test @MainActor func ambiguousOpenPublishesChoicesWithoutChangingWorkspace() async throws {
+        let context = try await DossierModelContext.make()
+        let first = try testDossierSummary(anchor: context.firstDocument)
+        let second = try testDossierSummary(anchor: context.secondDocument)
+        await context.service.setOpenSteps([.result(.choose([first, second]))])
+        let workspace = context.model.workspaceSelection
+        let detail = context.model.dossierDetailState
+
+        await context.model.openOrCreateDossierForSelectedDocument()
+
+        #expect(context.model.workspaceSelection == workspace)
+        #expect(context.model.dossierDetailState == detail)
+        #expect(context.model.dossierChoices == [first, second])
+    }
+
+    @Test @MainActor func choosingDossierPublishesOnlyCompleteLoadedSnapshot() async throws {
+        let context = try await DossierModelContext.make()
+        let first = try testDossierSummary(anchor: context.firstDocument)
+        let selectedSnapshot = try testDossierSnapshot(anchor: context.secondDocument)
+        let selected = try summary(for: selectedSnapshot)
+        await context.service.setOpenSteps([.result(.choose([first, selected]))])
+        await context.service.setSnapshotSteps([.result(selectedSnapshot)])
+        await context.model.openOrCreateDossierForSelectedDocument()
+
+        await context.model.chooseDossier(id: selected.id)
+
+        #expect(context.model.workspaceSelection == .dossier(selected.id))
+        #expect(context.model.dossierDetailState == .available(selectedSnapshot))
+        #expect(context.model.dossierChoices.isEmpty)
+        #expect(context.model.dossiers.contains(selected))
+    }
+
+    @Test @MainActor func dossierLoadFailureKeepsWorkspaceAndPreviousSnapshot() async throws {
+        let context = try await DossierModelContext.make()
+        let dossierID = UUID()
+        await context.service.setSnapshotSteps([.failure])
+        let workspace = context.model.workspaceSelection
+        let previous = context.model.dossierDetailState.snapshot
+
+        await context.model.selectDossier(id: dossierID)
+
+        #expect(context.model.workspaceSelection == workspace)
+        #expect(context.model.dossierDetailState == .failed(
+            dossierID: dossierID,
+            previous: previous
+        ))
+        #expect(context.model.lastErrorCode == "dossierLoadFailure")
+    }
+
+    @Test @MainActor func duplicateOpenIsSuppressedWhileFirstRequestIsInFlight() async throws {
+        let context = try await DossierModelContext.make()
+        let snapshot = try testDossierSnapshot(anchor: context.firstDocument)
+        await context.service.setOpenSteps([.blocked(.success(.opened(snapshot)))])
+
+        let first = Task { await context.model.openOrCreateDossierForSelectedDocument() }
+        await context.service.waitUntilBlockedOperationStarts()
+        await context.model.openOrCreateDossierForSelectedDocument()
+
+        #expect(await context.service.openInvocationCount == 1)
+        await context.service.releaseBlockedOperation()
+        await first.value
+    }
+
+    @Test @MainActor func openFailureKeepsPreviousWorkspaceAndSnapshot() async throws {
+        let context = try await DossierModelContext.make()
+        await context.service.setOpenSteps([.failure])
+        let workspace = context.model.workspaceSelection
+        let detail = context.model.dossierDetailState
+
+        await context.model.openOrCreateDossierForSelectedDocument()
+
+        #expect(context.model.workspaceSelection == workspace)
+        #expect(context.model.dossierDetailState == detail)
+        #expect(context.model.lastErrorCode == "dossierOpenFailure")
+        #expect(context.model.dossierMutationState == .idle)
+    }
+
+    @Test @MainActor func cancelledOpenKeepsPreviousWorkspaceWithoutDiagnostic() async throws {
+        let context = try await DossierModelContext.make()
+        await context.service.setOpenSteps([.cancellation])
+        let workspace = context.model.workspaceSelection
+        let detail = context.model.dossierDetailState
+
+        await context.model.openOrCreateDossierForSelectedDocument()
+
+        #expect(context.model.workspaceSelection == workspace)
+        #expect(context.model.dossierDetailState == detail)
+        #expect(context.model.lastErrorCode == nil)
+        #expect(context.model.dossierMutationState == .idle)
+    }
+
+    @Test @MainActor func lateOpenCannotReplaceChangedDocumentSelection() async throws {
+        let context = try await DossierModelContext.make()
+        let snapshot = try testDossierSnapshot(anchor: context.firstDocument)
+        await context.service.setOpenSteps([.blocked(.success(.opened(snapshot)))])
+        let open = Task { await context.model.openOrCreateDossierForSelectedDocument() }
+        await context.service.waitUntilBlockedOperationStarts()
+
+        await context.model.selectDocument(id: context.secondDocument.id)
+        await context.service.releaseBlockedOperation()
+        await open.value
+
+        #expect(context.model.workspaceSelection == .source(context.source.id))
+        #expect(context.model.selectedDocumentID == context.secondDocument.id)
+        #expect(context.model.dossierDetailState == .none)
+    }
+
+    @Test @MainActor func staleABAOpenCannotReplaceReselectedDocument() async throws {
+        let context = try await DossierModelContext.make()
+        let snapshot = try testDossierSnapshot(anchor: context.firstDocument)
+        await context.service.setOpenSteps([.blocked(.success(.opened(snapshot)))])
+        let open = Task { await context.model.openOrCreateDossierForSelectedDocument() }
+        await context.service.waitUntilBlockedOperationStarts()
+
+        await context.model.selectDocument(id: context.secondDocument.id)
+        await context.model.selectDocument(id: context.firstDocument.id)
+        await context.service.releaseBlockedOperation()
+        await open.value
+
+        #expect(context.model.workspaceSelection == .source(context.source.id))
+        #expect(context.model.selectedDocumentID == context.firstDocument.id)
+        #expect(context.model.dossierDetailState == .none)
+    }
+
     @Test @MainActor func scanPublishesProgressAndReloadsDocuments() async throws {
         let fixture = try AppModelFixture()
         let source = try await fixture.addSource(named: "Archive")
@@ -4628,6 +4767,174 @@ private actor ScriptedDossierLoader: DossierLoading {
     }
 }
 
+@MainActor
+private struct DossierModelContext {
+    let fixture: AppModelFixture
+    let source: SourceRootRecord
+    let firstDocument: DocumentRecord
+    let secondDocument: DocumentRecord
+    let service: ScriptedDossierService
+    let model: AppModel
+
+    static func make() async throws -> Self {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let firstDocument = fixture.document(
+            sourceRootID: source.id,
+            path: "first-invoice.pdf"
+        )
+        let secondDocument = fixture.document(
+            sourceRootID: source.id,
+            path: "second-invoice.pdf"
+        )
+        try await fixture.documents.save(firstDocument)
+        try await fixture.documents.save(secondDocument)
+        let statuses = MutableDocumentDNAStatusLoader(statusesBySource: [source.id: [
+            DocumentDNAAnalysisStatus(documentID: firstDocument.id, phase: .ready),
+            DocumentDNAAnalysisStatus(documentID: secondDocument.id, phase: .ready),
+        ]])
+        let snapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            firstDocument.id: [.snapshot(try testDocumentDNA(
+                document: firstDocument,
+                type: .invoice
+            ))],
+            secondDocument.id: [.snapshot(try testDocumentDNA(
+                document: secondDocument,
+                type: .invoice
+            ))],
+        ])
+        let service = ScriptedDossierService()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: statuses,
+            dnaSnapshots: snapshots,
+            dossierLoader: service,
+            dossierMutator: service
+        )
+        try await model.reload()
+        await model.selectDocument(id: firstDocument.id)
+        return Self(
+            fixture: fixture,
+            source: source,
+            firstDocument: firstDocument,
+            secondDocument: secondDocument,
+            service: service,
+            model: model
+        )
+    }
+}
+
+private actor ScriptedDossierService: DossierLoading, DossierMutating {
+    enum OpenStep: Sendable {
+        case result(DossierOpenResult)
+        case failure
+        case cancellation
+        case blocked(Result<DossierOpenResult, AppModelTestError>)
+    }
+
+    enum SnapshotStep: Sendable {
+        case result(DossierSnapshot)
+        case failure
+        case cancellation
+        case blocked(Result<DossierSnapshot, AppModelTestError>)
+    }
+
+    private var openSteps: [OpenStep] = []
+    private var snapshotSteps: [SnapshotStep] = []
+    private var summariesValue: [DossierSummary] = []
+    private var blockedOperationStarted = false
+    private var operationStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var operationReleaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var openInvocationCount = 0
+
+    func setOpenSteps(_ steps: [OpenStep]) {
+        openSteps = steps
+    }
+
+    func setSnapshotSteps(_ steps: [SnapshotStep]) {
+        snapshotSteps = steps
+    }
+
+    func setSummaries(_ summaries: [DossierSummary]) {
+        summariesValue = summaries
+    }
+
+    func summaries() async throws -> [DossierSummary] { summariesValue }
+
+    func entryDisposition(for documentID: UUID) async throws -> DossierEntryDisposition {
+        .create
+    }
+
+    func snapshot(id: UUID) async throws -> DossierSnapshot {
+        let step = snapshotSteps.isEmpty ? .failure : snapshotSteps.removeFirst()
+        switch step {
+        case .result(let snapshot):
+            return snapshot
+        case .failure:
+            throw AppModelTestError.dossierLoadFailed
+        case .cancellation:
+            throw CancellationError()
+        case .blocked(let result):
+            await blockOperation()
+            return try result.get()
+        }
+    }
+
+    func createOrOpen(anchorDocumentID: UUID) async throws -> DossierOpenResult {
+        openInvocationCount += 1
+        let step = openSteps.isEmpty ? .failure : openSteps.removeFirst()
+        switch step {
+        case .result(let result):
+            return result
+        case .failure:
+            throw AppModelTestError.dossierLoadFailed
+        case .cancellation:
+            throw CancellationError()
+        case .blocked(let result):
+            await blockOperation()
+            return try result.get()
+        }
+    }
+
+    func excludeMember(
+        dossierID: UUID,
+        documentID: UUID,
+        expectedSupport: DossierMembershipSupportIdentity
+    ) async throws -> DossierSnapshot {
+        throw AppModelTestError.dossierMutationFailed
+    }
+
+    func resetExclusion(
+        dossierID: UUID,
+        documentID: UUID,
+        expectedRevisionID: UUID
+    ) async throws -> DossierSnapshot {
+        throw AppModelTestError.dossierMutationFailed
+    }
+
+    func waitUntilBlockedOperationStarts() async {
+        guard !blockedOperationStarted else { return }
+        await withCheckedContinuation { operationStartWaiters.append($0) }
+    }
+
+    func releaseBlockedOperation() {
+        operationReleaseWaiters.forEach { $0.resume() }
+        operationReleaseWaiters.removeAll()
+        blockedOperationStarted = false
+    }
+
+    private func blockOperation() async {
+        blockedOperationStarted = true
+        operationStartWaiters.forEach { $0.resume() }
+        operationStartWaiters.removeAll()
+        await withCheckedContinuation { operationReleaseWaiters.append($0) }
+    }
+}
+
 private func testDocumentDNA(
     document: DocumentRecord,
     type: DocumentType = .unknown
@@ -4673,6 +4980,48 @@ private func testDossierSummary(anchor: DocumentRecord) throws -> DossierSummary
         ),
         anchor: anchor
     )
+}
+
+private func testDossierSnapshot(
+    anchor: DocumentRecord,
+    dossierID: UUID = UUID()
+) throws -> DossierSnapshot {
+    let dossier = try DossierRecord(
+        id: dossierID,
+        kind: .costsAndPayments,
+        displayName: "Kosten und Zahlungen",
+        anchorDocumentID: anchor.id,
+        createdAt: Date(timeIntervalSince1970: 100),
+        updatedAt: Date(timeIntervalSince1970: 100)
+    )
+    return DossierSnapshot(
+        dossier: dossier,
+        members: [DossierMember(
+            document: anchor,
+            sourceDisplayName: "Archive",
+            documentType: .invoice,
+            explanation: DossierMembershipExplanation(
+                role: .anchor,
+                relationshipType: nil,
+                signals: []
+            ),
+            support: nil
+        )],
+        corrections: [],
+        token: DossierProjectionToken(
+            dossierUpdatedAt: dossier.updatedAt,
+            anchorContentHash: anchor.contentHash,
+            memberSupports: [],
+            exclusionRevisionIDs: []
+        )
+    )
+}
+
+private func summary(for snapshot: DossierSnapshot) throws -> DossierSummary {
+    let anchor = try #require(snapshot.members.first(where: {
+        $0.document.id == snapshot.dossier.anchorDocumentID
+    }))
+    return DossierSummary(dossier: snapshot.dossier, anchor: anchor.document)
 }
 
 private func testInvoicePaymentCandidate(
@@ -4819,6 +5168,7 @@ private enum AppModelTestError: Error, Sendable {
     case invoicePaymentCandidateLoadFailed
     case invoicePaymentDecisionUpdateFailed
     case dossierLoadFailed
+    case dossierMutationFailed
     case unusedSourceResolution
     case timeout
 }

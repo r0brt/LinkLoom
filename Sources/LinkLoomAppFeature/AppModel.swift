@@ -88,6 +88,8 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var dossiers: [DossierSummary] = []
     @Published public private(set) var dossierEntryState: DossierEntryState = .none
     @Published public private(set) var dossierDetailState: DossierDetailState = .none
+    @Published public private(set) var dossierChoices: [DossierSummary] = []
+    @Published public private(set) var dossierMutationState: DossierMutationState = .idle
 
     public var lastErrorMessage: String? {
         switch lastErrorCode {
@@ -147,6 +149,8 @@ public final class AppModel: ObservableObject {
     private var documentDNADetailGeneration = 0
     private var invoicePaymentDecisionUpdateGeneration = 0
     private var invoicePaymentCounterpartNavigationGeneration = 0
+    private var dossierLoadGeneration = 0
+    private var dossierMutationGeneration = 0
 
     public init(
         sources: SourceRootRepository,
@@ -382,6 +386,8 @@ public final class AppModel: ObservableObject {
 
     public func selectSource(id: UUID?) async {
         guard !isExclusiveSourceOperationActive else { return }
+        invalidateDossierLoad()
+        invalidateDossierMutation()
         invalidateIncrementalRefreshes()
         let generation = incrementalRefreshGeneration
         do {
@@ -405,6 +411,7 @@ public final class AppModel: ObservableObject {
 
     public func selectDocument(id: UUID?) async {
         documentDNADetailGeneration += 1
+        invalidateDossierMutation()
         invalidateInvoicePaymentDecisionUpdate()
         invalidateInvoicePaymentCounterpartNavigation()
         let generation = documentDNADetailGeneration
@@ -480,6 +487,139 @@ public final class AppModel: ObservableObject {
             publishRuntimeFailure(
                 code: "documentDNADetailLoadFailure",
                 category: .documentDNADetailLoad,
+                error: error
+            )
+        }
+    }
+
+    public func openOrCreateDossierForSelectedDocument() async {
+        guard case .idle = dossierMutationState,
+              let dossierMutator,
+              let dossierLoader,
+              let documentID = selectedDocumentID,
+              case .available(let entryDocumentID, _) = dossierEntryState,
+              entryDocumentID == documentID
+        else {
+            return
+        }
+        dossierMutationGeneration &+= 1
+        let mutationGeneration = dossierMutationGeneration
+        let selectionGeneration = documentDNADetailGeneration
+        let workspace = workspaceSelection
+        dossierMutationState = .opening(documentID: documentID)
+        dossierChoices = []
+        defer {
+            if mutationGeneration == dossierMutationGeneration {
+                dossierMutationState = .idle
+            }
+        }
+
+        do {
+            let result = try await dossierMutator.createOrOpen(
+                anchorDocumentID: documentID
+            )
+            guard !Task.isCancelled,
+                  mutationGeneration == dossierMutationGeneration,
+                  selectionGeneration == documentDNADetailGeneration,
+                  selectedDocumentID == documentID,
+                  workspaceSelection == workspace
+            else {
+                return
+            }
+            switch result {
+            case .opened(let snapshot):
+                let refreshedSummaries = try await dossierLoader.summaries()
+                guard !Task.isCancelled,
+                      mutationGeneration == dossierMutationGeneration,
+                      selectionGeneration == documentDNADetailGeneration,
+                      selectedDocumentID == documentID,
+                      workspaceSelection == workspace
+                else {
+                    return
+                }
+                publishDossier(snapshot, summaries: refreshedSummaries)
+            case .choose(let choices):
+                dossierChoices = choices
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled,
+                  mutationGeneration == dossierMutationGeneration,
+                  selectionGeneration == documentDNADetailGeneration,
+                  selectedDocumentID == documentID,
+                  workspaceSelection == workspace
+            else {
+                return
+            }
+            publishRuntimeFailure(
+                code: "dossierOpenFailure",
+                category: .dossierMutation,
+                error: error
+            )
+        }
+    }
+
+    public func chooseDossier(id: UUID) async {
+        guard let summary = dossierChoices.first(where: { $0.id == id }) else { return }
+        await loadDossier(id: id, selectedSummary: summary)
+    }
+
+    public func selectDossier(id: UUID) async {
+        await loadDossier(id: id, selectedSummary: nil)
+    }
+
+    private func loadDossier(
+        id: UUID,
+        selectedSummary: DossierSummary?
+    ) async {
+        guard let dossierLoader else { return }
+        invalidateDossierMutation()
+        dossierLoadGeneration &+= 1
+        let generation = dossierLoadGeneration
+        let previous = dossierDetailState.snapshot
+        dossierDetailState = .loading(dossierID: id, previous: previous)
+        do {
+            let snapshot = try await dossierLoader.snapshot(id: id)
+            guard !Task.isCancelled,
+                  generation == dossierLoadGeneration,
+                  case .loading(let loadingID, _) = dossierDetailState,
+                  loadingID == id
+            else {
+                return
+            }
+            if let selectedSummary {
+                var updated = dossiers.filter { $0.id != selectedSummary.id }
+                updated.append(selectedSummary)
+                updated.sort {
+                    if $0.dossier.createdAt != $1.dossier.createdAt {
+                        return $0.dossier.createdAt < $1.dossier.createdAt
+                    }
+                    return $0.id.uuidString < $1.id.uuidString
+                }
+                dossiers = updated
+            }
+            publishDossier(snapshot)
+        } catch is CancellationError {
+            guard generation == dossierLoadGeneration,
+                  case .loading(let loadingID, _) = dossierDetailState,
+                  loadingID == id
+            else {
+                return
+            }
+            dossierDetailState = previous.map(DossierDetailState.available) ?? .none
+        } catch {
+            guard !Task.isCancelled,
+                  generation == dossierLoadGeneration,
+                  case .loading(let loadingID, _) = dossierDetailState,
+                  loadingID == id
+            else {
+                return
+            }
+            dossierDetailState = .failed(dossierID: id, previous: previous)
+            publishRuntimeFailure(
+                code: "dossierLoadFailure",
+                category: .dossierLoad,
                 error: error
             )
         }
@@ -829,6 +969,22 @@ public final class AppModel: ObservableObject {
         documentDNAAnalysisPhases = presentation.dnaAnalysisPhases
     }
 
+    private func publishDossier(
+        _ snapshot: DossierSnapshot,
+        summaries: [DossierSummary]? = nil
+    ) {
+        if let summaries {
+            dossiers = summaries
+        }
+        workspaceSelection = .dossier(snapshot.dossier.id)
+        dossierDetailState = .available(snapshot)
+        dossierChoices = []
+        if lastErrorCode == "dossierOpenFailure"
+            || lastErrorCode == "dossierLoadFailure" {
+            lastErrorCode = nil
+        }
+    }
+
     private func clearDocumentSelection() {
         documentDNADetailGeneration += 1
         invalidateInvoicePaymentDecisionUpdate()
@@ -904,6 +1060,18 @@ public final class AppModel: ObservableObject {
     private func invalidateInvoicePaymentCounterpartNavigation() {
         invoicePaymentCounterpartNavigationGeneration &+= 1
         invoicePaymentCounterpartNavigatingCandidate = nil
+    }
+
+    private func invalidateDossierLoad() {
+        dossierLoadGeneration &+= 1
+        if case .loading(_, let previous) = dossierDetailState {
+            dossierDetailState = previous.map(DossierDetailState.available) ?? .none
+        }
+    }
+
+    private func invalidateDossierMutation() {
+        dossierMutationGeneration &+= 1
+        dossierMutationState = .idle
     }
 
     private func loadInvoicePaymentCandidates(
