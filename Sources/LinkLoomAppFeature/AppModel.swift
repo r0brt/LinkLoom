@@ -637,12 +637,11 @@ public final class AppModel: ObservableObject {
                   $0.candidate == candidate
               }),
               let sourceID = selectedSourceID,
+              let workspace = workspaceSelection,
               let counterpart = counterpart(
                   in: candidate,
                   selectedDocumentID: selectedDocumentID
-              ),
-              let dnaSnapshots,
-              let invoicePaymentCandidates
+              )
         else {
             return
         }
@@ -657,41 +656,18 @@ public final class AppModel: ObservableObject {
         }
 
         do {
-            let presentation = try await loadDocumentPresentation(
-                sourceID: counterpart.sourceRootID
-            )
-            guard let currentCounterpart = presentation.documents.first(where: {
-                $0.id == counterpart.id
-                    && $0.sourceRootID == counterpart.sourceRootID
-                    && $0.contentHash == counterpart.contentHash
-            }),
-                presentation.dnaAnalysisPhases[currentCounterpart.id] == .ready
-            else {
-                throw InvoicePaymentCounterpartNavigationError.staleCandidate
-            }
-            let snapshot = try await dnaSnapshots.currentSnapshot(
-                documentID: currentCounterpart.id
-            )
-            guard let snapshot,
-                  snapshot.documentID == currentCounterpart.id,
-                  snapshot.inputContentHash == currentCounterpart.contentHash
-            else {
-                throw InvoicePaymentCounterpartNavigationError.staleCandidate
-            }
-            let loadedCandidates = try await invoicePaymentCandidates.candidates(
-                involving: currentCounterpart.id
-            )
-            guard let loadedCounterpartCandidate = loadedCandidates.first(where: {
+            let loaded = try await loadDocumentSelection(expected: counterpart)
+            guard let loadedCounterpartCandidate = loaded.candidates.first(where: {
                 sameInvoicePaymentIdentity($0.candidate, candidate)
             }) else {
                 throw InvoicePaymentCounterpartNavigationError.staleCandidate
             }
-            let annotatedCandidates = loadedCandidates.map { loaded in
-                guard loaded.candidate == loadedCounterpartCandidate.candidate else {
-                    return loaded
+            let annotatedCandidates = loaded.candidates.map { annotation in
+                guard annotation.candidate == loadedCounterpartCandidate.candidate else {
+                    return annotation
                 }
                 return InvoicePaymentCandidateWithDecision(
-                    candidate: loaded.candidate,
+                    candidate: annotation.candidate,
                     decision: visibleAnnotation.decision
                 )
             }
@@ -700,16 +676,25 @@ public final class AppModel: ObservableObject {
                     == invoicePaymentCounterpartNavigationGeneration,
                   selectionGeneration == documentDNADetailGeneration,
                   self.selectedSourceID == sourceID,
-                  self.selectedDocumentID == selectedDocumentID
+                  self.selectedDocumentID == selectedDocumentID,
+                  workspaceSelection == workspace
             else {
                 return
             }
-            publishCounterpartSelection(
-                sourceID: currentCounterpart.sourceRootID,
-                presentation: presentation,
-                document: currentCounterpart,
-                snapshot: snapshot,
-                candidates: annotatedCandidates
+            let targetWorkspace: AppWorkspaceSelection = switch workspace {
+            case .source:
+                .source(loaded.sourceID)
+            case .dossier(let dossierID):
+                .dossier(dossierID)
+            }
+            let publishedGeneration = publishDocumentSelection(
+                loaded.replacingCandidates(annotatedCandidates),
+                workspace: targetWorkspace
+            )
+            await loadDossierEntryDisposition(
+                documentID: loaded.document.id,
+                snapshot: loaded.snapshot,
+                generation: publishedGeneration
             )
         } catch is CancellationError {
             return
@@ -719,12 +704,68 @@ public final class AppModel: ObservableObject {
                     == invoicePaymentCounterpartNavigationGeneration,
                   selectionGeneration == documentDNADetailGeneration,
                   self.selectedSourceID == sourceID,
-                  self.selectedDocumentID == selectedDocumentID
+                  self.selectedDocumentID == selectedDocumentID,
+                  workspaceSelection == workspace
             else {
                 return
             }
             publishRuntimeFailure(
                 code: "invoicePaymentCounterpartNavigationFailure",
+                category: .documentLoad,
+                error: error
+            )
+        }
+    }
+
+    public func selectDossierMember(documentID: UUID) async {
+        guard case .dossier(let dossierID) = workspaceSelection,
+              let dossierSnapshot = dossierDetailState.snapshot,
+              dossierSnapshot.dossier.id == dossierID,
+              let member = dossierSnapshot.members.first(where: {
+                  $0.document.id == documentID
+              })
+        else {
+            return
+        }
+        documentDNADetailGeneration &+= 1
+        invalidateInvoicePaymentDecisionUpdate()
+        invalidateInvoicePaymentCounterpartNavigation()
+        let generation = documentDNADetailGeneration
+        let expectedToken = dossierSnapshot.token
+        dossierEntryState = .none
+
+        do {
+            let loaded = try await loadDocumentSelection(expected: member.document)
+            guard !Task.isCancelled,
+                  generation == documentDNADetailGeneration,
+                  workspaceSelection == .dossier(dossierID),
+                  dossierDetailState.snapshot?.dossier.id == dossierID,
+                  dossierDetailState.snapshot?.token == expectedToken
+            else {
+                return
+            }
+            let publishedGeneration = publishDocumentSelection(
+                loaded,
+                workspace: .dossier(dossierID)
+            )
+            await loadDossierEntryDisposition(
+                documentID: loaded.document.id,
+                snapshot: loaded.snapshot,
+                generation: publishedGeneration
+            )
+        } catch is CancellationError {
+            return
+        } catch {
+            guard !Task.isCancelled,
+                  generation == documentDNADetailGeneration,
+                  workspaceSelection == .dossier(dossierID),
+                  dossierDetailState.snapshot?.dossier.id == dossierID,
+                  dossierDetailState.snapshot?.token == expectedToken
+            else {
+                return
+            }
+            publishRuntimeFailure(
+                code: "documentLoadFailure",
                 category: .documentLoad,
                 error: error
             )
@@ -1031,25 +1072,68 @@ public final class AppModel: ObservableObject {
             && lhs.payment.document.contentHash == rhs.payment.document.contentHash
     }
 
-    private func publishCounterpartSelection(
-        sourceID: UUID,
-        presentation: DocumentPresentation,
-        document: DocumentRecord,
-        snapshot: DocumentDNA,
-        candidates: [InvoicePaymentCandidateWithDecision]
-    ) {
-        documentDNADetailGeneration &+= 1
-        invalidateInvoicePaymentDecisionUpdate()
-        selectedSourceID = sourceID
-        documents = presentation.documents
-        documentDNAAnalysisPhases = presentation.dnaAnalysisPhases
-        selectedDocumentID = document.id
-        documentDNADetailState = .available(snapshot)
-        invoicePaymentCandidateState = .available(
-            documentID: document.id,
+    private func loadDocumentSelection(
+        expected document: DocumentRecord
+    ) async throws -> DocumentSelectionPresentation {
+        guard let dnaSnapshots else {
+            throw DocumentSelectionError.staleDocument
+        }
+        let presentation = try await loadDocumentPresentation(
+            sourceID: document.sourceRootID
+        )
+        guard let currentDocument = presentation.documents.first(where: {
+            $0.id == document.id
+                && $0.sourceRootID == document.sourceRootID
+                && $0.contentHash == document.contentHash
+        }),
+            presentation.dnaAnalysisPhases[currentDocument.id] == .ready
+        else {
+            throw DocumentSelectionError.staleDocument
+        }
+        let snapshot = try await dnaSnapshots.currentSnapshot(
+            documentID: currentDocument.id
+        )
+        guard let snapshot,
+              snapshot.documentID == currentDocument.id,
+              snapshot.inputContentHash == currentDocument.contentHash
+        else {
+            throw DocumentSelectionError.staleDocument
+        }
+        let candidates = try await invoicePaymentCandidates?.candidates(
+            involving: currentDocument.id
+        ) ?? []
+        return DocumentSelectionPresentation(
+            sourceID: currentDocument.sourceRootID,
+            presentation: presentation,
+            document: currentDocument,
+            snapshot: snapshot,
             candidates: candidates
         )
+    }
+
+    @discardableResult
+    private func publishDocumentSelection(
+        _ selection: DocumentSelectionPresentation,
+        workspace: AppWorkspaceSelection
+    ) -> Int {
+        documentDNADetailGeneration &+= 1
+        invalidateInvoicePaymentDecisionUpdate()
+        selectedSourceID = selection.sourceID
+        documents = selection.presentation.documents
+        documentDNAAnalysisPhases = selection.presentation.dnaAnalysisPhases
+        selectedDocumentID = selection.document.id
+        documentDNADetailState = .available(selection.snapshot)
+        invoicePaymentCandidateState = .available(
+            documentID: selection.document.id,
+            candidates: selection.candidates
+        )
+        workspaceSelection = workspace
+        dossierEntryState = .none
         clearDocumentScopedFailure()
+        if lastErrorCode == "documentLoadFailure" {
+            lastErrorCode = nil
+        }
+        return documentDNADetailGeneration
     }
 
     private func invalidateInvoicePaymentDecisionUpdate() {
@@ -1412,6 +1496,30 @@ public final class AppModel: ObservableObject {
 private struct DocumentPresentation {
     let documents: [DocumentRecord]
     let dnaAnalysisPhases: [UUID: DocumentDNAAnalysisPhase]
+}
+
+private struct DocumentSelectionPresentation {
+    let sourceID: UUID
+    let presentation: DocumentPresentation
+    let document: DocumentRecord
+    let snapshot: DocumentDNA
+    let candidates: [InvoicePaymentCandidateWithDecision]
+
+    func replacingCandidates(
+        _ candidates: [InvoicePaymentCandidateWithDecision]
+    ) -> Self {
+        Self(
+            sourceID: sourceID,
+            presentation: presentation,
+            document: document,
+            snapshot: snapshot,
+            candidates: candidates
+        )
+    }
+}
+
+private enum DocumentSelectionError: Error {
+    case staleDocument
 }
 
 private enum InvoicePaymentCounterpartNavigationError: Error {

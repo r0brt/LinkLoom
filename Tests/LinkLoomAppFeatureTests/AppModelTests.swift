@@ -300,6 +300,124 @@ struct AppModelTests {
         #expect(context.model.dossierDetailState == .none)
     }
 
+    @Test @MainActor func sameSourceDossierMemberUsesExistingDocumentFlow() async throws {
+        let context = try await DossierNavigationContext.make(crossSource: false)
+
+        await context.model.selectDossierMember(documentID: context.payment.id)
+
+        #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
+        #expect(context.model.selectedSourceID == context.payment.sourceRootID)
+        #expect(context.model.selectedDocumentID == context.payment.id)
+        #expect(context.model.documentDNADetailState == .available(context.paymentDNA))
+        #expect(context.model.invoicePaymentCandidateState == .available(
+            documentID: context.payment.id,
+            candidates: [context.annotatedCandidate]
+        ))
+    }
+
+    @Test @MainActor func crossSourceDossierMemberKeepsDossierWorkspace() async throws {
+        let context = try await DossierNavigationContext.make(crossSource: true)
+
+        await context.model.selectDossierMember(documentID: context.payment.id)
+
+        #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
+        #expect(context.model.selectedSourceID == context.payment.sourceRootID)
+        #expect(context.model.selectedDocumentID == context.payment.id)
+        #expect(context.model.documentDNADetailState == .available(context.paymentDNA))
+    }
+
+    @Test @MainActor func missingDossierMemberDocumentLeavesSelectionAtomic() async throws {
+        let context = try await DossierNavigationContext.make(crossSource: true)
+        let sourceID = context.model.selectedSourceID
+        let documentID = context.model.selectedDocumentID
+        try await context.fixture.sources.remove(id: context.payment.sourceRootID)
+
+        await context.model.selectDossierMember(documentID: context.payment.id)
+
+        #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
+        #expect(context.model.selectedSourceID == sourceID)
+        #expect(context.model.selectedDocumentID == documentID)
+        #expect(context.model.lastErrorCode == "documentLoadFailure")
+    }
+
+    @Test @MainActor func changedHashDossierMemberLeavesSelectionAtomic() async throws {
+        let context = try await DossierNavigationContext.make(crossSource: true)
+        var changed = context.payment
+        changed.contentHash = "changed-payment-hash"
+        try await context.fixture.documents.save(changed)
+        let documentID = context.model.selectedDocumentID
+
+        await context.model.selectDossierMember(documentID: context.payment.id)
+
+        #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
+        #expect(context.model.selectedDocumentID == documentID)
+        #expect(context.model.lastErrorCode == "documentLoadFailure")
+    }
+
+    @Test @MainActor func dossierMemberLoadFailureLeavesSelectionAtomic() async throws {
+        let context = try await DossierNavigationContext.make(
+            crossSource: true,
+            paymentStatusBehavior: .failure
+        )
+        let sourceID = context.model.selectedSourceID
+        let documentID = context.model.selectedDocumentID
+
+        await context.model.selectDossierMember(documentID: context.payment.id)
+
+        #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
+        #expect(context.model.selectedSourceID == sourceID)
+        #expect(context.model.selectedDocumentID == documentID)
+        #expect(context.model.lastErrorCode == "documentLoadFailure")
+    }
+
+    @Test @MainActor func cancelledDossierMemberLoadLeavesSelectionWithoutFailure() async throws {
+        let context = try await DossierNavigationContext.make(
+            crossSource: true,
+            paymentStatusBehavior: .cancellation
+        )
+        let sourceID = context.model.selectedSourceID
+        let documentID = context.model.selectedDocumentID
+
+        await context.model.selectDossierMember(documentID: context.payment.id)
+
+        #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
+        #expect(context.model.selectedSourceID == sourceID)
+        #expect(context.model.selectedDocumentID == documentID)
+        #expect(context.model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func staleABADossierMemberLoadCannotReplaceNewerSelection() async throws {
+        let context = try await DossierNavigationContext.make(
+            crossSource: true,
+            paymentStatusBehavior: .blockedThenReady
+        )
+        let stale = Task {
+            await context.model.selectDossierMember(documentID: context.payment.id)
+        }
+        await context.statuses.waitUntilBlockedLoadStarts()
+
+        await context.model.selectDossierMember(documentID: context.invoice.id)
+        await context.model.selectDossierMember(documentID: context.payment.id)
+        await context.statuses.releaseBlockedLoad()
+        await stale.value
+
+        #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
+        #expect(context.model.selectedDocumentID == context.payment.id)
+        #expect(context.model.documentDNADetailState == .available(context.paymentDNA))
+    }
+
+    @Test @MainActor func counterpartFromDossierMemberRetainsDossierWorkspace() async throws {
+        let context = try await DossierNavigationContext.make(crossSource: true)
+        await context.model.selectDossierMember(documentID: context.payment.id)
+
+        await context.model.showInvoicePaymentCounterpart(
+            candidate: context.annotatedCandidate.candidate
+        )
+
+        #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
+        #expect(context.model.selectedDocumentID == context.invoice.id)
+    }
+
     @Test @MainActor func scanPublishesProgressAndReloadsDocuments() async throws {
         let fixture = try AppModelFixture()
         let source = try await fixture.addSource(named: "Archive")
@@ -768,6 +886,7 @@ struct AppModelTests {
         await model.showInvoicePaymentCounterpart(candidate: annotated.candidate)
 
         #expect(model.selectedSourceID == paymentSource.id)
+        #expect(model.workspaceSelection == .source(paymentSource.id))
         #expect(model.documents == [payment])
         #expect(model.selectedDocumentID == payment.id)
         #expect(model.documentDNADetailState == .available(paymentSnapshot))
@@ -4828,6 +4947,148 @@ private struct DossierModelContext {
     }
 }
 
+private enum DossierMemberStatusBehavior {
+    case ready
+    case failure
+    case cancellation
+    case blockedThenReady
+}
+
+@MainActor
+private struct DossierNavigationContext {
+    let fixture: AppModelFixture
+    let invoiceSource: SourceRootRecord
+    let paymentSource: SourceRootRecord
+    let invoice: DocumentRecord
+    let payment: DocumentRecord
+    let invoiceDNA: DocumentDNA
+    let paymentDNA: DocumentDNA
+    let annotatedCandidate: InvoicePaymentCandidateWithDecision
+    let snapshot: DossierSnapshot
+    let statuses: ScriptedDocumentDNAStatusLoader
+    let model: AppModel
+
+    static func make(
+        crossSource: Bool,
+        paymentStatusBehavior: DossierMemberStatusBehavior = .ready
+    ) async throws -> Self {
+        let fixture = try AppModelFixture()
+        let invoiceSource = try await fixture.addSource(named: "Invoices")
+        let paymentSource = crossSource
+            ? try await fixture.addSource(named: "Payments")
+            : invoiceSource
+        let invoice = fixture.document(
+            sourceRootID: invoiceSource.id,
+            path: "invoice.pdf"
+        )
+        let payment = fixture.document(
+            sourceRootID: paymentSource.id,
+            path: "payment.pdf"
+        )
+        try await fixture.documents.save(invoice)
+        try await fixture.documents.save(payment)
+        let invoiceDNA = try testDocumentDNA(document: invoice, type: .invoice)
+        let paymentDNA = try testDocumentDNA(
+            document: payment,
+            type: .paymentConfirmation
+        )
+        let candidate = try testInvoicePaymentCandidate(
+            invoice: invoice,
+            payment: payment
+        )
+        let annotatedCandidate = InvoicePaymentCandidateWithDecision(
+            candidate: candidate,
+            decision: .confirmed
+        )
+        let snapshot = try testDossierSnapshot(
+            anchor: invoice,
+            member: payment,
+            support: DossierMembershipSupportIdentity(
+                decisionKey: try InvoicePaymentDecisionKey(
+                    relationshipType: .paymentSettlesInvoice,
+                    invoiceDocumentID: invoice.id,
+                    paymentDocumentID: payment.id,
+                    invoiceContentHash: invoice.contentHash,
+                    paymentContentHash: payment.contentHash
+                ),
+                decisionUpdatedAt: Date(timeIntervalSince1970: 400),
+                invoiceDNAAnalyzedAt: invoiceDNA.analyzedAt,
+                paymentDNAAnalyzedAt: paymentDNA.analyzedAt,
+                resolverVersion: candidate.resolverVersion
+            )
+        )
+        let invoiceStatus = DocumentDNAAnalysisStatus(
+            documentID: invoice.id,
+            phase: .ready
+        )
+        let paymentStatus = DocumentDNAAnalysisStatus(
+            documentID: payment.id,
+            phase: .ready
+        )
+        var stepsBySource: [UUID: [ScriptedDocumentDNAStatusLoader.Step]] = [
+            invoiceSource.id: [.statuses(
+                crossSource ? [invoiceStatus] : [invoiceStatus, paymentStatus]
+            )],
+        ]
+        if crossSource {
+            switch paymentStatusBehavior {
+            case .ready:
+                stepsBySource[paymentSource.id] = [.statuses([paymentStatus])]
+            case .failure:
+                stepsBySource[paymentSource.id] = [.failure]
+            case .cancellation:
+                stepsBySource[paymentSource.id] = [.cancellation]
+            case .blockedThenReady:
+                stepsBySource[paymentSource.id] = [
+                    .blocked(.success([paymentStatus])),
+                    .statuses([paymentStatus]),
+                ]
+            }
+        }
+        let statuses = ScriptedDocumentDNAStatusLoader(stepsBySource: stepsBySource)
+        let dnaSnapshots = ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+            invoice.id: [.snapshot(invoiceDNA)],
+            payment.id: [.snapshot(paymentDNA)],
+        ])
+        let candidates = ScriptedInvoicePaymentCandidateLoader(stepsByDocument: [
+            invoice.id: [.candidates([annotatedCandidate])],
+            payment.id: [.candidates([annotatedCandidate])],
+        ])
+        let service = ScriptedDossierService()
+        await service.setSummaries([try summary(for: snapshot)])
+        await service.setSnapshotSteps([.result(snapshot)])
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: statuses,
+            dnaSnapshots: dnaSnapshots,
+            invoicePaymentCandidates: candidates,
+            dossierLoader: service,
+            dossierMutator: service
+        )
+        try await model.reload()
+        await model.selectSource(id: invoiceSource.id)
+        await model.selectDocument(id: invoice.id)
+        await model.selectDossier(id: snapshot.dossier.id)
+        return Self(
+            fixture: fixture,
+            invoiceSource: invoiceSource,
+            paymentSource: paymentSource,
+            invoice: invoice,
+            payment: payment,
+            invoiceDNA: invoiceDNA,
+            paymentDNA: paymentDNA,
+            annotatedCandidate: annotatedCandidate,
+            snapshot: snapshot,
+            statuses: statuses,
+            model: model
+        )
+    }
+}
+
 private actor ScriptedDossierService: DossierLoading, DossierMutating {
     enum OpenStep: Sendable {
         case result(DossierOpenResult)
@@ -5012,6 +5273,36 @@ private func testDossierSnapshot(
             dossierUpdatedAt: dossier.updatedAt,
             anchorContentHash: anchor.contentHash,
             memberSupports: [],
+            exclusionRevisionIDs: []
+        )
+    )
+}
+
+private func testDossierSnapshot(
+    anchor: DocumentRecord,
+    member: DocumentRecord,
+    support: DossierMembershipSupportIdentity,
+    dossierID: UUID = UUID()
+) throws -> DossierSnapshot {
+    let base = try testDossierSnapshot(anchor: anchor, dossierID: dossierID)
+    return DossierSnapshot(
+        dossier: base.dossier,
+        members: base.members + [DossierMember(
+            document: member,
+            sourceDisplayName: "Payments",
+            documentType: .paymentConfirmation,
+            explanation: DossierMembershipExplanation(
+                role: .payment,
+                relationshipType: .paymentSettlesInvoice,
+                signals: []
+            ),
+            support: support
+        )],
+        corrections: [],
+        token: DossierProjectionToken(
+            dossierUpdatedAt: base.dossier.updatedAt,
+            anchorContentHash: anchor.contentHash,
+            memberSupports: [support],
             exclusionRevisionIDs: []
         )
     )
