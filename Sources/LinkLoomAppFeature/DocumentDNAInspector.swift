@@ -171,9 +171,10 @@ struct DocumentDNAInspector: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Verknüpfungskandidaten")
                         .font(.headline)
-                    Text("Kandidaten lokal berechnet · nur Entscheidungen werden gespeichert")
+                    Text("Kandidaten lokal berechnet ·\nnur Entscheidungen werden gespeichert")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityIdentifier("invoice-payment-candidates.header")
@@ -210,14 +211,13 @@ struct DocumentDNAInspector: View {
             isSaving: updatingCandidate == annotated.candidate
         )
         return VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(candidate.counterpartLocation)
                     .font(.body.weight(.semibold))
                     .textSelection(.enabled)
                     .accessibilityIdentifier(
                         "invoice-payment-candidates.\(index).counterpart"
                     )
-                Spacer(minLength: 8)
                 Text(candidate.dispositionTitle)
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
