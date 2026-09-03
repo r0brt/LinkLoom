@@ -5,6 +5,13 @@ import Testing
 
 @Suite("Document DNA dashboard presentation")
 struct ScanDashboardTests {
+    @Test @MainActor
+    func sharedDocumentDNAInspectorTypeIsAvailable() {
+        let _: (AppModel, DocumentRecord?) -> DocumentDNAInspector = {
+            DocumentDNAInspector(model: $0, document: $1)
+        }
+    }
+
     @Test func invoicePaymentDecisionPresentationDistinguishesAllStatesAndActions() {
         let cases: [(
             InvoicePaymentCandidateDecisionState,

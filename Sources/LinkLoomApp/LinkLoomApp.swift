@@ -161,6 +161,12 @@ struct LinkLoomApp: App {
             repository: dnaRepository,
             target: dnaTarget
         )
+        let dossierService = CurrentDossierService(
+            repository: DossierRepository(
+                dbWriter: database,
+                target: dnaTarget
+            )
+        )
         let invoicePaymentDecisions = InvoicePaymentDecisionRepository(
             dbWriter: database
         )
@@ -205,6 +211,8 @@ struct LinkLoomApp: App {
             dnaRetryer: dnaRetryer,
             invoicePaymentCandidates: invoicePaymentCandidates,
             invoicePaymentDecisions: invoicePaymentDecisionUpdater,
+            dossierLoader: dossierService,
+            dossierMutator: dossierService,
             watchScheduler: watchScheduler,
             reportRuntimeFailure: { diagnostic in
                 Self.runtimeLogger.error(
@@ -436,6 +444,97 @@ struct CurrentInvoicePaymentDecisionUpdater: InvoicePaymentDecisionUpdating {
         case .reset:
             try await deleteDecision(key)
         }
+    }
+}
+
+struct CurrentDossierService: DossierLoading, DossierMutating {
+    private let loadSummaries: @Sendable () async throws -> [DossierSummary]
+    private let loadEntry: @Sendable (UUID) async throws -> DossierEntryDisposition
+    private let loadSnapshot: @Sendable (UUID) async throws -> DossierSnapshot
+    private let open: @Sendable (UUID) async throws -> DossierOpenResult
+    private let exclude: @Sendable (
+        UUID, UUID, DossierMembershipSupportIdentity
+    ) async throws -> DossierSnapshot
+    private let reset: @Sendable (UUID, UUID, UUID) async throws -> DossierSnapshot
+
+    init(repository: DossierRepository) {
+        loadSummaries = { try await repository.summaries() }
+        loadEntry = { documentID in
+            try await repository.entryDisposition(for: documentID)
+        }
+        loadSnapshot = { dossierID in
+            try await repository.snapshot(id: dossierID)
+        }
+        open = { documentID in
+            try await repository.createOrOpen(anchorDocumentID: documentID)
+        }
+        exclude = { dossierID, documentID, support in
+            try await repository.excludeMember(
+                dossierID: dossierID,
+                documentID: documentID,
+                expectedSupport: support
+            )
+        }
+        reset = { dossierID, documentID, revisionID in
+            try await repository.resetExclusion(
+                dossierID: dossierID,
+                documentID: documentID,
+                expectedRevisionID: revisionID
+            )
+        }
+    }
+
+    init(
+        summaries: @escaping @Sendable () async throws -> [DossierSummary],
+        entry: @escaping @Sendable (UUID) async throws -> DossierEntryDisposition,
+        snapshot: @escaping @Sendable (UUID) async throws -> DossierSnapshot,
+        createOrOpen: @escaping @Sendable (UUID) async throws -> DossierOpenResult,
+        exclude: @escaping @Sendable (
+            UUID, UUID, DossierMembershipSupportIdentity
+        ) async throws -> DossierSnapshot,
+        reset: @escaping @Sendable (UUID, UUID, UUID) async throws -> DossierSnapshot
+    ) {
+        loadSummaries = summaries
+        loadEntry = entry
+        loadSnapshot = snapshot
+        open = createOrOpen
+        self.exclude = exclude
+        self.reset = reset
+    }
+
+    func summaries() async throws -> [DossierSummary] {
+        try await loadSummaries()
+    }
+
+    func entryDisposition(for documentID: UUID) async throws -> DossierEntryDisposition {
+        try await loadEntry(documentID)
+    }
+
+    func snapshot(id: UUID) async throws -> DossierSnapshot {
+        try await loadSnapshot(id)
+    }
+
+    func createOrOpen(anchorDocumentID: UUID) async throws -> DossierOpenResult {
+        try Task.checkCancellation()
+        return try await open(anchorDocumentID)
+    }
+
+    func excludeMember(
+        dossierID: UUID,
+        documentID: UUID,
+        expectedSupport: DossierMembershipSupportIdentity
+    ) async throws -> DossierSnapshot {
+        try Task.checkCancellation()
+        return try await exclude(dossierID, documentID, expectedSupport)
+    }
+
+    func resetExclusion(
+        dossierID: UUID,
+        documentID: UUID,
+        expectedRevisionID: UUID
+    ) async throws -> DossierSnapshot {
+        try Task.checkCancellation()
+        return try await reset(dossierID, documentID, expectedRevisionID)
     }
 }
 

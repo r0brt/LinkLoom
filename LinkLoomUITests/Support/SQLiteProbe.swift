@@ -24,8 +24,22 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
     let coherentDNADocumentCount: Int
     let invoicePaymentDecisionCount: Int
     let confirmedInvoicePaymentDecisionMatchCount: Int
+    let dossierCount: Int
+    let dossierExclusionCount: Int
 
-    var matchesCompletedWorkflow: Bool {
+    var matchesCompletedWorkflowWithCorrection: Bool {
+        matchesCompletedDocumentWorkflow
+            && dossierCount == 1
+            && dossierExclusionCount == 1
+    }
+
+    var matchesRestoredWorkflow: Bool {
+        matchesCompletedDocumentWorkflow
+            && dossierCount == 1
+            && dossierExclusionCount == 0
+    }
+
+    private var matchesCompletedDocumentWorkflow: Bool {
         sourceCount == 1
             && documentCount == 4
             && readyCount == 3
@@ -63,6 +77,8 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
             && coherentDNADocumentCount == 0
             && invoicePaymentDecisionCount == 0
             && confirmedInvoicePaymentDecisionMatchCount == 0
+            && dossierCount == 0
+            && dossierExclusionCount == 0
     }
 
     var description: String {
@@ -80,7 +96,8 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
             + "coherentDNADocument=\(coherentDNADocumentCount), "
             + "invoicePaymentDecision=\(invoicePaymentDecisionCount), "
             + "confirmedInvoicePaymentDecision="
-            + "\(confirmedInvoicePaymentDecisionMatchCount)"
+            + "\(confirmedInvoicePaymentDecisionMatchCount), "
+            + "dossier=\(dossierCount), dossierExclusion=\(dossierExclusionCount)"
     }
 }
 
@@ -223,8 +240,28 @@ final class SQLiteProbe {
                   AND payment.relativePath = 'payments/payment-confirmation.pdf'
                   AND decision.invoiceContentHash = invoice.contentHash
                   AND decision.paymentContentHash = payment.contentHash
-                """)
+                """),
+            dossierCount: try scalar("SELECT COUNT(*) FROM dossier"),
+            dossierExclusionCount: try scalar(
+                "SELECT COUNT(*) FROM dossierMembershipExclusion"
+            )
         )
+    }
+
+    func documentID(relativePath: String) throws -> String {
+        try onlyUUIDString(
+            "SELECT id FROM document WHERE relativePath = ?",
+            argument: relativePath,
+            description: "document with relative path \(relativePath)"
+        ).lowercased()
+    }
+
+    func onlyDossierID() throws -> String {
+        try onlyUUIDString(
+            "SELECT id FROM dossier",
+            argument: nil,
+            description: "dossier"
+        ).lowercased()
     }
 
     private func scalar(_ sql: String) throws -> Int {
@@ -240,6 +277,54 @@ final class SQLiteProbe {
             throw SQLiteProbeError.query(String(cString: sqlite3_errmsg(database)))
         }
         return Int(sqlite3_column_int64(statement, 0))
+    }
+
+    private func onlyUUIDString(
+        _ sql: String,
+        argument: String?,
+        description: String
+    ) throws -> String {
+        guard let database else {
+            throw SQLiteProbeError.closed
+        }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            throw SQLiteProbeError.query(String(cString: sqlite3_errmsg(database)))
+        }
+        defer { sqlite3_finalize(statement) }
+        if let argument {
+            let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+            guard sqlite3_bind_text(statement, 1, argument, -1, transient) == SQLITE_OK else {
+                throw SQLiteProbeError.query(String(cString: sqlite3_errmsg(database)))
+            }
+        }
+        guard sqlite3_step(statement) == SQLITE_ROW else {
+            throw SQLiteProbeError.query("Expected exactly one \(description)")
+        }
+        let result: String
+        switch sqlite3_column_type(statement, 0) {
+        case SQLITE_BLOB:
+            guard sqlite3_column_bytes(statement, 0) == 16,
+                  let bytes = sqlite3_column_blob(statement, 0) else {
+                throw SQLiteProbeError.query("Invalid persisted UUID for \(description)")
+            }
+            result = NSUUID(
+                uuidBytes: bytes.assumingMemoryBound(to: UInt8.self)
+            ).uuidString
+        case SQLITE_TEXT:
+            guard let value = sqlite3_column_text(statement, 0),
+                  let uuid = UUID(uuidString: String(cString: value)) else {
+                throw SQLiteProbeError.query("Invalid persisted UUID for \(description)")
+            }
+            result = uuid.uuidString
+        default:
+            throw SQLiteProbeError.query("Invalid persisted UUID for \(description)")
+        }
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw SQLiteProbeError.query("Expected exactly one \(description)")
+        }
+        return result
     }
 }
 

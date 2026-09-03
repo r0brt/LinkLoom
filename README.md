@@ -63,6 +63,17 @@ The current catalog acceptance boundary is 10,000 documents in one selected sour
 
 LinkLoom reads selected originals in place. It does not import them into a proprietary archive. Cataloging and text extraction run locally, and removing LinkLoom's rebuildable database does not remove source documents.
 
+## Kosten und Zahlungen
+
+Ein Dossier „Kosten und Zahlungen“ entsteht nur durch die ausdrückliche Aktion
+„Dossier erstellen“ bei einer geeigneten Rechnung oder Zahlungsbestätigung.
+Es zeigt das Ankerdokument und direkt bestätigte Rechnungs-/Zahlungsbeziehungen
+mit ihren lokalen Signalen. „Aus Dossier entfernen“ unterdrückt ein abgeleitetes
+Mitglied nur in diesem Dossier; „Wieder aufnehmen“ setzt diese Korrektur zurück.
+Alle Analysen, Entscheidungen und Dossier-Korrekturen bleiben lokal. Die
+ausgewählten Originaldateien werden weder umbenannt noch verschoben oder
+inhaltlich verändert.
+
 ## Optional 10,000-document benchmark
 
 The performance fixture is disabled during normal test runs. Enable it explicitly with:

@@ -11,9 +11,26 @@ public struct ContentView: View {
 
     public var body: some View {
         NavigationSplitView {
-            SourceSidebar(model: model, folderPicker: folderPicker)
+            WorkspaceSidebar(model: model, folderPicker: folderPicker)
         } detail: {
-            ScanDashboard(model: model)
+            switch model.workspaceSelection {
+            case .dossier:
+                CostsAndPaymentsDossierView(model: model)
+            case .source, nil:
+                ScanDashboard(model: model)
+            }
+        }
+        .inspector(isPresented: Binding(
+            get: { model.selectedDocumentID != nil },
+            set: { shown in
+                guard !shown else { return }
+                Task { await model.selectDocument(id: nil) }
+            }
+        )) {
+            DocumentDNAInspector(
+                model: model,
+                document: model.documents.first { $0.id == model.selectedDocumentID }
+            )
         }
         .frame(minWidth: 900, minHeight: 560)
     }
