@@ -5,6 +5,165 @@ import Testing
 
 @Suite("App composition")
 struct AppCompositionTests {
+    @Test func dossierServiceLoadsSummariesExactlyOnce() async throws {
+        let expected = try dossierSummary()
+        let calls = CallCounter()
+        let service = dossierService(
+            summaries: {
+                await calls.increment()
+                return [expected]
+            }
+        )
+
+        let result = try await service.summaries()
+
+        #expect(result == [expected])
+        #expect(await calls.count == 1)
+    }
+
+    @Test func dossierServiceLoadsEntryDispositionForExactDocument() async throws {
+        let documentID = UUID(uuidString: "00000000-0000-0000-0000-000000000611")!
+        let recorder = DossierServiceRecorder()
+        let service = dossierService(entry: { id in
+            await recorder.recordEntry(id)
+            return .create
+        })
+
+        let result = try await service.entryDisposition(for: documentID)
+
+        #expect(result == .create)
+        #expect(await recorder.entryIDs == [documentID])
+    }
+
+    @Test func dossierServiceLoadsSnapshotForExactDossier() async throws {
+        let expected = try dossierSnapshot()
+        let recorder = DossierServiceRecorder()
+        let service = dossierService(snapshot: { id in
+            await recorder.recordSnapshot(id)
+            return expected
+        })
+
+        let result = try await service.snapshot(id: expected.dossier.id)
+
+        #expect(result == expected)
+        #expect(await recorder.snapshotIDs == [expected.dossier.id])
+    }
+
+    @Test func dossierServiceCreatesOrOpensForExactAnchorOnce() async throws {
+        let expected = try dossierSnapshot()
+        let recorder = DossierServiceRecorder()
+        let service = dossierService(createOrOpen: { id in
+            await recorder.recordOpen(id)
+            return .opened(expected)
+        })
+
+        let result = try await service.createOrOpen(
+            anchorDocumentID: expected.dossier.anchorDocumentID
+        )
+
+        #expect(result == .opened(expected))
+        #expect(await recorder.openIDs == [expected.dossier.anchorDocumentID])
+    }
+
+    @Test func dossierServiceExcludesWithExactSupportOnce() async throws {
+        let expected = try dossierSnapshot()
+        let support = try dossierSupport()
+        let documentID = UUID(uuidString: "00000000-0000-0000-0000-000000000612")!
+        let recorder = DossierServiceRecorder()
+        let service = dossierService(exclude: { dossierID, memberID, value in
+            await recorder.recordExclusion(dossierID, memberID, value)
+            return expected
+        })
+
+        let result = try await service.excludeMember(
+            dossierID: expected.dossier.id,
+            documentID: documentID,
+            expectedSupport: support
+        )
+
+        #expect(result == expected)
+        #expect(await recorder.exclusionDossierIDs == [expected.dossier.id])
+        #expect(await recorder.exclusionDocumentIDs == [documentID])
+        #expect(await recorder.exclusionSupports == [support])
+    }
+
+    @Test func dossierServiceResetsExactRevisionOnce() async throws {
+        let expected = try dossierSnapshot()
+        let documentID = UUID(uuidString: "00000000-0000-0000-0000-000000000613")!
+        let revisionID = UUID(uuidString: "00000000-0000-0000-0000-000000000614")!
+        let recorder = DossierServiceRecorder()
+        let service = dossierService(reset: { dossierID, memberID, revision in
+            await recorder.recordReset(dossierID, memberID, revision)
+            return expected
+        })
+
+        let result = try await service.resetExclusion(
+            dossierID: expected.dossier.id,
+            documentID: documentID,
+            expectedRevisionID: revisionID
+        )
+
+        #expect(result == expected)
+        #expect(await recorder.resetDossierIDs == [expected.dossier.id])
+        #expect(await recorder.resetDocumentIDs == [documentID])
+        #expect(await recorder.resetRevisionIDs == [revisionID])
+    }
+
+    @Test func dossierServicePropagatesRepositoryFailureUnchanged() async {
+        let service = dossierService(snapshot: { _ in
+            throw CompositionTestError.dossierFailed
+        })
+
+        await #expect(throws: CompositionTestError.dossierFailed) {
+            try await service.snapshot(id: UUID())
+        }
+    }
+
+    @Test func dossierServiceHonorsCancellationBeforeEveryMutation() async throws {
+        let mutationCalls = CallCounter()
+        let service = dossierService(
+            createOrOpen: { _ in
+                await mutationCalls.increment()
+                throw CompositionTestError.dossierFailed
+            },
+            exclude: { _, _, _ in
+                await mutationCalls.increment()
+                throw CompositionTestError.dossierFailed
+            },
+            reset: { _, _, _ in
+                await mutationCalls.increment()
+                throw CompositionTestError.dossierFailed
+            }
+        )
+        let support = try dossierSupport()
+
+        let opening = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await service.createOrOpen(anchorDocumentID: UUID())
+        }
+        let excluding = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await service.excludeMember(
+                dossierID: UUID(),
+                documentID: UUID(),
+                expectedSupport: support
+            )
+        }
+        let resetting = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await service.resetExclusion(
+                dossierID: UUID(),
+                documentID: UUID(),
+                expectedRevisionID: UUID()
+            )
+        }
+
+        await #expect(throws: CancellationError.self) { try await opening.value }
+        await #expect(throws: CancellationError.self) { try await excluding.value }
+        await #expect(throws: CancellationError.self) { try await resetting.value }
+        #expect(await mutationCalls.count == 0)
+    }
+
     @Test func decisionUpdaterSavesExactCandidateKeyDecisionAndTimestamp() async throws {
         let recorder = DecisionUpdaterRecorder()
         let timestamp = Date(timeIntervalSince1970: 123)
@@ -382,6 +541,39 @@ private enum CompositionTestError: Error {
     case candidateLookupFailed
     case decisionAnnotationFailed
     case decisionUpdateFailed
+    case dossierFailed
+}
+
+private actor DossierServiceRecorder {
+    private(set) var entryIDs: [UUID] = []
+    private(set) var snapshotIDs: [UUID] = []
+    private(set) var openIDs: [UUID] = []
+    private(set) var exclusionDossierIDs: [UUID] = []
+    private(set) var exclusionDocumentIDs: [UUID] = []
+    private(set) var exclusionSupports: [DossierMembershipSupportIdentity] = []
+    private(set) var resetDossierIDs: [UUID] = []
+    private(set) var resetDocumentIDs: [UUID] = []
+    private(set) var resetRevisionIDs: [UUID] = []
+
+    func recordEntry(_ id: UUID) { entryIDs.append(id) }
+    func recordSnapshot(_ id: UUID) { snapshotIDs.append(id) }
+    func recordOpen(_ id: UUID) { openIDs.append(id) }
+
+    func recordExclusion(
+        _ dossierID: UUID,
+        _ documentID: UUID,
+        _ support: DossierMembershipSupportIdentity
+    ) {
+        exclusionDossierIDs.append(dossierID)
+        exclusionDocumentIDs.append(documentID)
+        exclusionSupports.append(support)
+    }
+
+    func recordReset(_ dossierID: UUID, _ documentID: UUID, _ revisionID: UUID) {
+        resetDossierIDs.append(dossierID)
+        resetDocumentIDs.append(documentID)
+        resetRevisionIDs.append(revisionID)
+    }
 }
 
 private actor DecisionUpdaterRecorder {
@@ -428,6 +620,100 @@ private actor CallCounter {
     func increment() {
         count += 1
     }
+}
+
+private func dossierService(
+    summaries: @escaping @Sendable () async throws -> [DossierSummary] = { [] },
+    entry: @escaping @Sendable (UUID) async throws -> DossierEntryDisposition = { _ in
+        .create
+    },
+    snapshot: @escaping @Sendable (UUID) async throws -> DossierSnapshot = { _ in
+        throw CompositionTestError.dossierFailed
+    },
+    createOrOpen: @escaping @Sendable (UUID) async throws -> DossierOpenResult = { _ in
+        throw CompositionTestError.dossierFailed
+    },
+    exclude: @escaping @Sendable (
+        UUID, UUID, DossierMembershipSupportIdentity
+    ) async throws -> DossierSnapshot = { _, _, _ in
+        throw CompositionTestError.dossierFailed
+    },
+    reset: @escaping @Sendable (UUID, UUID, UUID) async throws -> DossierSnapshot = {
+        _, _, _ in throw CompositionTestError.dossierFailed
+    }
+) -> CurrentDossierService {
+    CurrentDossierService(
+        summaries: summaries,
+        entry: entry,
+        snapshot: snapshot,
+        createOrOpen: createOrOpen,
+        exclude: exclude,
+        reset: reset
+    )
+}
+
+private func dossierSummary() throws -> DossierSummary {
+    let anchor = candidateDocument(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000601")!,
+        sourceID: UUID(uuidString: "00000000-0000-0000-0000-000000000602")!,
+        path: "invoice.pdf"
+    )
+    return DossierSummary(
+        dossier: try DossierRecord(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000603")!,
+            kind: .costsAndPayments,
+            displayName: "Kosten und Zahlungen",
+            anchorDocumentID: anchor.id,
+            createdAt: Date(timeIntervalSince1970: 10),
+            updatedAt: Date(timeIntervalSince1970: 10)
+        ),
+        anchor: anchor
+    )
+}
+
+private func dossierSnapshot() throws -> DossierSnapshot {
+    let summary = try dossierSummary()
+    return DossierSnapshot(
+        dossier: summary.dossier,
+        members: [DossierMember(
+            document: summary.anchor,
+            sourceDisplayName: "Rechnungen",
+            documentType: .invoice,
+            explanation: DossierMembershipExplanation(
+                role: .anchor,
+                relationshipType: nil,
+                signals: []
+            ),
+            support: nil
+        )],
+        corrections: [],
+        token: DossierProjectionToken(
+            dossierUpdatedAt: summary.dossier.updatedAt,
+            anchorContentHash: summary.anchor.contentHash,
+            memberSupports: [],
+            exclusionRevisionIDs: []
+        )
+    )
+}
+
+private func dossierSupport() throws -> DossierMembershipSupportIdentity {
+    DossierMembershipSupportIdentity(
+        decisionKey: try InvoicePaymentDecisionKey(
+            relationshipType: .paymentSettlesInvoice,
+            invoiceDocumentID: UUID(
+                uuidString: "00000000-0000-0000-0000-000000000601"
+            )!,
+            paymentDocumentID: UUID(
+                uuidString: "00000000-0000-0000-0000-000000000604"
+            )!,
+            invoiceContentHash: "hash-invoice.pdf",
+            paymentContentHash: "hash-payment.pdf"
+        ),
+        decisionUpdatedAt: Date(timeIntervalSince1970: 11),
+        invoiceDNAAnalyzedAt: Date(timeIntervalSince1970: 12),
+        paymentDNAAnalyzedAt: Date(timeIntervalSince1970: 13),
+        resolverVersion: "1"
+    )
 }
 
 private func sourceRecord() -> SourceRootRecord {
