@@ -76,6 +76,42 @@ struct PersonDossierAnchorStoreTests {
         }
     }
 
+    @Test func insertOrFetchRollsBackAnchorWhenEvidenceInsertFails() throws {
+        let fixture = try PersonDossierAnchorStoreFixture.make()
+        let anchor = try fixture.anchor(id: fixture.firstAnchorID)
+
+        try fixture.db.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER reject_person_dossier_anchor_evidence
+                BEFORE INSERT ON personDossierAnchorEvidence
+                BEGIN
+                    SELECT RAISE(ABORT, 'blocked person dossier anchor evidence');
+                END
+                """)
+        }
+
+        #expect(throws: DatabaseError.self) {
+            try fixture.db.write { db in
+                _ = try PersonDossierAnchorStore.insertOrFetch(in: db, proposed: anchor)
+            }
+        }
+
+        try fixture.db.read { db in
+            let anchorCount = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM personDossierAnchor")
+            let evidenceCount = try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM personDossierAnchorEvidence"
+            )
+            #expect(anchorCount == 0)
+            #expect(evidenceCount == 0)
+        }
+
+        try fixture.db.write { db in
+            try db.execute(sql: "DROP TRIGGER reject_person_dossier_anchor_evidence")
+            #expect(try PersonDossierAnchorStore.insertOrFetch(in: db, proposed: anchor) == anchor)
+        }
+    }
+
     @Test func recordRejectsMalformedUUIDRoleDateAndEvidenceJSON() throws {
         let fixture = try PersonDossierAnchorStoreFixture.make()
         try fixture.db.write { db in
@@ -140,6 +176,7 @@ struct PersonDossierAnchorStoreTests {
                 id: fixture.thirdAnchorID,
                 originDocumentID: fixture.thirdAnchorID
             )
+            try fixture.insertRawEvidence(in: db, personAnchorID: fixture.thirdAnchorID)
             try fixture.insertRawEvidence(
                 in: db,
                 personAnchorID: fixture.thirdAnchorID,
@@ -162,6 +199,26 @@ struct PersonDossierAnchorStoreTests {
                 #expect(throws: PersonDossierAnchorStoreError.invalidStoredState) {
                     try PersonDossierAnchorStore.record(in: db, id: id)
                 }
+            }
+        }
+    }
+
+    @Test func recordRejectsNonContiguousSubjectLocalEvidenceOrder() throws {
+        let fixture = try PersonDossierAnchorStoreFixture.make()
+        try fixture.db.write { db in
+            try fixture.insertRawAnchor(
+                in: db,
+                id: fixture.firstAnchorID,
+                originDocumentID: fixture.firstAnchorID
+            )
+            try fixture.insertRawEvidence(
+                in: db,
+                personAnchorID: fixture.firstAnchorID,
+                evidenceOrder: 1
+            )
+
+            #expect(throws: PersonDossierAnchorStoreError.invalidStoredState) {
+                try PersonDossierAnchorStore.record(in: db, id: fixture.firstAnchorID)
             }
         }
     }
@@ -245,16 +302,17 @@ private struct PersonDossierAnchorStoreFixture {
     func insertRawEvidence(
         in db: Database,
         personAnchorID: UUID,
-        subject: String = "person"
+        subject: String = "person",
+        evidenceOrder: Int = 0
     ) throws {
         try db.execute(
             sql: """
                 INSERT INTO personDossierAnchorEvidence (
                     personAnchorID, subject, evidenceOrder, pageIndex,
                     startUTF16, lengthUTF16, exactText, ocrRegionIndexesJSON
-                ) VALUES (?, ?, 0, 0, 0, 12, 'Elise Muster', ?)
+                ) VALUES (?, ?, ?, 0, 0, 12, 'Elise Muster', ?)
                 """,
-            arguments: [personAnchorID, subject, Data("[1,3]".utf8)]
+            arguments: [personAnchorID, subject, evidenceOrder, Data("[1,3]".utf8)]
         )
     }
 }

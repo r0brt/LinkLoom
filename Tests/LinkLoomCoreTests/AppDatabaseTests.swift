@@ -1013,7 +1013,9 @@ struct AppDatabaseTests {
         let sourceID = UUID()
         let documentID = UUID()
         let dossierID = UUID()
+        let exclusionRevisionID = UUID()
         let storedAt = Date(timeIntervalSince1970: 7_100)
+        let excludedAt = Date(timeIntervalSince1970: 7_101)
         try db.write { connection in
             try insertDossierSource(
                 in: connection,
@@ -1030,6 +1032,14 @@ struct AppDatabaseTests {
                 arguments: [dossierID, documentID, storedAt, storedAt]
             )
             try connection.execute(sql: "PRAGMA ignore_check_constraints = FALSE")
+            try connection.execute(
+                sql: """
+                    INSERT INTO dossierMembershipExclusion
+                        (dossierID, documentID, revisionID, excludedAt)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                arguments: [dossierID, documentID, exclusionRevisionID, excludedAt]
+            )
         }
 
         #expect(throws: DatabaseError.self) {
@@ -1044,6 +1054,14 @@ struct AppDatabaseTests {
                 arguments: [dossierID]
             )
             let exclusionsExist = try connection.tableExists("dossierMembershipExclusion")
+            let storedExclusion = try Row.fetchOne(
+                connection,
+                sql: """
+                    SELECT dossierID, documentID, revisionID, excludedAt
+                    FROM dossierMembershipExclusion
+                    """
+            )
+            let exclusion = try #require(storedExclusion)
             let personAnchorsExist = try connection.tableExists("personDossierAnchor")
             let evidenceExist = try connection.tableExists("personDossierAnchorEvidence")
             let confirmationsExist = try connection.tableExists("dossierMembershipConfirmation")
@@ -1056,6 +1074,10 @@ struct AppDatabaseTests {
             ])
             #expect(malformedKind == "unsupported")
             #expect(exclusionsExist)
+            #expect(exclusion["dossierID"] as UUID == dossierID)
+            #expect(exclusion["documentID"] as UUID == documentID)
+            #expect(exclusion["revisionID"] as UUID == exclusionRevisionID)
+            #expect(exclusion["excludedAt"] as Date == excludedAt)
             #expect(!personAnchorsExist)
             #expect(!evidenceExist)
             #expect(!confirmationsExist)
