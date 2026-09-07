@@ -32,13 +32,6 @@ public struct DossierRecord: Identifiable, Sendable, Equatable {
         return anchor
     }
 
-    public var anchorDocumentID: UUID {
-        guard let documentAnchorID else {
-            preconditionFailure("Person dossiers do not have a document anchor")
-        }
-        return documentAnchorID
-    }
-
     public init(
         id: UUID, kind: DossierKind, displayName: String,
         anchor: DossierAnchor, createdAt: Date, updatedAt: Date

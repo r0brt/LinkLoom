@@ -40,6 +40,19 @@ struct DossierStoreTests {
         }
     }
 
+    @Test func insertOrFetchAnchoredRejectsPersonDossierWithoutWriting() throws {
+        let fixture = try DossierStoreFixture.make()
+        let person = try fixture.personDossier()
+
+        try fixture.db.write { db in
+            #expect(throws: DossierStoreError.invalidStoredState) {
+                try DossierStore.insertOrFetchAnchored(in: db, proposed: person)
+            }
+            let stored = try DossierStore.all(in: db)
+            #expect(stored.isEmpty)
+        }
+    }
+
     @Test func exclusionsAreOrderedByExcludedAtThenDocumentID() throws {
         let fixture = try DossierStoreFixture.make()
         let dossier = try fixture.dossier(id: fixture.firstDossierID)
@@ -269,6 +282,41 @@ private struct DossierStoreFixture {
             kind: .costsAndPayments,
             displayName: id == firstDossierID ? "Costs and payments" : "Replacement dossier",
             anchorDocumentID: anchorDocumentID ?? anchorID,
+            createdAt: date,
+            updatedAt: date
+        )
+    }
+
+    func personDossier() throws -> DossierRecord {
+        let evidence = try DocumentDNAEvidence(
+            pageIndex: 0,
+            startUTF16: 0,
+            lengthUTF16: 12,
+            exactText: "Elise Muster",
+            ocrRegionIndexes: []
+        )
+        let anchor = try PersonDossierAnchor(
+            id: UUID(),
+            displayName: "Elise Muster",
+            normalizedName: "elise muster",
+            primaryRole: .resident,
+            originDocumentID: anchorID,
+            originContentHash: "hash-anchor",
+            originExtractionVersion: "text-v1",
+            originDNASchemaVersion: 1,
+            originDNAAnalyzerIdentifier: "local-rules",
+            originDNAAnalyzerVersion: "1",
+            originDNAAnalyzedAt: date,
+            personEvidence: [evidence],
+            birthDate: nil,
+            createdAt: date,
+            updatedAt: date
+        )
+        return try DossierRecord(
+            id: firstDossierID,
+            kind: .personMatter,
+            displayName: "Meine Mutter im Pflegeheim",
+            anchor: .person(anchor),
             createdAt: date,
             updatedAt: date
         )

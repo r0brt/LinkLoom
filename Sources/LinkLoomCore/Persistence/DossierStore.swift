@@ -35,6 +35,10 @@ enum DossierStore {
     static func insertOrFetchAnchored(
         in db: Database, proposed: DossierRecord
     ) throws -> DossierRecord {
+        guard proposed.kind == .costsAndPayments,
+              let anchorDocumentID = proposed.documentAnchorID else {
+            throw DossierStoreError.invalidStoredState
+        }
         try db.execute(
             sql: """
                 INSERT INTO dossier (
@@ -46,7 +50,7 @@ enum DossierStore {
                 proposed.id,
                 proposed.kind.rawValue,
                 proposed.displayName,
-                proposed.anchorDocumentID,
+                anchorDocumentID,
                 proposed.createdAt,
                 proposed.updatedAt,
             ]
@@ -58,7 +62,7 @@ enum DossierStore {
                 FROM dossier
                 WHERE kind = ? AND anchorDocumentID = ?
                 """,
-            arguments: [proposed.kind.rawValue, proposed.anchorDocumentID]
+            arguments: [proposed.kind.rawValue, anchorDocumentID]
         ) else {
             throw DossierStoreError.invalidStoredState
         }
