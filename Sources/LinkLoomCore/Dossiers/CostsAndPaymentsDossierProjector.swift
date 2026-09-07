@@ -17,8 +17,9 @@ struct CostsAndPaymentsDossierProjectionInput: Sendable {
 
 struct CostsAndPaymentsDossierProjector: Sendable {
     func project(_ input: CostsAndPaymentsDossierProjectionInput) throws -> DossierSnapshot {
-        guard let anchor = input.anchor,
-              anchor.id == input.dossier.anchorDocumentID
+        guard case let .document(anchorDocumentID) = input.dossier.anchor,
+              let anchor = input.anchor,
+              anchor.id == anchorDocumentID
         else {
             throw DossierProjectionError.invalidStoredState
         }

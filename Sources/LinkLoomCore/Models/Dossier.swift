@@ -2,34 +2,78 @@ import Foundation
 
 public enum DossierKind: String, CaseIterable, Sendable, Equatable {
     case costsAndPayments
+    case personMatter
 }
 
 public enum DossierValidationError: Error, Sendable, Equatable {
     case invalidRecord
 }
 
+public enum DossierAnchor: Sendable, Equatable {
+    case document(UUID)
+    case person(PersonDossierAnchor)
+}
+
 public struct DossierRecord: Identifiable, Sendable, Equatable {
     public let id: UUID
     public let kind: DossierKind
     public let displayName: String
-    public let anchorDocumentID: UUID
+    public let anchor: DossierAnchor
     public let createdAt: Date
     public let updatedAt: Date
 
+    public var documentAnchorID: UUID? {
+        guard case let .document(id) = anchor else { return nil }
+        return id
+    }
+
+    public var personAnchor: PersonDossierAnchor? {
+        guard case let .person(anchor) = anchor else { return nil }
+        return anchor
+    }
+
+    public var anchorDocumentID: UUID {
+        guard let documentAnchorID else {
+            preconditionFailure("Person dossiers do not have a document anchor")
+        }
+        return documentAnchorID
+    }
+
     public init(
         id: UUID, kind: DossierKind, displayName: String,
-        anchorDocumentID: UUID, createdAt: Date, updatedAt: Date
+        anchor: DossierAnchor, createdAt: Date, updatedAt: Date
     ) throws {
-        guard !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+        let validAnchor = switch (kind, anchor) {
+        case (.costsAndPayments, .document(_)),
+             (.personMatter, .person(_)):
+            true
+        default: false
+        }
+        guard validAnchor,
+              !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               updatedAt >= createdAt else {
             throw DossierValidationError.invalidRecord
         }
         self.id = id
         self.kind = kind
         self.displayName = displayName
-        self.anchorDocumentID = anchorDocumentID
+        self.anchor = anchor
         self.createdAt = createdAt
         self.updatedAt = updatedAt
+    }
+
+    public init(
+        id: UUID, kind: DossierKind, displayName: String,
+        anchorDocumentID: UUID, createdAt: Date, updatedAt: Date
+    ) throws {
+        try self.init(
+            id: id,
+            kind: kind,
+            displayName: displayName,
+            anchor: .document(anchorDocumentID),
+            createdAt: createdAt,
+            updatedAt: updatedAt
+        )
     }
 }
 

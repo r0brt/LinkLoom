@@ -26,9 +26,10 @@ struct DossierProjectionReader: Sendable {
     }
 
     func summary(in db: Database, dossier: DossierRecord) throws -> DossierSummary {
-        guard let anchor = try DocumentRecord.fetchOne(
+        guard case let .document(anchorDocumentID) = dossier.anchor,
+              let anchor = try DocumentRecord.fetchOne(
             db,
-            key: dossier.anchorDocumentID
+            key: anchorDocumentID
         ) else {
             throw DossierRepositoryError.invalidStoredState
         }
@@ -37,9 +38,10 @@ struct DossierProjectionReader: Sendable {
 
     func snapshot(in db: Database, dossier: DossierRecord) throws -> DossierSnapshot {
         guard dossier.kind == .costsAndPayments,
+              case let .document(anchorDocumentID) = dossier.anchor,
               let anchor = try DocumentRecord.fetchOne(
                   db,
-                  key: dossier.anchorDocumentID
+                  key: anchorDocumentID
               )
         else {
             throw DossierRepositoryError.invalidStoredState
