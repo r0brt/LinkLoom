@@ -26,7 +26,9 @@ public actor DossierRepository {
     public func summaries() async throws -> [DossierSummary] {
         do {
             return try await dbWriter.read { db in
-                try DossierStore.all(in: db).map {
+                try DossierStore.all(in: db).filter {
+                    $0.kind == .costsAndPayments
+                }.map {
                     try self.projectionReader.summary(in: db, dossier: $0)
                 }
             }
@@ -46,10 +48,11 @@ public actor DossierRepository {
                 ) else {
                     throw DossierRepositoryError.invalidAnchor
                 }
-                let dossiers = try DossierStore.all(in: db)
-                if let anchored = dossiers.first(where: {
+                let dossiers = try DossierStore.all(in: db).filter {
                     $0.kind == .costsAndPayments
-                        && $0.anchorDocumentID == documentID
+                }
+                if let anchored = dossiers.first(where: {
+                    $0.documentAnchorID == documentID
                 }) {
                     return .open(try self.projectionReader.summary(
                         in: db,
@@ -85,10 +88,11 @@ public actor DossierRepository {
                 ) else {
                     throw DossierRepositoryError.invalidAnchor
                 }
-                let dossiers = try DossierStore.all(in: db)
-                if let anchored = dossiers.first(where: {
+                let dossiers = try DossierStore.all(in: db).filter {
                     $0.kind == .costsAndPayments
-                        && $0.anchorDocumentID == anchorDocumentID
+                }
+                if let anchored = dossiers.first(where: {
+                    $0.documentAnchorID == anchorDocumentID
                 }) {
                     return .opened(try self.projectionReader.snapshot(
                         in: db,

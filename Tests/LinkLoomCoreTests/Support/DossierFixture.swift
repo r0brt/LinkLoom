@@ -5,6 +5,8 @@ import GRDB
 struct DossierFixture: Sendable {
     static let baseDate = Date(timeIntervalSince1970: 1_800_000_000)
     static let proposedDossierID = uuid("82000000-0000-0000-0000-000000000090")
+    static let personAnchorID = uuid("82000000-0000-0000-0000-000000000092")
+    static let personDossierID = uuid("82000000-0000-0000-0000-000000000093")
 
     let db: DatabaseQueue
     let repository: DossierRepository
@@ -223,6 +225,44 @@ struct DossierFixture: Sendable {
             anchorDocumentID: anchor.id,
             createdAt: createdAt,
             updatedAt: createdAt
+        )
+    }
+
+    func makePersonAnchor(originDocumentID: UUID) throws -> PersonDossierAnchor {
+        let evidence = try DocumentDNAEvidence(
+            pageIndex: 0,
+            startUTF16: 0,
+            lengthUTF16: 12,
+            exactText: "Elise Muster",
+            ocrRegionIndexes: [0]
+        )
+        return try PersonDossierAnchor(
+            id: Self.personAnchorID,
+            displayName: "Elise Muster",
+            normalizedName: "elise muster",
+            primaryRole: .resident,
+            originDocumentID: originDocumentID,
+            originContentHash: "hash-person-origin",
+            originExtractionVersion: "text-v1",
+            originDNASchemaVersion: 1,
+            originDNAAnalyzerIdentifier: "local-rules",
+            originDNAAnalyzerVersion: "1",
+            originDNAAnalyzedAt: Self.baseDate,
+            personEvidence: [evidence],
+            birthDate: nil,
+            createdAt: Self.baseDate,
+            updatedAt: Self.baseDate
+        )
+    }
+
+    func makePersonDossier(anchor: PersonDossierAnchor) throws -> DossierRecord {
+        try DossierRecord(
+            id: Self.personDossierID,
+            kind: .personMatter,
+            displayName: "Meine Mutter im Pflegeheim",
+            anchor: .person(anchor),
+            createdAt: Self.baseDate,
+            updatedAt: Self.baseDate
         )
     }
 

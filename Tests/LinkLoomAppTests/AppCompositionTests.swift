@@ -57,12 +57,11 @@ struct AppCompositionTests {
             return .opened(expected)
         })
 
-        let result = try await service.createOrOpen(
-            anchorDocumentID: expected.dossier.anchorDocumentID
-        )
+        let anchorDocumentID = try #require(expected.dossier.documentAnchorID)
+        let result = try await service.createOrOpen(anchorDocumentID: anchorDocumentID)
 
         #expect(result == .opened(expected))
-        #expect(await recorder.openIDs == [expected.dossier.anchorDocumentID])
+        #expect(await recorder.openIDs == [anchorDocumentID])
     }
 
     @Test func dossierServiceExcludesWithExactSupportOnce() async throws {

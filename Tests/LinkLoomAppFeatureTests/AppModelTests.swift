@@ -6224,8 +6224,9 @@ private func testDossierSnapshot(
 }
 
 private func summary(for snapshot: DossierSnapshot) throws -> DossierSummary {
+    let anchorDocumentID = try #require(snapshot.dossier.documentAnchorID)
     let anchor = try #require(snapshot.members.first(where: {
-        $0.document.id == snapshot.dossier.anchorDocumentID
+        $0.document.id == anchorDocumentID
     }))
     return DossierSummary(dossier: snapshot.dossier, anchor: anchor.document)
 }

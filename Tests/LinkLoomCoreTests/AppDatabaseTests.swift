@@ -548,6 +548,7 @@ struct AppDatabaseTests {
                 "kind",
                 "displayName",
                 "anchorDocumentID",
+                "personAnchorID",
                 "createdAt",
                 "updatedAt",
             ])
@@ -560,7 +561,10 @@ struct AppDatabaseTests {
 
             let dossierIndexes = try connection.indexes(on: "dossier")
             #expect(dossierIndexes.contains {
-                $0.isUnique && $0.columns == ["kind", "anchorDocumentID"]
+                $0.isUnique && $0.columns == ["anchorDocumentID"]
+            })
+            #expect(dossierIndexes.contains {
+                $0.isUnique && $0.columns == ["personAnchorID"]
             })
 
             let exclusionIndexes = try connection.indexes(on: "dossierMembershipExclusion")
@@ -724,6 +728,362 @@ struct AppDatabaseTests {
             ) == remainingDocumentID)
         }
     }
+
+    @Test func personDossierMigrationCreatesConstrainedSchema() throws {
+        let db = try TestDatabase.make()
+
+        try db.read { connection in
+            #expect(try connection.columns(in: "personDossierAnchor").map(\.name) == [
+                "id", "displayName", "normalizedName", "primaryRole",
+                "originDocumentID", "originContentHash", "originExtractionVersion",
+                "originDNASchemaVersion", "originDNAAnalyzerIdentifier",
+                "originDNAAnalyzerVersion", "originDNAAnalyzedAt",
+                "birthDateDisplayValue", "birthDateNormalizedValue",
+                "createdAt", "updatedAt",
+            ])
+            #expect(try connection.columns(in: "personDossierAnchorEvidence").map(\.name) == [
+                "personAnchorID", "subject", "evidenceOrder", "pageIndex",
+                "startUTF16", "lengthUTF16", "exactText", "ocrRegionIndexesJSON",
+            ])
+            #expect(try connection.columns(in: "dossier").map(\.name) == [
+                "id", "kind", "displayName", "anchorDocumentID", "personAnchorID",
+                "createdAt", "updatedAt",
+            ])
+            #expect(try connection.columns(in: "dossierMembershipConfirmation").map(\.name) == [
+                "dossierID", "documentID", "revisionID", "confirmedAt",
+                "candidateKind", "acceptedContentHash", "acceptedExtractionVersion",
+                "acceptedDNASchemaVersion", "acceptedDNAAnalyzerIdentifier",
+                "acceptedDNAAnalyzerVersion", "acceptedDNAAnalyzedAt",
+                "acceptedRole", "acceptedNormalizedName",
+            ])
+
+            let personIndexes = try connection.indexes(on: "personDossierAnchor")
+            #expect(personIndexes.contains {
+                $0.isUnique
+                    && $0.columns == ["originDocumentID", "primaryRole", "normalizedName"]
+            })
+            #expect(personIndexes.contains {
+                $0.name == "person_dossier_anchor_normalized_name"
+                    && !$0.isUnique
+                    && $0.columns == ["normalizedName"]
+            })
+
+            let evidenceIndexes = try connection.indexes(on: "personDossierAnchorEvidence")
+            #expect(evidenceIndexes.first { $0.origin == .primaryKeyConstraint }?.columns == [
+                "personAnchorID", "subject", "evidenceOrder",
+            ])
+
+            let dossierIndexes = try connection.indexes(on: "dossier")
+            #expect(dossierIndexes.contains {
+                $0.isUnique && $0.columns == ["anchorDocumentID"]
+            })
+            #expect(dossierIndexes.contains {
+                $0.isUnique && $0.columns == ["personAnchorID"]
+            })
+
+            let confirmationIndexes = try connection.indexes(on: "dossierMembershipConfirmation")
+            #expect(confirmationIndexes.first { $0.origin == .primaryKeyConstraint }?.columns == [
+                "dossierID", "documentID",
+            ])
+            #expect(confirmationIndexes.contains {
+                $0.isUnique && $0.columns == ["revisionID"]
+            })
+            #expect(try Row.fetchAll(connection, sql: "PRAGMA foreign_key_check").isEmpty)
+        }
+    }
+
+    @Test func personDossierMigrationPreservesPopulatedV7RowsWithoutBackfill() throws {
+        let db = try DatabaseQueue()
+        let migrator = AppDatabase.makeMigrator()
+        try migrator.migrate(db, upTo: "v7_costs_and_payments_dossiers")
+        let sourceID = UUID()
+        let dossierID = UUID()
+        let anchorID = UUID()
+        let excludedIDs = [UUID(), UUID()]
+        let revisionIDs = [UUID(), UUID()]
+        let createdAt = Date(timeIntervalSince1970: 7_001)
+        let updatedAt = Date(timeIntervalSince1970: 7_002)
+        let excludedAts = [Date(timeIntervalSince1970: 7_003), Date(timeIntervalSince1970: 7_004)]
+        try db.write { connection in
+            try insertDossierSource(
+                in: connection,
+                sourceID: sourceID,
+                documentIDs: [anchorID] + excludedIDs,
+                storedAt: createdAt
+            )
+            try connection.execute(
+                sql: """
+                    INSERT INTO dossier (id, kind, displayName, anchorDocumentID, createdAt, updatedAt)
+                    VALUES (?, 'costsAndPayments', 'Existing costs', ?, ?, ?)
+                    """,
+                arguments: [dossierID, anchorID, createdAt, updatedAt]
+            )
+            for index in excludedIDs.indices {
+                try connection.execute(
+                    sql: """
+                        INSERT INTO dossierMembershipExclusion
+                            (dossierID, documentID, revisionID, excludedAt)
+                        VALUES (?, ?, ?, ?)
+                        """,
+                    arguments: [dossierID, excludedIDs[index], revisionIDs[index], excludedAts[index]]
+                )
+            }
+        }
+
+        try AppDatabase.migrate(db)
+
+        try db.read { connection in
+            let storedDossier = try Row.fetchOne(
+                connection,
+                sql: """
+                    SELECT id, kind, displayName, anchorDocumentID, personAnchorID, createdAt, updatedAt
+                    FROM dossier WHERE id = ?
+                    """,
+                arguments: [dossierID]
+            )
+            let dossier = try #require(storedDossier)
+            #expect(dossier["id"] as UUID == dossierID)
+            #expect(dossier["kind"] as String == "costsAndPayments")
+            #expect(dossier["displayName"] as String == "Existing costs")
+            #expect(dossier["anchorDocumentID"] as UUID == anchorID)
+            #expect(dossier["personAnchorID"] as UUID? == nil)
+            #expect(dossier["createdAt"] as Date == createdAt)
+            #expect(dossier["updatedAt"] as Date == updatedAt)
+
+            let exclusions = try Row.fetchAll(
+                connection,
+                sql: """
+                    SELECT dossierID, documentID, revisionID, excludedAt
+                    FROM dossierMembershipExclusion ORDER BY excludedAt
+                    """
+            )
+            #expect(exclusions.count == 2)
+            for index in exclusions.indices {
+                #expect(exclusions[index]["dossierID"] as UUID == dossierID)
+                #expect(exclusions[index]["documentID"] as UUID == excludedIDs[index])
+                #expect(exclusions[index]["revisionID"] as UUID == revisionIDs[index])
+                #expect(exclusions[index]["excludedAt"] as Date == excludedAts[index])
+            }
+            #expect(try Int.fetchOne(connection, sql: "SELECT COUNT(*) FROM personDossierAnchor") == 0)
+            #expect(try Int.fetchOne(
+                connection,
+                sql: "SELECT COUNT(*) FROM personDossierAnchorEvidence"
+            ) == 0)
+            #expect(try Int.fetchOne(
+                connection,
+                sql: "SELECT COUNT(*) FROM dossierMembershipConfirmation"
+            ) == 0)
+        }
+    }
+
+    @Test func personDossierMigrationAllowsHomonymsButRejectsDuplicateOrigin() throws {
+        let fixture = try PersonDossierMigrationFixture.make()
+        let firstID = UUID()
+        try fixture.db.write { connection in
+            try fixture.insertPersonAnchor(
+                in: connection,
+                id: firstID,
+                originDocumentID: fixture.originDocumentID
+            )
+            try fixture.insertPersonAnchor(
+                in: connection,
+                id: UUID(),
+                originDocumentID: fixture.confirmedDocumentID
+            )
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertPersonAnchor(
+                    in: connection,
+                    id: UUID(),
+                    originDocumentID: fixture.originDocumentID
+                )
+            }
+        }
+    }
+
+    @Test func personDossierMigrationRejectsMismatchedTypedAnchors() throws {
+        let fixture = try PersonDossierMigrationFixture.make()
+        let personAnchorID = UUID()
+        try fixture.db.write { connection in
+            try fixture.insertPersonAnchor(in: connection, id: personAnchorID)
+            try fixture.insertDossier(
+                in: connection,
+                kind: "costsAndPayments",
+                anchorDocumentID: fixture.costDocumentID
+            )
+            try fixture.insertDossier(
+                in: connection,
+                kind: "personMatter",
+                personAnchorID: personAnchorID
+            )
+
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertDossier(in: connection, kind: "costsAndPayments")
+            }
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertDossier(
+                    in: connection,
+                    kind: "costsAndPayments",
+                    anchorDocumentID: fixture.originDocumentID,
+                    personAnchorID: personAnchorID
+                )
+            }
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertDossier(
+                    in: connection,
+                    kind: "costsAndPayments",
+                    personAnchorID: personAnchorID
+                )
+            }
+            #expect(throws: DatabaseError.self) {
+                try fixture.insertDossier(
+                    in: connection,
+                    kind: "personMatter",
+                    anchorDocumentID: fixture.originDocumentID
+                )
+            }
+        }
+    }
+
+    @Test func deletingOriginDocumentPreservesPersonAnchorAndDossier() throws {
+        let fixture = try PersonDossierMigrationFixture.make()
+        let personAnchorID = UUID()
+        try fixture.db.write { connection in
+            try fixture.insertPersonAnchor(in: connection, id: personAnchorID)
+            try fixture.insertDossier(
+                in: connection,
+                kind: "personMatter",
+                personAnchorID: personAnchorID
+            )
+            try connection.execute(
+                sql: "DELETE FROM document WHERE id = ?",
+                arguments: [fixture.originDocumentID]
+            )
+            #expect(try Int.fetchOne(connection, sql: "SELECT COUNT(*) FROM personDossierAnchor") == 1)
+            #expect(try Int.fetchOne(connection, sql: "SELECT COUNT(*) FROM dossier") == 1)
+        }
+    }
+
+    @Test func deletingPersonAnchorCascadesDossierEvidenceCorrectionsAndConfirmations() throws {
+        let fixture = try PersonDossierMigrationFixture.make()
+        let personAnchorID = UUID()
+        let dossierID = UUID()
+        try fixture.db.write { connection in
+            try fixture.insertPersonAnchor(in: connection, id: personAnchorID)
+            try fixture.insertDossier(
+                in: connection,
+                id: dossierID,
+                kind: "personMatter",
+                personAnchorID: personAnchorID
+            )
+            try fixture.insertEvidence(in: connection, personAnchorID: personAnchorID)
+            try fixture.insertExclusion(in: connection, dossierID: dossierID)
+            try fixture.insertConfirmation(in: connection, dossierID: dossierID)
+
+            try connection.execute(
+                sql: "DELETE FROM personDossierAnchor WHERE id = ?",
+                arguments: [personAnchorID]
+            )
+
+            #expect(try Int.fetchOne(connection, sql: "SELECT COUNT(*) FROM personDossierAnchor") == 0)
+            #expect(try Int.fetchOne(
+                connection,
+                sql: "SELECT COUNT(*) FROM personDossierAnchorEvidence"
+            ) == 0)
+            #expect(try Int.fetchOne(connection, sql: "SELECT COUNT(*) FROM dossier") == 0)
+            #expect(try Int.fetchOne(
+                connection,
+                sql: "SELECT COUNT(*) FROM dossierMembershipExclusion"
+            ) == 0)
+            #expect(try Int.fetchOne(
+                connection,
+                sql: "SELECT COUNT(*) FROM dossierMembershipConfirmation"
+            ) == 0)
+            #expect(try UUID.fetchOne(
+                connection,
+                sql: "SELECT id FROM document WHERE id = ?",
+                arguments: [fixture.confirmedDocumentID]
+            ) == fixture.confirmedDocumentID)
+        }
+    }
+
+    @Test func v8MigrationFailureRollsBackTheCompleteV7Rebuild() throws {
+        let db = try DatabaseQueue()
+        let migrator = AppDatabase.makeMigrator()
+        try migrator.migrate(db, upTo: "v7_costs_and_payments_dossiers")
+        let sourceID = UUID()
+        let documentID = UUID()
+        let dossierID = UUID()
+        let exclusionRevisionID = UUID()
+        let storedAt = Date(timeIntervalSince1970: 7_100)
+        let excludedAt = Date(timeIntervalSince1970: 7_101)
+        try db.write { connection in
+            try insertDossierSource(
+                in: connection,
+                sourceID: sourceID,
+                documentIDs: [documentID],
+                storedAt: storedAt
+            )
+            try connection.execute(sql: "PRAGMA ignore_check_constraints = TRUE")
+            try connection.execute(
+                sql: """
+                    INSERT INTO dossier (id, kind, displayName, anchorDocumentID, createdAt, updatedAt)
+                    VALUES (?, 'unsupported', 'Malformed v7 dossier', ?, ?, ?)
+                    """,
+                arguments: [dossierID, documentID, storedAt, storedAt]
+            )
+            try connection.execute(sql: "PRAGMA ignore_check_constraints = FALSE")
+            try connection.execute(
+                sql: """
+                    INSERT INTO dossierMembershipExclusion
+                        (dossierID, documentID, revisionID, excludedAt)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                arguments: [dossierID, documentID, exclusionRevisionID, excludedAt]
+            )
+        }
+
+        #expect(throws: DatabaseError.self) {
+            try AppDatabase.migrate(db)
+        }
+
+        try db.read { connection in
+            let dossierColumns = try connection.columns(in: "dossier").map(\.name)
+            let malformedKind = try String.fetchOne(
+                connection,
+                sql: "SELECT kind FROM dossier WHERE id = ?",
+                arguments: [dossierID]
+            )
+            let exclusionsExist = try connection.tableExists("dossierMembershipExclusion")
+            let storedExclusion = try Row.fetchOne(
+                connection,
+                sql: """
+                    SELECT dossierID, documentID, revisionID, excludedAt
+                    FROM dossierMembershipExclusion
+                    """
+            )
+            let exclusion = try #require(storedExclusion)
+            let personAnchorsExist = try connection.tableExists("personDossierAnchor")
+            let evidenceExist = try connection.tableExists("personDossierAnchorEvidence")
+            let confirmationsExist = try connection.tableExists("dossierMembershipConfirmation")
+            let appliedV8Migrations = try Int.fetchOne(
+                connection,
+                sql: "SELECT COUNT(*) FROM grdb_migrations WHERE identifier = 'v8_person_anchored_dossiers'"
+            )
+            #expect(dossierColumns == [
+                "id", "kind", "displayName", "anchorDocumentID", "createdAt", "updatedAt",
+            ])
+            #expect(malformedKind == "unsupported")
+            #expect(exclusionsExist)
+            #expect(exclusion["dossierID"] as UUID == dossierID)
+            #expect(exclusion["documentID"] as UUID == documentID)
+            #expect(exclusion["revisionID"] as UUID == exclusionRevisionID)
+            #expect(exclusion["excludedAt"] as Date == excludedAt)
+            #expect(!personAnchorsExist)
+            #expect(!evidenceExist)
+            #expect(!confirmationsExist)
+            #expect(appliedV8Migrations == 0)
+        }
+    }
 }
 
 private func insertDossierSource(
@@ -836,8 +1196,8 @@ private struct DossierMigrationFixture {
         try connection.execute(
             sql: """
                 INSERT INTO dossier
-                    (id, kind, displayName, anchorDocumentID, createdAt, updatedAt)
-                VALUES (?, ?, ?, ?, ?, ?)
+                    (id, kind, displayName, anchorDocumentID, personAnchorID, createdAt, updatedAt)
+                VALUES (?, ?, ?, ?, NULL, ?, ?)
                 """,
             arguments: [
                 id,
@@ -863,6 +1223,123 @@ private struct DossierMigrationFixture {
                 VALUES (?, ?, ?, ?)
                 """,
             arguments: [dossierID, documentID ?? excludedID, revisionID, storedAt]
+        )
+    }
+}
+
+private struct PersonDossierMigrationFixture {
+    let db: DatabaseQueue
+    let sourceID: UUID
+    let originDocumentID: UUID
+    let confirmedDocumentID: UUID
+    let costDocumentID: UUID
+    let storedAt: Date
+
+    static func make() throws -> Self {
+        let db = try TestDatabase.make()
+        let sourceID = UUID()
+        let originDocumentID = UUID()
+        let confirmedDocumentID = UUID()
+        let costDocumentID = UUID()
+        let storedAt = Date(timeIntervalSince1970: 7_200)
+        try db.write { connection in
+            try insertDossierSource(
+                in: connection,
+                sourceID: sourceID,
+                documentIDs: [originDocumentID, confirmedDocumentID, costDocumentID],
+                storedAt: storedAt
+            )
+        }
+        return Self(
+            db: db,
+            sourceID: sourceID,
+            originDocumentID: originDocumentID,
+            confirmedDocumentID: confirmedDocumentID,
+            costDocumentID: costDocumentID,
+            storedAt: storedAt
+        )
+    }
+
+    func insertPersonAnchor(
+        in connection: Database,
+        id: UUID = UUID(),
+        originDocumentID: UUID? = nil,
+        normalizedName: String = "elise muster"
+    ) throws {
+        try connection.execute(
+            sql: """
+                INSERT INTO personDossierAnchor (
+                    id, displayName, normalizedName, primaryRole,
+                    originDocumentID, originContentHash, originExtractionVersion,
+                    originDNASchemaVersion, originDNAAnalyzerIdentifier,
+                    originDNAAnalyzerVersion, originDNAAnalyzedAt,
+                    birthDateDisplayValue, birthDateNormalizedValue, createdAt, updatedAt
+                ) VALUES (?, 'Elise Muster', ?, 'resident', ?, 'origin-hash', 'text-v1',
+                          1, 'local-rules', '1', ?, NULL, NULL, ?, ?)
+                """,
+            arguments: [
+                id,
+                normalizedName,
+                originDocumentID ?? self.originDocumentID,
+                storedAt,
+                storedAt,
+                storedAt,
+            ]
+        )
+    }
+
+    func insertDossier(
+        in connection: Database,
+        id: UUID = UUID(),
+        kind: String,
+        anchorDocumentID: UUID? = nil,
+        personAnchorID: UUID? = nil
+    ) throws {
+        try connection.execute(
+            sql: """
+                INSERT INTO dossier
+                    (id, kind, displayName, anchorDocumentID, personAnchorID, createdAt, updatedAt)
+                VALUES (?, ?, 'Test dossier', ?, ?, ?, ?)
+                """,
+            arguments: [id, kind, anchorDocumentID, personAnchorID, storedAt, storedAt]
+        )
+    }
+
+    func insertEvidence(in connection: Database, personAnchorID: UUID) throws {
+        try connection.execute(
+            sql: """
+                INSERT INTO personDossierAnchorEvidence (
+                    personAnchorID, subject, evidenceOrder, pageIndex, startUTF16,
+                    lengthUTF16, exactText, ocrRegionIndexesJSON
+                ) VALUES (?, 'person', 0, 0, 0, 11, 'Elise Muster', ?)
+                """,
+            arguments: [personAnchorID, Data("[]".utf8)]
+        )
+    }
+
+    func insertExclusion(in connection: Database, dossierID: UUID) throws {
+        try connection.execute(
+            sql: """
+                INSERT INTO dossierMembershipExclusion
+                    (dossierID, documentID, revisionID, excludedAt)
+                VALUES (?, ?, ?, ?)
+                """,
+            arguments: [dossierID, costDocumentID, UUID(), storedAt]
+        )
+    }
+
+    func insertConfirmation(in connection: Database, dossierID: UUID) throws {
+        try connection.execute(
+            sql: """
+                INSERT INTO dossierMembershipConfirmation (
+                    dossierID, documentID, revisionID, confirmedAt, candidateKind,
+                    acceptedContentHash, acceptedExtractionVersion, acceptedDNASchemaVersion,
+                    acceptedDNAAnalyzerIdentifier, acceptedDNAAnalyzerVersion,
+                    acceptedDNAAnalyzedAt, acceptedRole, acceptedNormalizedName
+                ) VALUES (?, ?, ?, ?, 'secondaryRole', 'confirmed-hash', 'text-v1', 1,
+                          'local-rules', '1', ?, 'authorizedPerson', 'elise muster')
+                """,
+            arguments: [dossierID, confirmedDocumentID, UUID(), storedAt, storedAt]
         )
     }
 }

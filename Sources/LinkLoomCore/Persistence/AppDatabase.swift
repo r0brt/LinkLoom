@@ -264,6 +264,188 @@ public enum AppDatabase {
                 table.primaryKey(["dossierID", "documentID"])
             }
         }
+        migrator.registerMigration("v8_person_anchored_dossiers") { db in
+            let foundationWhitespaceSQL = """
+                char(9) || char(10) || char(11) || char(12) || char(13) ||
+                char(32) || char(133) || char(160) || char(5760) ||
+                char(8192) || char(8193) || char(8194) || char(8195) ||
+                char(8196) || char(8197) || char(8198) || char(8199) ||
+                char(8200) || char(8201) || char(8202) || char(8232) ||
+                char(8233) || char(8239) || char(8287) || char(12288)
+                """
+            try db.create(table: "personDossierAnchor") { table in
+                table.column("id", .text).primaryKey()
+                table.column("displayName", .text).notNull()
+                    .check(sql: "length(trim(displayName, \(foundationWhitespaceSQL))) > 0")
+                table.column("normalizedName", .text).notNull()
+                    .check(sql: "length(trim(normalizedName, \(foundationWhitespaceSQL))) > 0")
+                table.column("primaryRole", .text).notNull().check(sql: """
+                    primaryRole IN (
+                        'resident', 'insuredPerson', 'accountHolder',
+                        'invoiceRecipient', 'grantor'
+                    )
+                    """)
+                table.column("originDocumentID", .text).notNull()
+                table.column("originContentHash", .text).notNull()
+                    .check(sql: "length(trim(originContentHash, \(foundationWhitespaceSQL))) > 0")
+                table.column("originExtractionVersion", .text).notNull()
+                    .check(sql: "length(trim(originExtractionVersion, \(foundationWhitespaceSQL))) > 0")
+                table.column("originDNASchemaVersion", .integer).notNull()
+                    .check(sql: "originDNASchemaVersion > 0")
+                table.column("originDNAAnalyzerIdentifier", .text).notNull()
+                    .check(sql: "length(trim(originDNAAnalyzerIdentifier, \(foundationWhitespaceSQL))) > 0")
+                table.column("originDNAAnalyzerVersion", .text).notNull()
+                    .check(sql: "length(trim(originDNAAnalyzerVersion, \(foundationWhitespaceSQL))) > 0")
+                table.column("originDNAAnalyzedAt", .datetime).notNull()
+                table.column("birthDateDisplayValue", .text)
+                table.column("birthDateNormalizedValue", .text)
+                table.column("createdAt", .datetime).notNull()
+                table.column("updatedAt", .datetime).notNull()
+                table.uniqueKey(["originDocumentID", "primaryRole", "normalizedName"])
+                table.check(sql: "updatedAt >= createdAt")
+                table.check(sql: """
+                    (birthDateDisplayValue IS NULL AND birthDateNormalizedValue IS NULL)
+                    OR (
+                        birthDateDisplayValue IS NOT NULL
+                        AND length(birthDateDisplayValue) > 0
+                        AND birthDateNormalizedValue IS NOT NULL
+                        AND length(trim(
+                            birthDateNormalizedValue,
+                            \(foundationWhitespaceSQL)
+                        )) > 0
+                    )
+                    """)
+            }
+            try db.create(
+                index: "person_dossier_anchor_normalized_name",
+                on: "personDossierAnchor",
+                columns: ["normalizedName"]
+            )
+            try db.create(table: "personDossierAnchorEvidence") { table in
+                table.column("personAnchorID", .text).notNull()
+                    .references("personDossierAnchor", onDelete: .cascade)
+                table.column("subject", .text).notNull()
+                    .check(sql: "subject IN ('person', 'birthDate')")
+                table.column("evidenceOrder", .integer).notNull()
+                    .check(sql: "evidenceOrder >= 0")
+                table.column("pageIndex", .integer).notNull()
+                    .check(sql: "pageIndex >= 0")
+                table.column("startUTF16", .integer).notNull()
+                    .check(sql: "startUTF16 >= 0")
+                table.column("lengthUTF16", .integer).notNull()
+                    .check(sql: "lengthUTF16 > 0")
+                table.column("exactText", .text).notNull()
+                    .check(sql: "length(exactText) > 0")
+                table.column("ocrRegionIndexesJSON", .blob).notNull()
+                table.primaryKey(["personAnchorID", "subject", "evidenceOrder"])
+            }
+
+            try db.execute(sql: """
+                ALTER TABLE dossierMembershipExclusion
+                RENAME TO dossierMembershipExclusionV7
+                """)
+            try db.execute(sql: "ALTER TABLE dossier RENAME TO dossierV7")
+            try db.execute(sql: "DROP INDEX dossier_anchor_document")
+
+            try db.create(table: "dossier") { table in
+                table.column("id", .text).primaryKey()
+                table.column("kind", .text).notNull()
+                    .check(sql: "kind IN ('costsAndPayments', 'personMatter')")
+                table.column("displayName", .text).notNull()
+                    .check(sql: "length(trim(displayName, \(foundationWhitespaceSQL))) > 0")
+                table.column("anchorDocumentID", .text)
+                    .references("document", onDelete: .cascade)
+                table.column("personAnchorID", .text)
+                    .references("personDossierAnchor", onDelete: .cascade)
+                table.column("createdAt", .datetime).notNull()
+                table.column("updatedAt", .datetime).notNull()
+                table.uniqueKey(["anchorDocumentID"])
+                table.uniqueKey(["personAnchorID"])
+                table.check(sql: "updatedAt >= createdAt")
+                table.check(sql: """
+                    (kind = 'costsAndPayments'
+                        AND anchorDocumentID IS NOT NULL
+                        AND personAnchorID IS NULL)
+                    OR
+                    (kind = 'personMatter'
+                        AND anchorDocumentID IS NULL
+                        AND personAnchorID IS NOT NULL)
+                    """)
+            }
+            try db.create(
+                index: "dossier_anchor_document",
+                on: "dossier",
+                columns: ["anchorDocumentID"]
+            )
+            try db.create(
+                index: "dossier_person_anchor",
+                on: "dossier",
+                columns: ["personAnchorID"]
+            )
+            try db.create(table: "dossierMembershipExclusion") { table in
+                table.column("dossierID", .text).notNull()
+                    .references("dossier", onDelete: .cascade)
+                table.column("documentID", .text).notNull()
+                    .references("document", onDelete: .cascade)
+                table.column("revisionID", .text).notNull().unique()
+                table.column("excludedAt", .datetime).notNull()
+                table.primaryKey(["dossierID", "documentID"])
+            }
+            try db.execute(sql: """
+                INSERT INTO dossier (
+                    id, kind, displayName, anchorDocumentID, personAnchorID,
+                    createdAt, updatedAt
+                )
+                SELECT id, kind, displayName, anchorDocumentID, NULL,
+                       createdAt, updatedAt
+                FROM dossierV7
+                """)
+            try db.execute(sql: """
+                INSERT INTO dossierMembershipExclusion (
+                    dossierID, documentID, revisionID, excludedAt
+                )
+                SELECT dossierID, documentID, revisionID, excludedAt
+                FROM dossierMembershipExclusionV7
+                """)
+            try db.drop(table: "dossierMembershipExclusionV7")
+            try db.drop(table: "dossierV7")
+
+            try db.create(table: "dossierMembershipConfirmation") { table in
+                table.column("dossierID", .text).notNull()
+                    .references("dossier", onDelete: .cascade)
+                table.column("documentID", .text).notNull()
+                    .references("document", onDelete: .cascade)
+                table.column("revisionID", .text).notNull().unique()
+                table.column("confirmedAt", .datetime).notNull()
+                table.column("candidateKind", .text).notNull()
+                    .check(sql: "candidateKind IN ('secondaryRole', 'birthDateConflict')")
+                table.column("acceptedContentHash", .text).notNull()
+                    .check(sql: "length(trim(acceptedContentHash, \(foundationWhitespaceSQL))) > 0")
+                table.column("acceptedExtractionVersion", .text).notNull()
+                    .check(sql: "length(trim(acceptedExtractionVersion, \(foundationWhitespaceSQL))) > 0")
+                table.column("acceptedDNASchemaVersion", .integer).notNull()
+                    .check(sql: "acceptedDNASchemaVersion > 0")
+                table.column("acceptedDNAAnalyzerIdentifier", .text).notNull()
+                    .check(sql: "length(trim(acceptedDNAAnalyzerIdentifier, \(foundationWhitespaceSQL))) > 0")
+                table.column("acceptedDNAAnalyzerVersion", .text).notNull()
+                    .check(sql: "length(trim(acceptedDNAAnalyzerVersion, \(foundationWhitespaceSQL))) > 0")
+                table.column("acceptedDNAAnalyzedAt", .datetime).notNull()
+                table.column("acceptedRole", .text).notNull().check(sql: """
+                    acceptedRole IN (
+                        'resident', 'insuredPerson', 'accountHolder',
+                        'invoiceRecipient', 'grantor', 'authorizedPerson'
+                    )
+                    """)
+                table.column("acceptedNormalizedName", .text).notNull()
+                    .check(sql: "length(trim(acceptedNormalizedName, \(foundationWhitespaceSQL))) > 0")
+                table.primaryKey(["dossierID", "documentID"])
+                table.check(sql: """
+                    (candidateKind = 'secondaryRole' AND acceptedRole = 'authorizedPerson')
+                    OR
+                    (candidateKind = 'birthDateConflict' AND acceptedRole <> 'authorizedPerson')
+                    """)
+            }
+        }
         return migrator
     }
 }
