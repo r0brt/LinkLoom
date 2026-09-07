@@ -151,6 +151,34 @@ struct DossierRepositoryTests {
             == [earlyID, lowID, highID])
     }
 
+    @Test func persistedPersonDossiersDoNotAppearInCurrentPublicSummaries() async throws {
+        var fixture = try await DossierFixture.empty()
+        let costsAnchor = try await fixture.insertAnalyzedDocument(
+            id: UUID(uuidString: "82000000-0000-0000-0000-000000000053")!,
+            path: "costs-anchor.pdf",
+            type: .invoice,
+            reference: "COSTS53"
+        )
+        _ = try await fixture.repository.createOrOpen(anchorDocumentID: costsAnchor.id)
+        let proposedAnchor = try fixture.makePersonAnchor(originDocumentID: costsAnchor.id)
+        let stableFixture = fixture
+
+        try await fixture.db.write { db in
+            let storedAnchor = try PersonDossierAnchorStore.insertOrFetch(
+                in: db,
+                proposed: proposedAnchor
+            )
+            _ = try DossierStore.insertOrFetchAnchored(
+                in: db,
+                proposed: try stableFixture.makePersonDossier(anchor: storedAnchor)
+            )
+        }
+
+        let summaries = try await fixture.repository.summaries()
+        #expect(summaries.count == 1)
+        #expect(summaries[0].dossier.kind == .costsAndPayments)
+    }
+
     @Test func snapshotKeepsAnchorAfterItsDNABecomesStale() async throws {
         let values = try await DossierFixture.confirmedPair()
         try await values.fixture.makeDNAStale(for: values.invoice.id)
