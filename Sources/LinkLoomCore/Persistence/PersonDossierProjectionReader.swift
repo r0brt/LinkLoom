@@ -22,6 +22,48 @@ struct PersonDossierProjectionReader: Sendable {
         return PersonDossierSummary(dossier: dossier, anchor: anchor)
     }
 
+    func summary(in db: Database, anchor: PersonDossierAnchor) throws
+        -> PersonDossierSummary
+    {
+        guard let dossier = try DossierStore.personDossier(
+            in: db,
+            personAnchorID: anchor.id
+        ) else {
+            throw DossierRepositoryError.invalidStoredState
+        }
+        return try summary(in: db, dossier: dossier)
+    }
+
+    func currentSelection(
+        in db: Database,
+        selection: PersonDossierAnchorSelection
+    ) throws -> (current: CurrentDocumentDNA, support: PersonDossierFindingSupportIdentity) {
+        guard let current = try DocumentDNARepository.currentSnapshot(
+            in: db,
+            documentID: selection.support.documentID,
+            target: target
+        ) else {
+            throw DossierRepositoryError.invalidAnchor
+        }
+        for finding in current.snapshot.findings where finding == selection.support.finding {
+            guard finding.kind == .person,
+                  let role = finding.qualifier.flatMap(PersonDossierRole.init(rawValue:)),
+                  role.isPrimary
+            else {
+                continue
+            }
+            let support = try PersonDossierFindingSupportIdentity(
+                current: current,
+                role: role,
+                finding: finding
+            )
+            if support == selection.support {
+                return (current, support)
+            }
+        }
+        throw DossierRepositoryError.staleInput
+    }
+
     func snapshot(in db: Database, dossier: DossierRecord) throws
         -> PersonDossierSnapshot
     {

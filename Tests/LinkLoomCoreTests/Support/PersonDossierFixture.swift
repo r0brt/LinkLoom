@@ -43,6 +43,55 @@ struct PersonDossierFixture: Sendable {
         )
     }
 
+    func makeDossierRepository(
+        sequence: Int = 900,
+        timestamp: Date? = nil
+    ) -> DossierRepository {
+        let proposedIDs = PersonDossierProposedIDs(startingAt: sequence)
+        return DossierRepository(
+            dbWriter: database,
+            target: target,
+            now: { timestamp ?? Self.repositoryDate(TimeInterval(sequence)) },
+            makeUUID: { proposedIDs.next() }
+        )
+    }
+
+    func selection(
+        current: CurrentDocumentDNA,
+        finding: DocumentDNAFinding
+    ) throws -> PersonDossierAnchorSelection {
+        try PersonDossierAnchorSelection(
+            document: current.document,
+            snapshot: current.snapshot,
+            finding: finding
+        )
+    }
+
+    func personPersistenceCounts() async throws -> (anchors: Int, dossiers: Int) {
+        try await database.read { db in
+            (
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM personDossierAnchor") ?? 0,
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM dossier WHERE kind = ?",
+                    arguments: [DossierKind.personMatter.rawValue]
+                ) ?? 0
+            )
+        }
+    }
+
+    func setAvailability(
+        _ availability: DocumentAvailability,
+        for documentID: UUID
+    ) async throws {
+        try await database.write { db in
+            try db.execute(
+                sql: "UPDATE document SET availability = ? WHERE id = ?",
+                arguments: [availability.rawValue, documentID]
+            )
+        }
+    }
+
     func insertSource(
         sequence: Int,
         displayName: String
@@ -110,6 +159,34 @@ struct PersonDossierFixture: Sendable {
             )
         }
         return (anchor, dossier)
+    }
+
+    func makePersonAnchor(
+        sequence: Int,
+        origin: CurrentDocumentDNA,
+        finding: DocumentDNAFinding,
+        birthDate: PersonDossierBirthDate? = nil
+    ) throws -> PersonDossierAnchor {
+        guard let role = finding.qualifier.flatMap(PersonDossierRole.init(rawValue:)) else {
+            throw PersonDossierFixtureError.invalidPersonRole
+        }
+        return try PersonDossierAnchor(
+            id: Self.repositoryUUID(sequence),
+            displayName: finding.displayValue,
+            normalizedName: finding.normalizedValue,
+            primaryRole: role,
+            originDocumentID: origin.document.id,
+            originContentHash: origin.snapshot.inputContentHash,
+            originExtractionVersion: origin.snapshot.inputExtractionVersion,
+            originDNASchemaVersion: origin.snapshot.schemaVersion,
+            originDNAAnalyzerIdentifier: origin.snapshot.analyzerIdentifier,
+            originDNAAnalyzerVersion: origin.snapshot.analyzerVersion,
+            originDNAAnalyzedAt: origin.snapshot.analyzedAt,
+            personEvidence: finding.evidence,
+            birthDate: birthDate,
+            createdAt: Self.repositoryDate(TimeInterval(sequence)),
+            updatedAt: Self.repositoryDate(TimeInterval(sequence))
+        )
     }
 
     func insertConfirmation(_ confirmation: DossierMembershipConfirmation) async throws {
@@ -720,4 +797,20 @@ private enum PersonDossierFixtureError: Error {
     case missingRelationshipCandidate
     case invalidAcceptanceDocumentCount
     case invalidPersonRole
+}
+
+private final class PersonDossierProposedIDs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var nextSequence: Int
+
+    init(startingAt sequence: Int) {
+        nextSequence = sequence
+    }
+
+    func next() -> UUID {
+        lock.withLock {
+            defer { nextSequence += 1 }
+            return PersonDossierFixture.repositoryUUID(nextSequence)
+        }
+    }
 }
