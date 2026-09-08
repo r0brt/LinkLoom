@@ -4,6 +4,7 @@ import GRDB
 public actor DossierRepository {
     private let dbWriter: any DatabaseWriter
     private nonisolated let projectionReader: DossierProjectionReader
+    private nonisolated let personProjectionReader: PersonDossierProjectionReader
     private let now: @Sendable () -> Date
     private let makeUUID: @Sendable () -> UUID
 
@@ -19,6 +20,10 @@ public actor DossierRepository {
             target: target,
             candidateProjector: InvoicePaymentCandidateProjector(resolver: resolver)
         )
+        personProjectionReader = PersonDossierProjectionReader(
+            target: target,
+            candidateProjector: InvoicePaymentCandidateProjector(resolver: resolver)
+        )
         self.now = now
         self.makeUUID = makeUUID
     }
@@ -30,6 +35,20 @@ public actor DossierRepository {
                     $0.kind == .costsAndPayments
                 }.map {
                     try self.projectionReader.summary(in: db, dossier: $0)
+                }
+            }
+        } catch {
+            throw mappedError(error)
+        }
+    }
+
+    public func personDossierSummaries() async throws -> [PersonDossierSummary] {
+        do {
+            return try await dbWriter.read { db in
+                try DossierStore.all(in: db).filter {
+                    $0.kind == .personMatter
+                }.map {
+                    try self.personProjectionReader.summary(in: db, dossier: $0)
                 }
             }
         } catch {
@@ -145,6 +164,16 @@ public actor DossierRepository {
         }
     }
 
+    public func personDossierSnapshot(id: UUID) async throws -> PersonDossierSnapshot {
+        do {
+            return try await dbWriter.read { db in
+                try self.personProjectionReader.snapshot(in: db, dossierID: id)
+            }
+        } catch {
+            throw mappedError(error)
+        }
+    }
+
     public func excludeMember(
         dossierID: UUID,
         documentID: UUID,
@@ -252,6 +281,8 @@ public actor DossierRepository {
             || error is DossierValidationError
             || error is InvoicePaymentDecisionRepositoryError
             || error is InvoicePaymentDecisionValidationError
+            || error is PersonDossierAnchorStoreError
+            || error is PersonDossierProjectionError
         {
             return DossierRepositoryError.invalidStoredState
         }
