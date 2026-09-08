@@ -5,13 +5,28 @@ import Testing
 @Suite("Person dossier projection quality")
 struct PersonDossierMetricTests {
     @Test func metricFormulasCountTrueFalsePositivesAndFalseNegatives() throws {
-        let report = try evaluate(
-            labels: handBuiltLabels(relevantDocumentIDs: [id(1), id(8)])
+        let labels = [
+            label(101, true, .direct, .resident, nil),
+            label(102, false, .direct, .resident, nil),
+            label(103, true, .direct, .authorizedPerson, .secondaryRole),
+        ]
+        let report = try PersonDossierMetricEvaluator.evaluate(
+            labels: labels,
+            baseline: PersonDossierMetricResultSet(
+                memberDocumentIDs: [id(101), id(102)],
+                suggestionDocumentIDs: [id(103)],
+                correctionDocumentIDs: []
+            ),
+            corrected: PersonDossierMetricResultSet(
+                memberDocumentIDs: [id(101), id(103)],
+                suggestionDocumentIDs: [],
+                correctionDocumentIDs: [id(102)]
+            )
         )
 
-        #expect(report.automatic == quality(truePositive: 1, falsePositive: 6, falseNegative: 1))
-        #expect(report.discoverable == quality(truePositive: 2, falsePositive: 7, falseNegative: 0))
-        #expect(report.corrected == quality(truePositive: 2, falsePositive: 6, falseNegative: 0))
+        #expect(report.automatic == quality(truePositive: 1, falsePositive: 1, falseNegative: 1))
+        #expect(report.discoverable == quality(truePositive: 2, falsePositive: 1, falseNegative: 0))
+        #expect(report.corrected == quality(truePositive: 2, falsePositive: 0, falseNegative: 0))
     }
 
     @Test func unsupportedDocumentsAndOverlayStatesDoNotEnterDenominator() throws {
@@ -161,19 +176,6 @@ struct PersonDossierMetricTests {
             baseline: try PersonDossierGoldenFixture.loadExpectedSnapshot(named: "baseline-snapshot"),
             corrected: try PersonDossierGoldenFixture.loadExpectedSnapshot(named: "corrected-snapshot")
         )
-    }
-
-    private func handBuiltLabels(relevantDocumentIDs: Set<UUID>) -> [PersonDossierMetricLabel] {
-        syntheticLabels().values.map { label in
-            PersonDossierMetricLabel(
-                documentID: label.documentID,
-                supportedFormat: label.supportedFormat,
-                relevant: relevantDocumentIDs.contains(label.documentID),
-                membershipClass: label.membershipClass,
-                role: label.role,
-                candidateKind: label.candidateKind
-            )
-        }
     }
 
     private func syntheticLabels() -> [UUID: PersonDossierMetricLabel] {

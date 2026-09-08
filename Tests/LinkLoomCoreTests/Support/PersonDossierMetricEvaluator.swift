@@ -45,6 +45,16 @@ struct PersonDossierMetricResultSet: Decodable {
     let suggestionDocumentIDs: [UUID]
     let correctionDocumentIDs: [UUID]
 
+    init(
+        memberDocumentIDs: [UUID],
+        suggestionDocumentIDs: [UUID],
+        correctionDocumentIDs: [UUID]
+    ) {
+        self.memberDocumentIDs = memberDocumentIDs
+        self.suggestionDocumentIDs = suggestionDocumentIDs
+        self.correctionDocumentIDs = correctionDocumentIDs
+    }
+
     init(snapshot: PersonDossierSnapshot) {
         memberDocumentIDs = (snapshot.directMembers + snapshot.costsAndPayments).map(\.id)
         suggestionDocumentIDs = snapshot.suggestions.map(\.id)
