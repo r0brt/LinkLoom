@@ -164,6 +164,30 @@ public struct PersonDossierMember: Identifiable, Sendable, Equatable {
     public let isConfirmationAuthoritative: Bool
     public let preferredPaymentSupport: PersonDossierPaymentSupportIdentity?
 
+    public var commandSupport: PersonDossierMembershipSupport {
+        get throws {
+            if isConfirmationAuthoritative {
+                guard let confirmation = supports.first(where: { support in
+                    if case .manualConfirmation = support { return true }
+                    return false
+                }) else {
+                    throw DossierValidationError.invalidRecord
+                }
+                return confirmation
+            }
+            if let exactPrimary = supports.first(where: { support in
+                if case .exactPrimary = support { return true }
+                return false
+            }) {
+                return exactPrimary
+            }
+            if let preferredPaymentSupport {
+                return .confirmedPayment(preferredPaymentSupport)
+            }
+            throw DossierValidationError.invalidRecord
+        }
+    }
+
     init(
         document: DocumentRecord,
         sourceDisplayName: String,
