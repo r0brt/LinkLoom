@@ -32,6 +32,134 @@ struct PersonDossierFixture: Sendable {
         )
     }
 
+    static func currentDocument(
+        id: UUID,
+        sourceRootID: UUID,
+        path: String,
+        documentType: DocumentType = .correspondence,
+        availability: DocumentAvailability = .available,
+        contentHash: String? = nil,
+        extractionVersion: String = "text-v1",
+        schemaVersion: Int = 1,
+        analyzerIdentifier: String = "local-rules",
+        analyzerVersion: String = "1",
+        analyzedAt: Date = date,
+        personFindings: [DocumentDNAFinding]
+    ) throws -> CurrentDocumentDNA {
+        let resolvedHash = contentHash ?? "hash-\(path)"
+        let document = document(
+            id: id,
+            sourceRootID: sourceRootID,
+            path: path,
+            contentHash: resolvedHash,
+            availability: availability
+        )
+        let typeFinding: DocumentDNAFinding
+        if documentType == .unknown {
+            typeFinding = try DocumentDNAFinding(
+                kind: .documentType,
+                qualifier: nil,
+                displayValue: "",
+                normalizedValue: documentType.rawValue,
+                secondaryNormalizedValue: nil,
+                confidence: 0,
+                evidence: []
+            )
+        } else {
+            typeFinding = try finding(
+                kind: .documentType,
+                qualifier: nil,
+                displayValue: documentType.rawValue,
+                normalizedValue: documentType.rawValue
+            )
+        }
+        return try CurrentDocumentDNA(
+            document: document,
+            snapshot: DocumentDNA(
+                documentID: id,
+                schemaVersion: schemaVersion,
+                analyzerIdentifier: analyzerIdentifier,
+                analyzerVersion: analyzerVersion,
+                inputContentHash: resolvedHash,
+                inputExtractionVersion: extractionVersion,
+                findings: [typeFinding] + personFindings,
+                analyzedAt: analyzedAt
+            )
+        )
+    }
+
+    static func document(
+        id: UUID,
+        sourceRootID: UUID,
+        path: String,
+        contentHash: String,
+        availability: DocumentAvailability = .available
+    ) -> DocumentRecord {
+        DocumentRecord(
+            id: id,
+            sourceRootID: sourceRootID,
+            relativePath: path,
+            contentHash: contentHash,
+            byteCount: 1,
+            modifiedAt: date,
+            mediaType: .pdf,
+            status: .ready,
+            availability: availability,
+            pageCount: 1,
+            lastSeenAt: date,
+            lastFingerprintAt: date
+        )
+    }
+
+    static func personFinding(
+        displayName: String = "Elise Muster",
+        normalizedName: String = "elise muster",
+        role: PersonDossierRole,
+        evidence: [DocumentDNAEvidence]? = nil
+    ) throws -> DocumentDNAFinding {
+        try DocumentDNAFinding(
+            kind: .person,
+            qualifier: role.rawValue,
+            displayValue: displayName,
+            normalizedValue: normalizedName,
+            secondaryNormalizedValue: nil,
+            confidence: 1,
+            evidence: evidence ?? [try self.evidence(displayText: displayName)]
+        )
+    }
+
+    static func evidence(
+        displayText: String = "Elise Muster",
+        pageIndex: Int = 0,
+        startUTF16: Int = 0,
+        ocrRegionIndexes: [Int] = []
+    ) throws -> DocumentDNAEvidence {
+        try DocumentDNAEvidence(
+            pageIndex: pageIndex,
+            startUTF16: startUTF16,
+            lengthUTF16: displayText.utf16.count,
+            exactText: displayText,
+            ocrRegionIndexes: ocrRegionIndexes
+        )
+    }
+
+    static func finding(
+        kind: DocumentDNAFindingKind,
+        qualifier: String?,
+        displayValue: String,
+        normalizedValue: String
+    ) throws -> DocumentDNAFinding {
+        try DocumentDNAFinding(
+            kind: kind,
+            qualifier: qualifier,
+            displayValue: displayValue,
+            normalizedValue: normalizedValue,
+            secondaryNormalizedValue: nil,
+            confidence: 1,
+            evidence: [try evidence(displayText: displayValue)]
+        )
+    }
+
     func insertSnapshot(
         id: UUID = UUID(),
         path: String,
