@@ -6,6 +6,57 @@ enum PersonDossierAnchorStoreError: Error, Equatable {
 }
 
 enum PersonDossierAnchorStore {
+    static func record(
+        in db: Database,
+        originDocumentID: UUID,
+        primaryRole: PersonDossierRole,
+        normalizedName: String
+    ) throws -> PersonDossierAnchor? {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT id, displayName, normalizedName, primaryRole,
+                       originDocumentID, originContentHash, originExtractionVersion,
+                       originDNASchemaVersion, originDNAAnalyzerIdentifier,
+                       originDNAAnalyzerVersion, originDNAAnalyzedAt,
+                       birthDateDisplayValue, birthDateNormalizedValue,
+                       createdAt, updatedAt
+                FROM personDossierAnchor
+                WHERE originDocumentID = ? AND primaryRole = ? AND normalizedName = ?
+                """,
+            arguments: [originDocumentID, primaryRole.rawValue, normalizedName]
+        )
+        switch rows.count {
+        case 0:
+            return nil
+        case 1:
+            return try decodeAnchor(in: db, row: rows[0])
+        default:
+            throw PersonDossierAnchorStoreError.invalidStoredState
+        }
+    }
+
+    static func records(
+        in db: Database,
+        normalizedName: String
+    ) throws -> [PersonDossierAnchor] {
+        try Row.fetchAll(
+            db,
+            sql: """
+                SELECT id, displayName, normalizedName, primaryRole,
+                       originDocumentID, originContentHash, originExtractionVersion,
+                       originDNASchemaVersion, originDNAAnalyzerIdentifier,
+                       originDNAAnalyzerVersion, originDNAAnalyzedAt,
+                       birthDateDisplayValue, birthDateNormalizedValue,
+                       createdAt, updatedAt
+                FROM personDossierAnchor INDEXED BY person_dossier_anchor_normalized_name
+                WHERE normalizedName = ?
+                ORDER BY createdAt, id
+                """,
+            arguments: [normalizedName]
+        ).map { try decodeAnchor(in: db, row: $0) }
+    }
+
     static func record(in db: Database, id: UUID) throws -> PersonDossierAnchor? {
         guard let row = try Row.fetchOne(
             db,
