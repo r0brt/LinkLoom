@@ -1,0 +1,1871 @@
+{
+  "anchor": {
+    "birthDate": {
+      "displayValue": "01.02.1940",
+      "evidence": [
+        {
+          "exactText": "01.02.1940",
+          "lengthUTF16": 10,
+          "ocrRegionIndexes": [],
+          "pageIndex": 1,
+          "startUTF16": 0
+        }
+      ],
+      "normalizedValue": "1940-02-01"
+    },
+    "createdAt": "2027-01-15T09:00:00Z",
+    "displayName": "Lina Fontana",
+    "id": "83000000-0000-0000-0000-000000000201",
+    "normalizedName": "lina fontana",
+    "originContentHash": "synthetic-hash-d01",
+    "originDNAAnalyzedAt": "2027-01-15T10:00:00Z",
+    "originDNAAnalyzerIdentifier": "local-rules",
+    "originDNAAnalyzerVersion": "1",
+    "originDNASchemaVersion": 1,
+    "originDocumentID": "83000000-0000-0000-0000-000000000001",
+    "originExtractionVersion": "text-v1",
+    "personEvidence": [
+      {
+        "exactText": "Lina Fontana",
+        "lengthUTF16": 12,
+        "ocrRegionIndexes": [],
+        "pageIndex": 0,
+        "startUTF16": 0
+      }
+    ],
+    "primaryRole": "resident",
+    "updatedAt": "2027-01-15T09:30:00Z"
+  },
+  "corrections": [
+    {
+      "decision": {
+        "exclusion": {
+          "documentID": "83000000-0000-0000-0000-000000000008",
+          "dossierID": "83000000-0000-0000-0000-000000000200",
+          "excludedAt": "2027-01-15T11:01:00Z",
+          "revisionID": "83000000-0000-0000-0000-000000000303"
+        },
+        "type": "exclusion"
+      },
+      "document": {
+        "availability": "available",
+        "byteCount": 108,
+        "contentHash": "synthetic-hash-d08",
+        "failureCode": null,
+        "id": "83000000-0000-0000-0000-000000000008",
+        "lastFingerprintAt": "2027-01-15T08:20:00Z",
+        "lastSeenAt": "2027-01-15T08:30:00Z",
+        "mediaType": "pdf",
+        "modifiedAt": "2027-01-15T08:08:00Z",
+        "pageCount": 2,
+        "relativePath": "korrespondenz/08-bevollmaechtigte.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101",
+        "status": "ready"
+      },
+      "documentType": "correspondence",
+      "sourceDisplayName": "Archiv Auenblick"
+    }
+  ],
+  "costsAndPayments": [
+    {
+      "document": {
+        "availability": "available",
+        "byteCount": 104,
+        "contentHash": "synthetic-hash-d04",
+        "failureCode": null,
+        "id": "83000000-0000-0000-0000-000000000004",
+        "lastFingerprintAt": "2027-01-15T08:20:00Z",
+        "lastSeenAt": "2027-01-15T08:30:00Z",
+        "mediaType": "pdf",
+        "modifiedAt": "2027-01-15T08:04:00Z",
+        "pageCount": 5,
+        "relativePath": "kosten/04-rechnung-a.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101",
+        "status": "ready"
+      },
+      "documentType": "invoice",
+      "isConfirmationAuthoritative": false,
+      "preferredPaymentSupport": null,
+      "section": "costsAndPayments",
+      "sourceDisplayName": "Archiv Auenblick",
+      "supports": [
+        {
+          "exactPrimary": {
+            "contentHash": "synthetic-hash-d04",
+            "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+            "dnaAnalyzerIdentifier": "local-rules",
+            "dnaAnalyzerVersion": "1",
+            "dnaSchemaVersion": 1,
+            "documentID": "83000000-0000-0000-0000-000000000004",
+            "extractionVersion": "text-v1",
+            "finding": {
+              "confidence": 1,
+              "displayValue": "Lina Fontana",
+              "evidence": [
+                {
+                  "exactText": "Lina Fontana",
+                  "lengthUTF16": 12,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 0,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "person",
+              "normalizedValue": "lina fontana",
+              "qualifier": "invoiceRecipient",
+              "secondaryNormalizedValue": null
+            },
+            "normalizedName": "lina fontana",
+            "role": "invoiceRecipient"
+          },
+          "type": "exactPrimary"
+        }
+      ]
+    },
+    {
+      "document": {
+        "availability": "available",
+        "byteCount": 106,
+        "contentHash": "synthetic-hash-d06",
+        "failureCode": null,
+        "id": "83000000-0000-0000-0000-000000000006",
+        "lastFingerprintAt": "2027-01-15T08:20:00Z",
+        "lastSeenAt": "2027-01-15T08:30:00Z",
+        "mediaType": "pdf",
+        "modifiedAt": "2027-01-15T08:06:00Z",
+        "pageCount": 5,
+        "relativePath": "kosten/06-rechnung-b-scan.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101",
+        "status": "ready"
+      },
+      "documentType": "invoice",
+      "isConfirmationAuthoritative": false,
+      "preferredPaymentSupport": null,
+      "section": "costsAndPayments",
+      "sourceDisplayName": "Archiv Auenblick",
+      "supports": [
+        {
+          "exactPrimary": {
+            "contentHash": "synthetic-hash-d06",
+            "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+            "dnaAnalyzerIdentifier": "local-rules",
+            "dnaAnalyzerVersion": "1",
+            "dnaSchemaVersion": 1,
+            "documentID": "83000000-0000-0000-0000-000000000006",
+            "extractionVersion": "text-v1",
+            "finding": {
+              "confidence": 1,
+              "displayValue": "Lina Fontana",
+              "evidence": [
+                {
+                  "exactText": "Lina Fontana",
+                  "lengthUTF16": 12,
+                  "ocrRegionIndexes": [
+                    0
+                  ],
+                  "pageIndex": 0,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "person",
+              "normalizedValue": "lina fontana",
+              "qualifier": "resident",
+              "secondaryNormalizedValue": null
+            },
+            "normalizedName": "lina fontana",
+            "role": "resident"
+          },
+          "type": "exactPrimary"
+        }
+      ]
+    },
+    {
+      "document": {
+        "availability": "available",
+        "byteCount": 107,
+        "contentHash": "synthetic-hash-d07",
+        "failureCode": null,
+        "id": "83000000-0000-0000-0000-000000000007",
+        "lastFingerprintAt": "2027-01-15T08:20:00Z",
+        "lastSeenAt": "2027-01-15T08:30:00Z",
+        "mediaType": "pdf",
+        "modifiedAt": "2027-01-15T08:07:00Z",
+        "pageCount": 4,
+        "relativePath": "kosten/07-zahlung.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101",
+        "status": "ready"
+      },
+      "documentType": "paymentConfirmation",
+      "isConfirmationAuthoritative": false,
+      "preferredPaymentSupport": {
+        "invoiceDocumentID": "83000000-0000-0000-0000-000000000004",
+        "invoiceMembershipBasis": {
+          "supports": [
+            {
+              "contentHash": "synthetic-hash-d04",
+              "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+              "dnaAnalyzerIdentifier": "local-rules",
+              "dnaAnalyzerVersion": "1",
+              "dnaSchemaVersion": 1,
+              "documentID": "83000000-0000-0000-0000-000000000004",
+              "extractionVersion": "text-v1",
+              "finding": {
+                "confidence": 1,
+                "displayValue": "Lina Fontana",
+                "evidence": [
+                  {
+                    "exactText": "Lina Fontana",
+                    "lengthUTF16": 12,
+                    "ocrRegionIndexes": [],
+                    "pageIndex": 0,
+                    "startUTF16": 0
+                  }
+                ],
+                "kind": "person",
+                "normalizedValue": "lina fontana",
+                "qualifier": "invoiceRecipient",
+                "secondaryNormalizedValue": null
+              },
+              "normalizedName": "lina fontana",
+              "role": "invoiceRecipient"
+            }
+          ],
+          "type": "exactPerson"
+        },
+        "relationship": {
+          "decisionKey": {
+            "invoiceContentHash": "synthetic-hash-d04",
+            "invoiceDocumentID": "83000000-0000-0000-0000-000000000004",
+            "paymentContentHash": "synthetic-hash-d07",
+            "paymentDocumentID": "83000000-0000-0000-0000-000000000007",
+            "relationshipType": "paymentSettlesInvoice"
+          },
+          "decisionUpdatedAt": "2027-01-15T10:30:00Z",
+          "invoiceDNAAnalyzedAt": "2027-01-15T10:00:00Z",
+          "paymentDNAAnalyzedAt": "2027-01-15T10:00:00Z",
+          "resolverVersion": "invoice-payment-v1"
+        },
+        "signals": [
+          {
+            "invoiceFinding": {
+              "confidence": 1,
+              "displayValue": "RF-2404",
+              "evidence": [
+                {
+                  "exactText": "RF-2404",
+                  "lengthUTF16": 7,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 2,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "referenceNumber",
+              "normalizedValue": "RF2404",
+              "qualifier": "invoiceNumber",
+              "secondaryNormalizedValue": null
+            },
+            "kind": "referenceNumber",
+            "paymentFinding": {
+              "confidence": 1,
+              "displayValue": "RF-2404",
+              "evidence": [
+                {
+                  "exactText": "RF-2404",
+                  "lengthUTF16": 7,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 1,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "referenceNumber",
+              "normalizedValue": "RF2404",
+              "qualifier": "paymentReference",
+              "secondaryNormalizedValue": null
+            }
+          },
+          {
+            "invoiceFinding": {
+              "confidence": 1,
+              "displayValue": "CHF 125.00",
+              "evidence": [
+                {
+                  "exactText": "CHF 125.00",
+                  "lengthUTF16": 10,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 3,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "monetaryAmount",
+              "normalizedValue": "125.00",
+              "qualifier": "CHF",
+              "secondaryNormalizedValue": null
+            },
+            "kind": "monetaryAmount",
+            "paymentFinding": {
+              "confidence": 1,
+              "displayValue": "CHF 125.00",
+              "evidence": [
+                {
+                  "exactText": "CHF 125.00",
+                  "lengthUTF16": 10,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 2,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "monetaryAmount",
+              "normalizedValue": "125.00",
+              "qualifier": "CHF",
+              "secondaryNormalizedValue": null
+            }
+          },
+          {
+            "invoiceFinding": {
+              "confidence": 1,
+              "displayValue": "Bergtal Pflege AG",
+              "evidence": [
+                {
+                  "exactText": "Bergtal Pflege AG",
+                  "lengthUTF16": 17,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 4,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "organization",
+              "normalizedValue": "bergtal pflege ag",
+              "qualifier": "issuer",
+              "secondaryNormalizedValue": null
+            },
+            "kind": "organization",
+            "paymentFinding": {
+              "confidence": 1,
+              "displayValue": "Bergtal Pflege AG",
+              "evidence": [
+                {
+                  "exactText": "Bergtal Pflege AG",
+                  "lengthUTF16": 17,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 3,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "organization",
+              "normalizedValue": "bergtal pflege ag",
+              "qualifier": "payee",
+              "secondaryNormalizedValue": null
+            }
+          }
+        ]
+      },
+      "section": "costsAndPayments",
+      "sourceDisplayName": "Archiv Auenblick",
+      "supports": [
+        {
+          "confirmedPayment": {
+            "invoiceDocumentID": "83000000-0000-0000-0000-000000000004",
+            "invoiceMembershipBasis": {
+              "supports": [
+                {
+                  "contentHash": "synthetic-hash-d04",
+                  "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+                  "dnaAnalyzerIdentifier": "local-rules",
+                  "dnaAnalyzerVersion": "1",
+                  "dnaSchemaVersion": 1,
+                  "documentID": "83000000-0000-0000-0000-000000000004",
+                  "extractionVersion": "text-v1",
+                  "finding": {
+                    "confidence": 1,
+                    "displayValue": "Lina Fontana",
+                    "evidence": [
+                      {
+                        "exactText": "Lina Fontana",
+                        "lengthUTF16": 12,
+                        "ocrRegionIndexes": [],
+                        "pageIndex": 0,
+                        "startUTF16": 0
+                      }
+                    ],
+                    "kind": "person",
+                    "normalizedValue": "lina fontana",
+                    "qualifier": "invoiceRecipient",
+                    "secondaryNormalizedValue": null
+                  },
+                  "normalizedName": "lina fontana",
+                  "role": "invoiceRecipient"
+                }
+              ],
+              "type": "exactPerson"
+            },
+            "relationship": {
+              "decisionKey": {
+                "invoiceContentHash": "synthetic-hash-d04",
+                "invoiceDocumentID": "83000000-0000-0000-0000-000000000004",
+                "paymentContentHash": "synthetic-hash-d07",
+                "paymentDocumentID": "83000000-0000-0000-0000-000000000007",
+                "relationshipType": "paymentSettlesInvoice"
+              },
+              "decisionUpdatedAt": "2027-01-15T10:30:00Z",
+              "invoiceDNAAnalyzedAt": "2027-01-15T10:00:00Z",
+              "paymentDNAAnalyzedAt": "2027-01-15T10:00:00Z",
+              "resolverVersion": "invoice-payment-v1"
+            },
+            "signals": [
+              {
+                "invoiceFinding": {
+                  "confidence": 1,
+                  "displayValue": "RF-2404",
+                  "evidence": [
+                    {
+                      "exactText": "RF-2404",
+                      "lengthUTF16": 7,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 2,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "referenceNumber",
+                  "normalizedValue": "RF2404",
+                  "qualifier": "invoiceNumber",
+                  "secondaryNormalizedValue": null
+                },
+                "kind": "referenceNumber",
+                "paymentFinding": {
+                  "confidence": 1,
+                  "displayValue": "RF-2404",
+                  "evidence": [
+                    {
+                      "exactText": "RF-2404",
+                      "lengthUTF16": 7,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 1,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "referenceNumber",
+                  "normalizedValue": "RF2404",
+                  "qualifier": "paymentReference",
+                  "secondaryNormalizedValue": null
+                }
+              },
+              {
+                "invoiceFinding": {
+                  "confidence": 1,
+                  "displayValue": "CHF 125.00",
+                  "evidence": [
+                    {
+                      "exactText": "CHF 125.00",
+                      "lengthUTF16": 10,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 3,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "monetaryAmount",
+                  "normalizedValue": "125.00",
+                  "qualifier": "CHF",
+                  "secondaryNormalizedValue": null
+                },
+                "kind": "monetaryAmount",
+                "paymentFinding": {
+                  "confidence": 1,
+                  "displayValue": "CHF 125.00",
+                  "evidence": [
+                    {
+                      "exactText": "CHF 125.00",
+                      "lengthUTF16": 10,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 2,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "monetaryAmount",
+                  "normalizedValue": "125.00",
+                  "qualifier": "CHF",
+                  "secondaryNormalizedValue": null
+                }
+              },
+              {
+                "invoiceFinding": {
+                  "confidence": 1,
+                  "displayValue": "Bergtal Pflege AG",
+                  "evidence": [
+                    {
+                      "exactText": "Bergtal Pflege AG",
+                      "lengthUTF16": 17,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 4,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "organization",
+                  "normalizedValue": "bergtal pflege ag",
+                  "qualifier": "issuer",
+                  "secondaryNormalizedValue": null
+                },
+                "kind": "organization",
+                "paymentFinding": {
+                  "confidence": 1,
+                  "displayValue": "Bergtal Pflege AG",
+                  "evidence": [
+                    {
+                      "exactText": "Bergtal Pflege AG",
+                      "lengthUTF16": 17,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 3,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "organization",
+                  "normalizedValue": "bergtal pflege ag",
+                  "qualifier": "payee",
+                  "secondaryNormalizedValue": null
+                }
+              }
+            ]
+          },
+          "type": "confirmedPayment"
+        },
+        {
+          "confirmedPayment": {
+            "invoiceDocumentID": "83000000-0000-0000-0000-000000000006",
+            "invoiceMembershipBasis": {
+              "supports": [
+                {
+                  "contentHash": "synthetic-hash-d06",
+                  "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+                  "dnaAnalyzerIdentifier": "local-rules",
+                  "dnaAnalyzerVersion": "1",
+                  "dnaSchemaVersion": 1,
+                  "documentID": "83000000-0000-0000-0000-000000000006",
+                  "extractionVersion": "text-v1",
+                  "finding": {
+                    "confidence": 1,
+                    "displayValue": "Lina Fontana",
+                    "evidence": [
+                      {
+                        "exactText": "Lina Fontana",
+                        "lengthUTF16": 12,
+                        "ocrRegionIndexes": [
+                          0
+                        ],
+                        "pageIndex": 0,
+                        "startUTF16": 0
+                      }
+                    ],
+                    "kind": "person",
+                    "normalizedValue": "lina fontana",
+                    "qualifier": "resident",
+                    "secondaryNormalizedValue": null
+                  },
+                  "normalizedName": "lina fontana",
+                  "role": "resident"
+                }
+              ],
+              "type": "exactPerson"
+            },
+            "relationship": {
+              "decisionKey": {
+                "invoiceContentHash": "synthetic-hash-d06",
+                "invoiceDocumentID": "83000000-0000-0000-0000-000000000006",
+                "paymentContentHash": "synthetic-hash-d07",
+                "paymentDocumentID": "83000000-0000-0000-0000-000000000007",
+                "relationshipType": "paymentSettlesInvoice"
+              },
+              "decisionUpdatedAt": "2027-01-15T10:31:00Z",
+              "invoiceDNAAnalyzedAt": "2027-01-15T10:00:00Z",
+              "paymentDNAAnalyzedAt": "2027-01-15T10:00:00Z",
+              "resolverVersion": "invoice-payment-v1"
+            },
+            "signals": [
+              {
+                "invoiceFinding": {
+                  "confidence": 1,
+                  "displayValue": "RF-2404",
+                  "evidence": [
+                    {
+                      "exactText": "RF-2404",
+                      "lengthUTF16": 7,
+                      "ocrRegionIndexes": [
+                        0
+                      ],
+                      "pageIndex": 2,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "referenceNumber",
+                  "normalizedValue": "RF2404",
+                  "qualifier": "invoiceNumber",
+                  "secondaryNormalizedValue": null
+                },
+                "kind": "referenceNumber",
+                "paymentFinding": {
+                  "confidence": 1,
+                  "displayValue": "RF-2404",
+                  "evidence": [
+                    {
+                      "exactText": "RF-2404",
+                      "lengthUTF16": 7,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 1,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "referenceNumber",
+                  "normalizedValue": "RF2404",
+                  "qualifier": "paymentReference",
+                  "secondaryNormalizedValue": null
+                }
+              },
+              {
+                "invoiceFinding": {
+                  "confidence": 1,
+                  "displayValue": "CHF 125.00",
+                  "evidence": [
+                    {
+                      "exactText": "CHF 125.00",
+                      "lengthUTF16": 10,
+                      "ocrRegionIndexes": [
+                        0
+                      ],
+                      "pageIndex": 3,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "monetaryAmount",
+                  "normalizedValue": "125.00",
+                  "qualifier": "CHF",
+                  "secondaryNormalizedValue": null
+                },
+                "kind": "monetaryAmount",
+                "paymentFinding": {
+                  "confidence": 1,
+                  "displayValue": "CHF 125.00",
+                  "evidence": [
+                    {
+                      "exactText": "CHF 125.00",
+                      "lengthUTF16": 10,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 2,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "monetaryAmount",
+                  "normalizedValue": "125.00",
+                  "qualifier": "CHF",
+                  "secondaryNormalizedValue": null
+                }
+              },
+              {
+                "invoiceFinding": {
+                  "confidence": 1,
+                  "displayValue": "Bergtal Pflege AG",
+                  "evidence": [
+                    {
+                      "exactText": "Bergtal Pflege AG",
+                      "lengthUTF16": 17,
+                      "ocrRegionIndexes": [
+                        0
+                      ],
+                      "pageIndex": 4,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "organization",
+                  "normalizedValue": "bergtal pflege ag",
+                  "qualifier": "issuer",
+                  "secondaryNormalizedValue": null
+                },
+                "kind": "organization",
+                "paymentFinding": {
+                  "confidence": 1,
+                  "displayValue": "Bergtal Pflege AG",
+                  "evidence": [
+                    {
+                      "exactText": "Bergtal Pflege AG",
+                      "lengthUTF16": 17,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 3,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "organization",
+                  "normalizedValue": "bergtal pflege ag",
+                  "qualifier": "payee",
+                  "secondaryNormalizedValue": null
+                }
+              }
+            ]
+          },
+          "type": "confirmedPayment"
+        }
+      ]
+    }
+  ],
+  "directMembers": [
+    {
+      "document": {
+        "availability": "available",
+        "byteCount": 103,
+        "contentHash": "synthetic-hash-d03",
+        "failureCode": null,
+        "id": "83000000-0000-0000-0000-000000000003",
+        "lastFingerprintAt": "2027-01-15T08:20:00Z",
+        "lastSeenAt": "2027-01-15T08:30:00Z",
+        "mediaType": "pdf",
+        "modifiedAt": "2027-01-15T08:03:00Z",
+        "pageCount": 2,
+        "relativePath": "bank/03-kontoauszug.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101",
+        "status": "ready"
+      },
+      "documentType": "correspondence",
+      "isConfirmationAuthoritative": false,
+      "preferredPaymentSupport": null,
+      "section": "directDocuments",
+      "sourceDisplayName": "Archiv Auenblick",
+      "supports": [
+        {
+          "exactPrimary": {
+            "contentHash": "synthetic-hash-d03",
+            "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+            "dnaAnalyzerIdentifier": "local-rules",
+            "dnaAnalyzerVersion": "1",
+            "dnaSchemaVersion": 1,
+            "documentID": "83000000-0000-0000-0000-000000000003",
+            "extractionVersion": "text-v1",
+            "finding": {
+              "confidence": 1,
+              "displayValue": "Lina Fontana",
+              "evidence": [
+                {
+                  "exactText": "Lina Fontana",
+                  "lengthUTF16": 12,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 0,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "person",
+              "normalizedValue": "lina fontana",
+              "qualifier": "accountHolder",
+              "secondaryNormalizedValue": null
+            },
+            "normalizedName": "lina fontana",
+            "role": "accountHolder"
+          },
+          "type": "exactPrimary"
+        }
+      ]
+    },
+    {
+      "document": {
+        "availability": "available",
+        "byteCount": 102,
+        "contentHash": "synthetic-hash-d02",
+        "failureCode": null,
+        "id": "83000000-0000-0000-0000-000000000002",
+        "lastFingerprintAt": "2027-01-15T08:20:00Z",
+        "lastSeenAt": "2027-01-15T08:30:00Z",
+        "mediaType": "pdf",
+        "modifiedAt": "2027-01-15T08:02:00Z",
+        "pageCount": 2,
+        "relativePath": "versicherung/02-police.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101",
+        "status": "ready"
+      },
+      "documentType": "insuranceStatement",
+      "isConfirmationAuthoritative": false,
+      "preferredPaymentSupport": null,
+      "section": "directDocuments",
+      "sourceDisplayName": "Archiv Auenblick",
+      "supports": [
+        {
+          "exactPrimary": {
+            "contentHash": "synthetic-hash-d02",
+            "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+            "dnaAnalyzerIdentifier": "local-rules",
+            "dnaAnalyzerVersion": "1",
+            "dnaSchemaVersion": 1,
+            "documentID": "83000000-0000-0000-0000-000000000002",
+            "extractionVersion": "text-v1",
+            "finding": {
+              "confidence": 1,
+              "displayValue": "Lina Fontana",
+              "evidence": [
+                {
+                  "exactText": "Lina Fontana",
+                  "lengthUTF16": 12,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 0,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "person",
+              "normalizedValue": "lina fontana",
+              "qualifier": "insuredPerson",
+              "secondaryNormalizedValue": null
+            },
+            "normalizedName": "lina fontana",
+            "role": "insuredPerson"
+          },
+          "type": "exactPrimary"
+        }
+      ]
+    },
+    {
+      "document": {
+        "availability": "available",
+        "byteCount": 105,
+        "contentHash": "synthetic-hash-d05",
+        "failureCode": null,
+        "id": "83000000-0000-0000-0000-000000000005",
+        "lastFingerprintAt": "2027-01-15T08:20:00Z",
+        "lastSeenAt": "2027-01-15T08:30:00Z",
+        "mediaType": "pdf",
+        "modifiedAt": "2027-01-15T08:05:00Z",
+        "pageCount": 2,
+        "relativePath": "vollmacht/05-vollmacht.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101",
+        "status": "ready"
+      },
+      "documentType": "powerOfAttorney",
+      "isConfirmationAuthoritative": false,
+      "preferredPaymentSupport": null,
+      "section": "directDocuments",
+      "sourceDisplayName": "Archiv Auenblick",
+      "supports": [
+        {
+          "exactPrimary": {
+            "contentHash": "synthetic-hash-d05",
+            "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+            "dnaAnalyzerIdentifier": "local-rules",
+            "dnaAnalyzerVersion": "1",
+            "dnaSchemaVersion": 1,
+            "documentID": "83000000-0000-0000-0000-000000000005",
+            "extractionVersion": "text-v1",
+            "finding": {
+              "confidence": 1,
+              "displayValue": "Lina Fontana",
+              "evidence": [
+                {
+                  "exactText": "Lina Fontana",
+                  "lengthUTF16": 12,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 0,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "person",
+              "normalizedValue": "lina fontana",
+              "qualifier": "grantor",
+              "secondaryNormalizedValue": null
+            },
+            "normalizedName": "lina fontana",
+            "role": "grantor"
+          },
+          "type": "exactPrimary"
+        }
+      ]
+    },
+    {
+      "document": {
+        "availability": "available",
+        "byteCount": 101,
+        "contentHash": "synthetic-hash-d01",
+        "failureCode": null,
+        "id": "83000000-0000-0000-0000-000000000001",
+        "lastFingerprintAt": "2027-01-15T08:20:00Z",
+        "lastSeenAt": "2027-01-15T08:30:00Z",
+        "mediaType": "pdf",
+        "modifiedAt": "2027-01-15T08:01:00Z",
+        "pageCount": 3,
+        "relativePath": "wohnen/01-anker.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101",
+        "status": "ready"
+      },
+      "documentType": "contract",
+      "isConfirmationAuthoritative": false,
+      "preferredPaymentSupport": null,
+      "section": "directDocuments",
+      "sourceDisplayName": "Archiv Auenblick",
+      "supports": [
+        {
+          "exactPrimary": {
+            "contentHash": "synthetic-hash-d01",
+            "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+            "dnaAnalyzerIdentifier": "local-rules",
+            "dnaAnalyzerVersion": "1",
+            "dnaSchemaVersion": 1,
+            "documentID": "83000000-0000-0000-0000-000000000001",
+            "extractionVersion": "text-v1",
+            "finding": {
+              "confidence": 1,
+              "displayValue": "Lina Fontana",
+              "evidence": [
+                {
+                  "exactText": "Lina Fontana",
+                  "lengthUTF16": 12,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 0,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "person",
+              "normalizedValue": "lina fontana",
+              "qualifier": "resident",
+              "secondaryNormalizedValue": null
+            },
+            "normalizedName": "lina fontana",
+            "role": "resident"
+          },
+          "type": "exactPrimary"
+        }
+      ]
+    }
+  ],
+  "dossier": {
+    "anchor": {
+      "person": {
+        "birthDate": {
+          "displayValue": "01.02.1940",
+          "evidence": [
+            {
+              "exactText": "01.02.1940",
+              "lengthUTF16": 10,
+              "ocrRegionIndexes": [],
+              "pageIndex": 1,
+              "startUTF16": 0
+            }
+          ],
+          "normalizedValue": "1940-02-01"
+        },
+        "createdAt": "2027-01-15T09:00:00Z",
+        "displayName": "Lina Fontana",
+        "id": "83000000-0000-0000-0000-000000000201",
+        "normalizedName": "lina fontana",
+        "originContentHash": "synthetic-hash-d01",
+        "originDNAAnalyzedAt": "2027-01-15T10:00:00Z",
+        "originDNAAnalyzerIdentifier": "local-rules",
+        "originDNAAnalyzerVersion": "1",
+        "originDNASchemaVersion": 1,
+        "originDocumentID": "83000000-0000-0000-0000-000000000001",
+        "originExtractionVersion": "text-v1",
+        "personEvidence": [
+          {
+            "exactText": "Lina Fontana",
+            "lengthUTF16": 12,
+            "ocrRegionIndexes": [],
+            "pageIndex": 0,
+            "startUTF16": 0
+          }
+        ],
+        "primaryRole": "resident",
+        "updatedAt": "2027-01-15T09:30:00Z"
+      },
+      "type": "person"
+    },
+    "createdAt": "2027-01-15T09:00:00Z",
+    "displayName": "Dossier Lina Fontana",
+    "id": "83000000-0000-0000-0000-000000000200",
+    "kind": "personMatter",
+    "updatedAt": "2027-01-15T12:00:00Z"
+  },
+  "origin": {
+    "document": {
+      "availability": "available",
+      "byteCount": 101,
+      "contentHash": "synthetic-hash-d01",
+      "failureCode": null,
+      "id": "83000000-0000-0000-0000-000000000001",
+      "lastFingerprintAt": "2027-01-15T08:20:00Z",
+      "lastSeenAt": "2027-01-15T08:30:00Z",
+      "mediaType": "pdf",
+      "modifiedAt": "2027-01-15T08:01:00Z",
+      "pageCount": 3,
+      "relativePath": "wohnen/01-anker.pdf",
+      "sourceRootID": "83000000-0000-0000-0000-000000000101",
+      "status": "ready"
+    },
+    "sourceDisplayName": "Archiv Auenblick",
+    "validity": "current"
+  },
+  "suggestions": [
+    {
+      "commandSupport": {
+        "conflict": {
+          "anchor": {
+            "displayValue": "01.02.1940",
+            "evidence": [
+              {
+                "exactText": "01.02.1940",
+                "lengthUTF16": 10,
+                "ocrRegionIndexes": [],
+                "pageIndex": 1,
+                "startUTF16": 0
+              }
+            ],
+            "normalizedValue": "1940-02-01"
+          },
+          "candidate": {
+            "confidence": 1,
+            "displayValue": "04.03.1978",
+            "evidence": [
+              {
+                "exactText": "04.03.1978",
+                "lengthUTF16": 10,
+                "ocrRegionIndexes": [],
+                "pageIndex": 1,
+                "startUTF16": 0
+              }
+            ],
+            "kind": "date",
+            "normalizedValue": "1978-03-04",
+            "qualifier": "birthDate",
+            "secondaryNormalizedValue": null
+          },
+          "type": "hardBirthDateConflict"
+        },
+        "kind": "birthDateConflict",
+        "person": {
+          "contentHash": "synthetic-hash-d09",
+          "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+          "dnaAnalyzerIdentifier": "local-rules",
+          "dnaAnalyzerVersion": "1",
+          "dnaSchemaVersion": 1,
+          "documentID": "83000000-0000-0000-0000-000000000009",
+          "extractionVersion": "text-v1",
+          "finding": {
+            "confidence": 1,
+            "displayValue": "Lina Fontana",
+            "evidence": [
+              {
+                "exactText": "Lina Fontana",
+                "lengthUTF16": 12,
+                "ocrRegionIndexes": [],
+                "pageIndex": 0,
+                "startUTF16": 0
+              }
+            ],
+            "kind": "person",
+            "normalizedValue": "lina fontana",
+            "qualifier": "insuredPerson",
+            "secondaryNormalizedValue": null
+          },
+          "normalizedName": "lina fontana",
+          "role": "insuredPerson"
+        }
+      },
+      "conflict": {
+        "anchor": {
+          "displayValue": "01.02.1940",
+          "evidence": [
+            {
+              "exactText": "01.02.1940",
+              "lengthUTF16": 10,
+              "ocrRegionIndexes": [],
+              "pageIndex": 1,
+              "startUTF16": 0
+            }
+          ],
+          "normalizedValue": "1940-02-01"
+        },
+        "candidate": {
+          "confidence": 1,
+          "displayValue": "04.03.1978",
+          "evidence": [
+            {
+              "exactText": "04.03.1978",
+              "lengthUTF16": 10,
+              "ocrRegionIndexes": [],
+              "pageIndex": 1,
+              "startUTF16": 0
+            }
+          ],
+          "kind": "date",
+          "normalizedValue": "1978-03-04",
+          "qualifier": "birthDate",
+          "secondaryNormalizedValue": null
+        },
+        "type": "hardBirthDateConflict"
+      },
+      "currentSupports": [
+        {
+          "conflict": {
+            "anchor": {
+              "displayValue": "01.02.1940",
+              "evidence": [
+                {
+                  "exactText": "01.02.1940",
+                  "lengthUTF16": 10,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 1,
+                  "startUTF16": 0
+                }
+              ],
+              "normalizedValue": "1940-02-01"
+            },
+            "candidate": {
+              "confidence": 1,
+              "displayValue": "04.03.1978",
+              "evidence": [
+                {
+                  "exactText": "04.03.1978",
+                  "lengthUTF16": 10,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 1,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "date",
+              "normalizedValue": "1978-03-04",
+              "qualifier": "birthDate",
+              "secondaryNormalizedValue": null
+            },
+            "type": "hardBirthDateConflict"
+          },
+          "kind": "birthDateConflict",
+          "person": {
+            "contentHash": "synthetic-hash-d09",
+            "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+            "dnaAnalyzerIdentifier": "local-rules",
+            "dnaAnalyzerVersion": "1",
+            "dnaSchemaVersion": 1,
+            "documentID": "83000000-0000-0000-0000-000000000009",
+            "extractionVersion": "text-v1",
+            "finding": {
+              "confidence": 1,
+              "displayValue": "Lina Fontana",
+              "evidence": [
+                {
+                  "exactText": "Lina Fontana",
+                  "lengthUTF16": 12,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 0,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "person",
+              "normalizedValue": "lina fontana",
+              "qualifier": "insuredPerson",
+              "secondaryNormalizedValue": null
+            },
+            "normalizedName": "lina fontana",
+            "role": "insuredPerson"
+          }
+        }
+      ],
+      "document": {
+        "availability": "available",
+        "byteCount": 109,
+        "contentHash": "synthetic-hash-d09",
+        "failureCode": null,
+        "id": "83000000-0000-0000-0000-000000000009",
+        "lastFingerprintAt": "2027-01-15T08:20:00Z",
+        "lastSeenAt": "2027-01-15T08:30:00Z",
+        "mediaType": "pdf",
+        "modifiedAt": "2027-01-15T08:09:00Z",
+        "pageCount": 3,
+        "relativePath": "fremd/09-homonym.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000102",
+        "status": "ready"
+      },
+      "documentType": "correspondence",
+      "kind": "birthDateConflict",
+      "section": "directDocuments",
+      "sourceDisplayName": "Zweitablage Bergtal"
+    }
+  ],
+  "token": {
+    "anchorUpdatedAt": "2027-01-15T09:30:00Z",
+    "confirmationRevisionIDs": [],
+    "documents": [
+      {
+        "availability": "available",
+        "contentHash": "synthetic-hash-d03",
+        "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+        "documentID": "83000000-0000-0000-0000-000000000003",
+        "relativePath": "bank/03-kontoauszug.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101"
+      },
+      {
+        "availability": "available",
+        "contentHash": "synthetic-hash-d08",
+        "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+        "documentID": "83000000-0000-0000-0000-000000000008",
+        "relativePath": "korrespondenz/08-bevollmaechtigte.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101"
+      },
+      {
+        "availability": "available",
+        "contentHash": "synthetic-hash-d04",
+        "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+        "documentID": "83000000-0000-0000-0000-000000000004",
+        "relativePath": "kosten/04-rechnung-a.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101"
+      },
+      {
+        "availability": "available",
+        "contentHash": "synthetic-hash-d06",
+        "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+        "documentID": "83000000-0000-0000-0000-000000000006",
+        "relativePath": "kosten/06-rechnung-b-scan.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101"
+      },
+      {
+        "availability": "available",
+        "contentHash": "synthetic-hash-d07",
+        "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+        "documentID": "83000000-0000-0000-0000-000000000007",
+        "relativePath": "kosten/07-zahlung.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101"
+      },
+      {
+        "availability": "available",
+        "contentHash": "synthetic-hash-d02",
+        "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+        "documentID": "83000000-0000-0000-0000-000000000002",
+        "relativePath": "versicherung/02-police.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101"
+      },
+      {
+        "availability": "available",
+        "contentHash": "synthetic-hash-d05",
+        "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+        "documentID": "83000000-0000-0000-0000-000000000005",
+        "relativePath": "vollmacht/05-vollmacht.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101"
+      },
+      {
+        "availability": "available",
+        "contentHash": "synthetic-hash-d01",
+        "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+        "documentID": "83000000-0000-0000-0000-000000000001",
+        "relativePath": "wohnen/01-anker.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000101"
+      },
+      {
+        "availability": "available",
+        "contentHash": "synthetic-hash-d09",
+        "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+        "documentID": "83000000-0000-0000-0000-000000000009",
+        "relativePath": "fremd/09-homonym.pdf",
+        "sourceRootID": "83000000-0000-0000-0000-000000000102"
+      }
+    ],
+    "dossierUpdatedAt": "2027-01-15T12:00:00Z",
+    "exclusionRevisionIDs": [
+      "83000000-0000-0000-0000-000000000303"
+    ],
+    "memberSupports": [
+      [
+        {
+          "exactPrimary": {
+            "contentHash": "synthetic-hash-d03",
+            "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+            "dnaAnalyzerIdentifier": "local-rules",
+            "dnaAnalyzerVersion": "1",
+            "dnaSchemaVersion": 1,
+            "documentID": "83000000-0000-0000-0000-000000000003",
+            "extractionVersion": "text-v1",
+            "finding": {
+              "confidence": 1,
+              "displayValue": "Lina Fontana",
+              "evidence": [
+                {
+                  "exactText": "Lina Fontana",
+                  "lengthUTF16": 12,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 0,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "person",
+              "normalizedValue": "lina fontana",
+              "qualifier": "accountHolder",
+              "secondaryNormalizedValue": null
+            },
+            "normalizedName": "lina fontana",
+            "role": "accountHolder"
+          },
+          "type": "exactPrimary"
+        }
+      ],
+      [
+        {
+          "exactPrimary": {
+            "contentHash": "synthetic-hash-d02",
+            "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+            "dnaAnalyzerIdentifier": "local-rules",
+            "dnaAnalyzerVersion": "1",
+            "dnaSchemaVersion": 1,
+            "documentID": "83000000-0000-0000-0000-000000000002",
+            "extractionVersion": "text-v1",
+            "finding": {
+              "confidence": 1,
+              "displayValue": "Lina Fontana",
+              "evidence": [
+                {
+                  "exactText": "Lina Fontana",
+                  "lengthUTF16": 12,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 0,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "person",
+              "normalizedValue": "lina fontana",
+              "qualifier": "insuredPerson",
+              "secondaryNormalizedValue": null
+            },
+            "normalizedName": "lina fontana",
+            "role": "insuredPerson"
+          },
+          "type": "exactPrimary"
+        }
+      ],
+      [
+        {
+          "exactPrimary": {
+            "contentHash": "synthetic-hash-d05",
+            "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+            "dnaAnalyzerIdentifier": "local-rules",
+            "dnaAnalyzerVersion": "1",
+            "dnaSchemaVersion": 1,
+            "documentID": "83000000-0000-0000-0000-000000000005",
+            "extractionVersion": "text-v1",
+            "finding": {
+              "confidence": 1,
+              "displayValue": "Lina Fontana",
+              "evidence": [
+                {
+                  "exactText": "Lina Fontana",
+                  "lengthUTF16": 12,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 0,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "person",
+              "normalizedValue": "lina fontana",
+              "qualifier": "grantor",
+              "secondaryNormalizedValue": null
+            },
+            "normalizedName": "lina fontana",
+            "role": "grantor"
+          },
+          "type": "exactPrimary"
+        }
+      ],
+      [
+        {
+          "exactPrimary": {
+            "contentHash": "synthetic-hash-d01",
+            "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+            "dnaAnalyzerIdentifier": "local-rules",
+            "dnaAnalyzerVersion": "1",
+            "dnaSchemaVersion": 1,
+            "documentID": "83000000-0000-0000-0000-000000000001",
+            "extractionVersion": "text-v1",
+            "finding": {
+              "confidence": 1,
+              "displayValue": "Lina Fontana",
+              "evidence": [
+                {
+                  "exactText": "Lina Fontana",
+                  "lengthUTF16": 12,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 0,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "person",
+              "normalizedValue": "lina fontana",
+              "qualifier": "resident",
+              "secondaryNormalizedValue": null
+            },
+            "normalizedName": "lina fontana",
+            "role": "resident"
+          },
+          "type": "exactPrimary"
+        }
+      ],
+      [
+        {
+          "exactPrimary": {
+            "contentHash": "synthetic-hash-d04",
+            "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+            "dnaAnalyzerIdentifier": "local-rules",
+            "dnaAnalyzerVersion": "1",
+            "dnaSchemaVersion": 1,
+            "documentID": "83000000-0000-0000-0000-000000000004",
+            "extractionVersion": "text-v1",
+            "finding": {
+              "confidence": 1,
+              "displayValue": "Lina Fontana",
+              "evidence": [
+                {
+                  "exactText": "Lina Fontana",
+                  "lengthUTF16": 12,
+                  "ocrRegionIndexes": [],
+                  "pageIndex": 0,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "person",
+              "normalizedValue": "lina fontana",
+              "qualifier": "invoiceRecipient",
+              "secondaryNormalizedValue": null
+            },
+            "normalizedName": "lina fontana",
+            "role": "invoiceRecipient"
+          },
+          "type": "exactPrimary"
+        }
+      ],
+      [
+        {
+          "exactPrimary": {
+            "contentHash": "synthetic-hash-d06",
+            "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+            "dnaAnalyzerIdentifier": "local-rules",
+            "dnaAnalyzerVersion": "1",
+            "dnaSchemaVersion": 1,
+            "documentID": "83000000-0000-0000-0000-000000000006",
+            "extractionVersion": "text-v1",
+            "finding": {
+              "confidence": 1,
+              "displayValue": "Lina Fontana",
+              "evidence": [
+                {
+                  "exactText": "Lina Fontana",
+                  "lengthUTF16": 12,
+                  "ocrRegionIndexes": [
+                    0
+                  ],
+                  "pageIndex": 0,
+                  "startUTF16": 0
+                }
+              ],
+              "kind": "person",
+              "normalizedValue": "lina fontana",
+              "qualifier": "resident",
+              "secondaryNormalizedValue": null
+            },
+            "normalizedName": "lina fontana",
+            "role": "resident"
+          },
+          "type": "exactPrimary"
+        }
+      ],
+      [
+        {
+          "confirmedPayment": {
+            "invoiceDocumentID": "83000000-0000-0000-0000-000000000004",
+            "invoiceMembershipBasis": {
+              "supports": [
+                {
+                  "contentHash": "synthetic-hash-d04",
+                  "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+                  "dnaAnalyzerIdentifier": "local-rules",
+                  "dnaAnalyzerVersion": "1",
+                  "dnaSchemaVersion": 1,
+                  "documentID": "83000000-0000-0000-0000-000000000004",
+                  "extractionVersion": "text-v1",
+                  "finding": {
+                    "confidence": 1,
+                    "displayValue": "Lina Fontana",
+                    "evidence": [
+                      {
+                        "exactText": "Lina Fontana",
+                        "lengthUTF16": 12,
+                        "ocrRegionIndexes": [],
+                        "pageIndex": 0,
+                        "startUTF16": 0
+                      }
+                    ],
+                    "kind": "person",
+                    "normalizedValue": "lina fontana",
+                    "qualifier": "invoiceRecipient",
+                    "secondaryNormalizedValue": null
+                  },
+                  "normalizedName": "lina fontana",
+                  "role": "invoiceRecipient"
+                }
+              ],
+              "type": "exactPerson"
+            },
+            "relationship": {
+              "decisionKey": {
+                "invoiceContentHash": "synthetic-hash-d04",
+                "invoiceDocumentID": "83000000-0000-0000-0000-000000000004",
+                "paymentContentHash": "synthetic-hash-d07",
+                "paymentDocumentID": "83000000-0000-0000-0000-000000000007",
+                "relationshipType": "paymentSettlesInvoice"
+              },
+              "decisionUpdatedAt": "2027-01-15T10:30:00Z",
+              "invoiceDNAAnalyzedAt": "2027-01-15T10:00:00Z",
+              "paymentDNAAnalyzedAt": "2027-01-15T10:00:00Z",
+              "resolverVersion": "invoice-payment-v1"
+            },
+            "signals": [
+              {
+                "invoiceFinding": {
+                  "confidence": 1,
+                  "displayValue": "RF-2404",
+                  "evidence": [
+                    {
+                      "exactText": "RF-2404",
+                      "lengthUTF16": 7,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 2,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "referenceNumber",
+                  "normalizedValue": "RF2404",
+                  "qualifier": "invoiceNumber",
+                  "secondaryNormalizedValue": null
+                },
+                "kind": "referenceNumber",
+                "paymentFinding": {
+                  "confidence": 1,
+                  "displayValue": "RF-2404",
+                  "evidence": [
+                    {
+                      "exactText": "RF-2404",
+                      "lengthUTF16": 7,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 1,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "referenceNumber",
+                  "normalizedValue": "RF2404",
+                  "qualifier": "paymentReference",
+                  "secondaryNormalizedValue": null
+                }
+              },
+              {
+                "invoiceFinding": {
+                  "confidence": 1,
+                  "displayValue": "CHF 125.00",
+                  "evidence": [
+                    {
+                      "exactText": "CHF 125.00",
+                      "lengthUTF16": 10,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 3,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "monetaryAmount",
+                  "normalizedValue": "125.00",
+                  "qualifier": "CHF",
+                  "secondaryNormalizedValue": null
+                },
+                "kind": "monetaryAmount",
+                "paymentFinding": {
+                  "confidence": 1,
+                  "displayValue": "CHF 125.00",
+                  "evidence": [
+                    {
+                      "exactText": "CHF 125.00",
+                      "lengthUTF16": 10,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 2,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "monetaryAmount",
+                  "normalizedValue": "125.00",
+                  "qualifier": "CHF",
+                  "secondaryNormalizedValue": null
+                }
+              },
+              {
+                "invoiceFinding": {
+                  "confidence": 1,
+                  "displayValue": "Bergtal Pflege AG",
+                  "evidence": [
+                    {
+                      "exactText": "Bergtal Pflege AG",
+                      "lengthUTF16": 17,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 4,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "organization",
+                  "normalizedValue": "bergtal pflege ag",
+                  "qualifier": "issuer",
+                  "secondaryNormalizedValue": null
+                },
+                "kind": "organization",
+                "paymentFinding": {
+                  "confidence": 1,
+                  "displayValue": "Bergtal Pflege AG",
+                  "evidence": [
+                    {
+                      "exactText": "Bergtal Pflege AG",
+                      "lengthUTF16": 17,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 3,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "organization",
+                  "normalizedValue": "bergtal pflege ag",
+                  "qualifier": "payee",
+                  "secondaryNormalizedValue": null
+                }
+              }
+            ]
+          },
+          "type": "confirmedPayment"
+        },
+        {
+          "confirmedPayment": {
+            "invoiceDocumentID": "83000000-0000-0000-0000-000000000006",
+            "invoiceMembershipBasis": {
+              "supports": [
+                {
+                  "contentHash": "synthetic-hash-d06",
+                  "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+                  "dnaAnalyzerIdentifier": "local-rules",
+                  "dnaAnalyzerVersion": "1",
+                  "dnaSchemaVersion": 1,
+                  "documentID": "83000000-0000-0000-0000-000000000006",
+                  "extractionVersion": "text-v1",
+                  "finding": {
+                    "confidence": 1,
+                    "displayValue": "Lina Fontana",
+                    "evidence": [
+                      {
+                        "exactText": "Lina Fontana",
+                        "lengthUTF16": 12,
+                        "ocrRegionIndexes": [
+                          0
+                        ],
+                        "pageIndex": 0,
+                        "startUTF16": 0
+                      }
+                    ],
+                    "kind": "person",
+                    "normalizedValue": "lina fontana",
+                    "qualifier": "resident",
+                    "secondaryNormalizedValue": null
+                  },
+                  "normalizedName": "lina fontana",
+                  "role": "resident"
+                }
+              ],
+              "type": "exactPerson"
+            },
+            "relationship": {
+              "decisionKey": {
+                "invoiceContentHash": "synthetic-hash-d06",
+                "invoiceDocumentID": "83000000-0000-0000-0000-000000000006",
+                "paymentContentHash": "synthetic-hash-d07",
+                "paymentDocumentID": "83000000-0000-0000-0000-000000000007",
+                "relationshipType": "paymentSettlesInvoice"
+              },
+              "decisionUpdatedAt": "2027-01-15T10:31:00Z",
+              "invoiceDNAAnalyzedAt": "2027-01-15T10:00:00Z",
+              "paymentDNAAnalyzedAt": "2027-01-15T10:00:00Z",
+              "resolverVersion": "invoice-payment-v1"
+            },
+            "signals": [
+              {
+                "invoiceFinding": {
+                  "confidence": 1,
+                  "displayValue": "RF-2404",
+                  "evidence": [
+                    {
+                      "exactText": "RF-2404",
+                      "lengthUTF16": 7,
+                      "ocrRegionIndexes": [
+                        0
+                      ],
+                      "pageIndex": 2,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "referenceNumber",
+                  "normalizedValue": "RF2404",
+                  "qualifier": "invoiceNumber",
+                  "secondaryNormalizedValue": null
+                },
+                "kind": "referenceNumber",
+                "paymentFinding": {
+                  "confidence": 1,
+                  "displayValue": "RF-2404",
+                  "evidence": [
+                    {
+                      "exactText": "RF-2404",
+                      "lengthUTF16": 7,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 1,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "referenceNumber",
+                  "normalizedValue": "RF2404",
+                  "qualifier": "paymentReference",
+                  "secondaryNormalizedValue": null
+                }
+              },
+              {
+                "invoiceFinding": {
+                  "confidence": 1,
+                  "displayValue": "CHF 125.00",
+                  "evidence": [
+                    {
+                      "exactText": "CHF 125.00",
+                      "lengthUTF16": 10,
+                      "ocrRegionIndexes": [
+                        0
+                      ],
+                      "pageIndex": 3,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "monetaryAmount",
+                  "normalizedValue": "125.00",
+                  "qualifier": "CHF",
+                  "secondaryNormalizedValue": null
+                },
+                "kind": "monetaryAmount",
+                "paymentFinding": {
+                  "confidence": 1,
+                  "displayValue": "CHF 125.00",
+                  "evidence": [
+                    {
+                      "exactText": "CHF 125.00",
+                      "lengthUTF16": 10,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 2,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "monetaryAmount",
+                  "normalizedValue": "125.00",
+                  "qualifier": "CHF",
+                  "secondaryNormalizedValue": null
+                }
+              },
+              {
+                "invoiceFinding": {
+                  "confidence": 1,
+                  "displayValue": "Bergtal Pflege AG",
+                  "evidence": [
+                    {
+                      "exactText": "Bergtal Pflege AG",
+                      "lengthUTF16": 17,
+                      "ocrRegionIndexes": [
+                        0
+                      ],
+                      "pageIndex": 4,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "organization",
+                  "normalizedValue": "bergtal pflege ag",
+                  "qualifier": "issuer",
+                  "secondaryNormalizedValue": null
+                },
+                "kind": "organization",
+                "paymentFinding": {
+                  "confidence": 1,
+                  "displayValue": "Bergtal Pflege AG",
+                  "evidence": [
+                    {
+                      "exactText": "Bergtal Pflege AG",
+                      "lengthUTF16": 17,
+                      "ocrRegionIndexes": [],
+                      "pageIndex": 3,
+                      "startUTF16": 0
+                    }
+                  ],
+                  "kind": "organization",
+                  "normalizedValue": "bergtal pflege ag",
+                  "qualifier": "payee",
+                  "secondaryNormalizedValue": null
+                }
+              }
+            ]
+          },
+          "type": "confirmedPayment"
+        }
+      ]
+    ],
+    "originValidity": "current",
+    "suggestionSupports": [
+      {
+        "conflict": {
+          "anchor": {
+            "displayValue": "01.02.1940",
+            "evidence": [
+              {
+                "exactText": "01.02.1940",
+                "lengthUTF16": 10,
+                "ocrRegionIndexes": [],
+                "pageIndex": 1,
+                "startUTF16": 0
+              }
+            ],
+            "normalizedValue": "1940-02-01"
+          },
+          "candidate": {
+            "confidence": 1,
+            "displayValue": "04.03.1978",
+            "evidence": [
+              {
+                "exactText": "04.03.1978",
+                "lengthUTF16": 10,
+                "ocrRegionIndexes": [],
+                "pageIndex": 1,
+                "startUTF16": 0
+              }
+            ],
+            "kind": "date",
+            "normalizedValue": "1978-03-04",
+            "qualifier": "birthDate",
+            "secondaryNormalizedValue": null
+          },
+          "type": "hardBirthDateConflict"
+        },
+        "kind": "birthDateConflict",
+        "person": {
+          "contentHash": "synthetic-hash-d09",
+          "dnaAnalyzedAt": "2027-01-15T10:00:00Z",
+          "dnaAnalyzerIdentifier": "local-rules",
+          "dnaAnalyzerVersion": "1",
+          "dnaSchemaVersion": 1,
+          "documentID": "83000000-0000-0000-0000-000000000009",
+          "extractionVersion": "text-v1",
+          "finding": {
+            "confidence": 1,
+            "displayValue": "Lina Fontana",
+            "evidence": [
+              {
+                "exactText": "Lina Fontana",
+                "lengthUTF16": 12,
+                "ocrRegionIndexes": [],
+                "pageIndex": 0,
+                "startUTF16": 0
+              }
+            ],
+            "kind": "person",
+            "normalizedValue": "lina fontana",
+            "qualifier": "insuredPerson",
+            "secondaryNormalizedValue": null
+          },
+          "normalizedName": "lina fontana",
+          "role": "insuredPerson"
+        }
+      }
+    ]
+  }
+}
