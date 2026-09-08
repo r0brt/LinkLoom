@@ -166,6 +166,32 @@ struct DossierProjectorTests {
         #expect(reverse.token == forward.token)
     }
 
+    @Test func sharedCandidateRankingLeavesCompleteCostsProjectionAndTokenUnchanged() throws {
+        let fixture = try DossierProjectorFixture.confirmedPair(duplicateCandidate: true)
+
+        let snapshot = try CostsAndPaymentsDossierProjector().project(fixture.input)
+
+        #expect(snapshot.dossier == fixture.dossier)
+        #expect(snapshot.members.map(\.document.id) == [fixture.invoiceID, fixture.paymentID])
+        #expect(snapshot.members[0].explanation == DossierMembershipExplanation(
+            role: .anchor, relationshipType: nil, signals: []
+        ))
+        #expect(snapshot.members[0].support == nil)
+        #expect(snapshot.members[1].explanation.role == .payment)
+        #expect(snapshot.members[1].explanation.relationshipType == .paymentSettlesInvoice)
+        #expect(snapshot.members[1].explanation.signals.map(\.kind) == [
+            .referenceNumber, .monetaryAmount, .organization,
+        ])
+        #expect(snapshot.members[1].support == fixture.expectedSupport)
+        #expect(snapshot.corrections.isEmpty)
+        #expect(snapshot.token == DossierProjectionToken(
+            dossierUpdatedAt: fixture.dossier.updatedAt,
+            anchorContentHash: "invoice-hash",
+            memberSupports: [fixture.expectedSupport!],
+            exclusionRevisionIDs: []
+        ))
+    }
+
     @Test func ordersMembersBySourceDisplayNameThenPathThenDocumentID() throws {
         let fixture = try DossierProjectorFixture.orderedCounterparts()
 
