@@ -157,13 +157,6 @@ struct PersonDossierGoldenOverlay: Decodable, Sendable {
     let priorCorrectionRevisionIDs: [UUID]
 }
 
-struct PersonDossierGoldenMetricLabels: Decodable, Sendable {
-    let relevantDocumentIDs: [UUID]
-    let automaticDocumentIDs: [UUID]
-    let suggestionDocumentIDs: [UUID]
-    let hiddenDocumentIDs: [UUID]
-}
-
 struct PersonDossierGoldenManifest: Decodable, Sendable {
     let schemaVersion: Int
     let sourceRoots: [PersonDossierGoldenSourceRoot]
@@ -174,7 +167,7 @@ struct PersonDossierGoldenManifest: Decodable, Sendable {
     let baselineRelationshipDecisions: [PersonDossierGoldenRelationshipDecisionRecord]
     let baselineConfirmations: [DossierMembershipConfirmation]
     let baselineExclusions: [DossierMembershipExclusion]
-    let metricLabels: PersonDossierGoldenMetricLabels
+    let metricLabels: [PersonDossierMetricLabel]
     let specificationCases: [String]
     let overlays: [PersonDossierGoldenOverlay]
 }

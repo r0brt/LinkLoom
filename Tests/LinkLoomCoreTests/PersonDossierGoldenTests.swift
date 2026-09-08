@@ -191,7 +191,8 @@ struct PersonDossierGoldenTests {
 
     @Test func decisionOverlaysRemainAuthoritativeAndKeepOneDenominator() throws {
         let manifest = try PersonDossierGoldenFixture.loadManifest()
-        #expect(Set(manifest.metricLabels.relevantDocumentIDs) == Set((1...8).map(Self.id)))
+        let relevantMetricDocumentIDs = Set(manifest.metricLabels.lazy.filter(\.relevant).map(\.documentID))
+        #expect(relevantMetricDocumentIDs == Set((1...8).map(Self.id)))
 
         let accepted = try project("accepted-secondary", manifest)
         let acceptedMember = try #require(accepted.directMembers.first { $0.id == Self.id(8) })
@@ -209,7 +210,7 @@ struct PersonDossierGoldenTests {
 
         let corrected = try project("corrected", manifest)
         #expect(Set((corrected.directMembers + corrected.costsAndPayments).map(\.id))
-            == Set(manifest.metricLabels.relevantDocumentIDs))
+            == relevantMetricDocumentIDs)
         #expect(corrected.suggestions.isEmpty)
 
         let removed = try project("removed-primary", manifest)

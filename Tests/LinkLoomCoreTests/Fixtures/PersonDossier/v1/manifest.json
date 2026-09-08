@@ -114,12 +114,23 @@
   ],
   "baselineConfirmations":[],
   "baselineExclusions":[],
-  "metricLabels":{
-    "relevantDocumentIDs":["83000000-0000-0000-0000-000000000001","83000000-0000-0000-0000-000000000002","83000000-0000-0000-0000-000000000003","83000000-0000-0000-0000-000000000004","83000000-0000-0000-0000-000000000005","83000000-0000-0000-0000-000000000006","83000000-0000-0000-0000-000000000007","83000000-0000-0000-0000-000000000008"],
-    "automaticDocumentIDs":["83000000-0000-0000-0000-000000000001","83000000-0000-0000-0000-000000000002","83000000-0000-0000-0000-000000000003","83000000-0000-0000-0000-000000000004","83000000-0000-0000-0000-000000000005","83000000-0000-0000-0000-000000000006","83000000-0000-0000-0000-000000000007"],
-    "suggestionDocumentIDs":["83000000-0000-0000-0000-000000000008","83000000-0000-0000-0000-000000000009"],
-    "hiddenDocumentIDs":["83000000-0000-0000-0000-000000000010","83000000-0000-0000-0000-000000000011","83000000-0000-0000-0000-000000000012","83000000-0000-0000-0000-000000000013","83000000-0000-0000-0000-000000000014","83000000-0000-0000-0000-000000000015"]
-  },
+  "metricLabels":[
+    {"documentID":"83000000-0000-0000-0000-000000000001","supportedFormat":true,"relevant":true,"membershipClass":"direct","role":"resident","candidateKind":null},
+    {"documentID":"83000000-0000-0000-0000-000000000002","supportedFormat":true,"relevant":true,"membershipClass":"direct","role":"insuredPerson","candidateKind":null},
+    {"documentID":"83000000-0000-0000-0000-000000000003","supportedFormat":true,"relevant":true,"membershipClass":"direct","role":"accountHolder","candidateKind":null},
+    {"documentID":"83000000-0000-0000-0000-000000000004","supportedFormat":true,"relevant":true,"membershipClass":"direct","role":"invoiceRecipient","candidateKind":null},
+    {"documentID":"83000000-0000-0000-0000-000000000005","supportedFormat":true,"relevant":true,"membershipClass":"direct","role":"grantor","candidateKind":null},
+    {"documentID":"83000000-0000-0000-0000-000000000006","supportedFormat":true,"relevant":true,"membershipClass":"direct","role":"resident","candidateKind":null},
+    {"documentID":"83000000-0000-0000-0000-000000000007","supportedFormat":true,"relevant":true,"membershipClass":"indirectPayment","role":null,"candidateKind":null},
+    {"documentID":"83000000-0000-0000-0000-000000000008","supportedFormat":true,"relevant":true,"membershipClass":"direct","role":"authorizedPerson","candidateKind":"secondaryRole"},
+    {"documentID":"83000000-0000-0000-0000-000000000009","supportedFormat":true,"relevant":false,"membershipClass":"direct","role":"insuredPerson","candidateKind":"birthDateConflict"},
+    {"documentID":"83000000-0000-0000-0000-000000000010","supportedFormat":true,"relevant":false,"membershipClass":"direct","role":"resident","candidateKind":null},
+    {"documentID":"83000000-0000-0000-0000-000000000011","supportedFormat":true,"relevant":false,"membershipClass":"direct","role":"resident","candidateKind":null},
+    {"documentID":"83000000-0000-0000-0000-000000000012","supportedFormat":true,"relevant":false,"membershipClass":"direct","role":"resident","candidateKind":null},
+    {"documentID":"83000000-0000-0000-0000-000000000013","supportedFormat":true,"relevant":false,"membershipClass":"direct","role":null,"candidateKind":null},
+    {"documentID":"83000000-0000-0000-0000-000000000014","supportedFormat":true,"relevant":false,"membershipClass":"direct","role":null,"candidateKind":null},
+    {"documentID":"83000000-0000-0000-0000-000000000015","supportedFormat":true,"relevant":false,"membershipClass":"direct","role":null,"candidateKind":null}
+  ],
   "specificationCases":["five-primary-roles","ocr-evidence","no-person-payment","relationship-undecided","relationship-excluded","secondary-role","birth-date-conflict","accent-boundary","abbreviated-boundary","partial-boundary","unlabelled-boundary","misleading-metadata","second-hop","multiple-confirmed-paths","reanalysis-decisions","origin-lifecycle","member-availability-deletion"],
   "overlays":[
     {"name":"relationship-undecided","expectedSnapshot":"relationship-absent-snapshot","relationshipMode":"undecided","originMode":"current","confirmations":[],"exclusions":[],"reanalysis":[],"availabilityChanges":[],"deletedDocumentIDs":[],"priorCorrectionRevisionIDs":[]},
