@@ -297,6 +297,112 @@ public actor DossierRepository {
         }
     }
 
+    public func acceptPersonSuggestion(
+        dossierID: UUID,
+        documentID: UUID,
+        expectedSupport: PersonDossierCandidateSupportIdentity,
+        expectedToken: PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot {
+        let makeUUID = self.makeUUID
+        let now = self.now
+        do {
+            return try await dbWriter.write { db in
+                try Task.checkCancellation()
+                guard let dossier = try DossierStore.record(in: db, id: dossierID) else {
+                    throw DossierRepositoryError.dossierNotFound
+                }
+                let snapshot = try self.personProjectionReader.snapshot(
+                    in: db,
+                    dossier: dossier
+                )
+                guard snapshot.token == expectedToken,
+                      let suggestion = snapshot.suggestions.first(where: {
+                          $0.document.id == documentID
+                      }),
+                      suggestion.commandSupport == expectedSupport
+                else {
+                    throw DossierRepositoryError.staleInput
+                }
+                let person = expectedSupport.person
+                let confirmation = try DossierMembershipConfirmation(
+                    dossierID: dossierID,
+                    documentID: documentID,
+                    revisionID: makeUUID(),
+                    confirmedAt: now(),
+                    candidateKind: expectedSupport.kind,
+                    acceptedContentHash: person.contentHash,
+                    acceptedExtractionVersion: person.extractionVersion,
+                    acceptedDNASchemaVersion: person.dnaSchemaVersion,
+                    acceptedDNAAnalyzerIdentifier: person.dnaAnalyzerIdentifier,
+                    acceptedDNAAnalyzerVersion: person.dnaAnalyzerVersion,
+                    acceptedDNAAnalyzedAt: person.dnaAnalyzedAt,
+                    acceptedRole: person.role,
+                    acceptedNormalizedName: person.normalizedName
+                )
+                do {
+                    try DossierStore.insertConfirmation(in: db, confirmation: confirmation)
+                } catch let error as DatabaseError
+                    where error.extendedResultCode == .SQLITE_CONSTRAINT_PRIMARYKEY
+                        || error.extendedResultCode == .SQLITE_CONSTRAINT_UNIQUE
+                {
+                    throw DossierRepositoryError.staleInput
+                }
+                try Task.checkCancellation()
+                return try self.personProjectionReader.snapshot(in: db, dossier: dossier)
+            }
+        } catch {
+            throw mappedError(error)
+        }
+    }
+
+    public func rejectPersonSuggestion(
+        dossierID: UUID,
+        documentID: UUID,
+        expectedSupport: PersonDossierCandidateSupportIdentity,
+        expectedToken: PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot {
+        let makeUUID = self.makeUUID
+        let now = self.now
+        do {
+            return try await dbWriter.write { db in
+                try Task.checkCancellation()
+                guard let dossier = try DossierStore.record(in: db, id: dossierID) else {
+                    throw DossierRepositoryError.dossierNotFound
+                }
+                let snapshot = try self.personProjectionReader.snapshot(
+                    in: db,
+                    dossier: dossier
+                )
+                guard snapshot.token == expectedToken,
+                      let suggestion = snapshot.suggestions.first(where: {
+                          $0.document.id == documentID
+                      }),
+                      suggestion.commandSupport == expectedSupport
+                else {
+                    throw DossierRepositoryError.staleInput
+                }
+                let exclusion = DossierMembershipExclusion(
+                    dossierID: dossierID,
+                    documentID: documentID,
+                    revisionID: makeUUID(),
+                    excludedAt: now()
+                )
+                do {
+                    try DossierStore.insertExclusion(in: db, exclusion: exclusion)
+                } catch let error as DatabaseError
+                    where error.extendedResultCode == .SQLITE_CONSTRAINT_PRIMARYKEY
+                        || error.extendedResultCode == .SQLITE_CONSTRAINT_UNIQUE
+                {
+                    throw DossierRepositoryError.staleInput
+                }
+                try Task.checkCancellation()
+                return try self.personProjectionReader.snapshot(in: db, dossier: dossier)
+            }
+        } catch {
+            throw mappedError(error)
+        }
+    }
+
     public func excludeMember(
         dossierID: UUID,
         documentID: UUID,

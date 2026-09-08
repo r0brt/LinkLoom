@@ -659,6 +659,498 @@ struct PersonDossierRepositoryTests {
         }
         #expect(try await fixture.personPersistenceCounts() == (0, 0))
     }
+
+    @Test func acceptsCurrentSecondaryAndBirthConflictSuggestionsExactly() async throws {
+        for (index, variant) in PersonSuggestionCommandScenario.Variant.allCases.enumerated() {
+            let values = try await PersonSuggestionCommandScenario.make(
+                variant: variant,
+                sequence: 600 + index * 100
+            )
+            let revisionID = PersonDossierFixture.repositoryUUID(800 + index)
+            let confirmedAt = PersonDossierFixture.repositoryDate(TimeInterval(800 + index))
+            let repository = values.fixture.makeDossierRepository(
+                sequence: 800 + index,
+                timestamp: confirmedAt
+            )
+            let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let suggestion = try #require(before.suggestions.first {
+                $0.document.id == values.candidate.document.id
+            })
+
+            let accepted = try await repository.acceptPersonSuggestion(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: before.token
+            )
+
+            let person = suggestion.commandSupport.person
+            let confirmations = try await values.fixture.database.read { db in
+                try DossierStore.confirmations(in: db, dossierID: values.dossier.id)
+            }
+            #expect(confirmations.count == 1)
+            let confirmation = try #require(confirmations.first)
+            #expect(confirmation.dossierID == values.dossier.id)
+            #expect(confirmation.documentID == values.candidate.document.id)
+            #expect(confirmation.revisionID == revisionID)
+            #expect(confirmation.confirmedAt == confirmedAt)
+            #expect(confirmation.candidateKind == suggestion.commandSupport.kind)
+            #expect(confirmation.acceptedContentHash == person.contentHash)
+            #expect(confirmation.acceptedExtractionVersion == person.extractionVersion)
+            #expect(confirmation.acceptedDNASchemaVersion == person.dnaSchemaVersion)
+            #expect(confirmation.acceptedDNAAnalyzerIdentifier == person.dnaAnalyzerIdentifier)
+            #expect(confirmation.acceptedDNAAnalyzerVersion == person.dnaAnalyzerVersion)
+            #expect(confirmation.acceptedDNAAnalyzedAt == person.dnaAnalyzedAt)
+            #expect(confirmation.acceptedRole == person.role)
+            #expect(confirmation.acceptedNormalizedName == person.normalizedName)
+            #expect(!accepted.suggestions.contains { $0.document.id == values.candidate.document.id })
+            let member = try #require(
+                (accepted.directMembers + accepted.costsAndPayments).first {
+                    $0.document.id == values.candidate.document.id
+                }
+            )
+            #expect(member.isConfirmationAuthoritative)
+            #expect(member.supports == [.manualConfirmation(
+                confirmation: confirmation,
+                currentCandidate: suggestion.commandSupport
+            )])
+            #expect(accepted.corrections.contains {
+                $0.document.id == values.candidate.document.id
+                    && $0.decision == .confirmation(confirmation)
+            })
+            #expect(accepted.token != before.token)
+            #expect(try await repository.personDossierSnapshot(id: values.dossier.id) == accepted)
+            #expect(try await values.fixture.database.read { db in
+                try DossierStore.exclusions(in: db, dossierID: values.dossier.id)
+            }.isEmpty)
+        }
+    }
+
+    @Test func acceptingSuggestionIsDossierLocalAndPreservesOtherPersistence() async throws {
+        let values = try await PersistedPersonDossierScenario.make()
+        let foreignFinding = try values.fixture.personFinding(
+            qualifier: PersonDossierRole.resident.rawValue
+        )
+        let foreignOrigin = try await values.fixture.insertSnapshot(
+            id: PersonDossierFixture.repositoryUUID(590),
+            path: "people/foreign-origin.pdf",
+            findings: [foreignFinding],
+            documentType: .correspondence
+        )
+        let (_, foreignDossier) = try await values.fixture.insertPersonDossier(
+            sequence: 591,
+            origin: foreignOrigin,
+            finding: foreignFinding
+        )
+        let repository = values.fixture.makeDossierRepository(
+            sequence: 594,
+            timestamp: PersonDossierFixture.repositoryDate(594)
+        )
+        let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+        let suggestion = try #require(before.suggestions.first {
+            $0.document.id == values.suggestion.document.id
+        })
+        let foreignBefore = try await repository.personDossierSnapshot(id: foreignDossier.id)
+        #expect(foreignBefore.suggestions.contains {
+            $0.document.id == values.suggestion.document.id
+        })
+        let costsBefore = try await repository.snapshot(id: values.costsDossier.id)
+        let exclusionsBefore = try await values.fixture.database.read { db in
+            try DossierStore.exclusions(in: db, dossierID: values.dossier.id)
+        }
+        let decisionsBefore = try await values.fixture.database.read { db in
+            try InvoicePaymentDecisionRepository.currentRecords(
+                in: db,
+                keys: [values.relationshipDecision.key, values.unrelatedDecision.key]
+            )
+        }
+
+        _ = try await repository.acceptPersonSuggestion(
+            dossierID: values.dossier.id,
+            documentID: values.suggestion.document.id,
+            expectedSupport: suggestion.commandSupport,
+            expectedToken: before.token
+        )
+
+        #expect(try await values.fixture.database.read { db in
+            try DocumentDNARepository.currentSnapshot(
+                in: db,
+                documentID: values.suggestion.document.id,
+                target: values.fixture.target
+            )
+        } == values.suggestion)
+        #expect(try await values.fixture.database.read { db in
+            try DossierStore.exclusions(in: db, dossierID: values.dossier.id)
+        } == exclusionsBefore)
+        #expect(try await values.fixture.database.read { db in
+            try InvoicePaymentDecisionRepository.currentRecords(
+                in: db,
+                keys: [values.relationshipDecision.key, values.unrelatedDecision.key]
+            )
+        } == decisionsBefore)
+        #expect(try await repository.snapshot(id: values.costsDossier.id) == costsBefore)
+        #expect(try await repository.personDossierSnapshot(id: foreignDossier.id) == foreignBefore)
+        #expect(try await values.fixture.database.read { db in
+            try DossierStore.confirmations(in: db, dossierID: foreignDossier.id)
+        }.isEmpty)
+    }
+
+    @Test func acceptanceRejectsStaleTokenForeignSupportChangedAnalysisAndWrongDocument() async throws {
+        do {
+            let values = try await PersonSuggestionCommandScenario.make(
+                variant: .secondaryRole,
+                sequence: 900
+            )
+            let repository = values.fixture.makeDossierRepository(sequence: 920)
+            let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let suggestion = try #require(before.suggestions.first)
+            try await values.fixture.database.write { db in
+                try db.execute(
+                    sql: "UPDATE dossier SET updatedAt = ? WHERE id = ?",
+                    arguments: [PersonDossierFixture.repositoryDate(999), values.dossier.id]
+                )
+            }
+            await #expect(throws: DossierRepositoryError.staleInput) {
+                try await repository.acceptPersonSuggestion(
+                    dossierID: values.dossier.id,
+                    documentID: values.candidate.document.id,
+                    expectedSupport: suggestion.commandSupport,
+                    expectedToken: before.token
+                )
+            }
+            #expect(try await values.confirmations().isEmpty)
+        }
+
+        do {
+            let values = try await PersonSuggestionCommandScenario.make(
+                variant: .secondaryRole,
+                sequence: 1_000,
+                additionalSuggestion: true
+            )
+            let repository = values.fixture.makeDossierRepository(sequence: 1_020)
+            let snapshot = try await repository.personDossierSnapshot(id: values.dossier.id)
+            #expect(snapshot.suggestions.count == 2)
+            await #expect(throws: DossierRepositoryError.staleInput) {
+                try await repository.acceptPersonSuggestion(
+                    dossierID: values.dossier.id,
+                    documentID: snapshot.suggestions[0].document.id,
+                    expectedSupport: snapshot.suggestions[1].commandSupport,
+                    expectedToken: snapshot.token
+                )
+            }
+            #expect(try await values.confirmations().isEmpty)
+        }
+
+        do {
+            let values = try await PersonSuggestionCommandScenario.make(
+                variant: .secondaryRole,
+                sequence: 1_100
+            )
+            let repository = values.fixture.makeDossierRepository(sequence: 1_120)
+            let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let staleSupport = try #require(before.suggestions.first).commandSupport
+            try await values.fixture.database.write { db in
+                try db.execute(
+                    sql: "UPDATE documentDNA SET analyzedAt = ? WHERE documentID = ?",
+                    arguments: [
+                        PersonDossierFixture.repositoryDate(1_199),
+                        values.candidate.document.id,
+                    ]
+                )
+            }
+            let current = try await repository.personDossierSnapshot(id: values.dossier.id)
+            #expect(current.suggestions.first?.commandSupport != staleSupport)
+            await #expect(throws: DossierRepositoryError.staleInput) {
+                try await repository.acceptPersonSuggestion(
+                    dossierID: values.dossier.id,
+                    documentID: values.candidate.document.id,
+                    expectedSupport: staleSupport,
+                    expectedToken: current.token
+                )
+            }
+            #expect(try await values.confirmations().isEmpty)
+        }
+
+        do {
+            let values = try await PersonSuggestionCommandScenario.make(
+                variant: .birthDateConflict,
+                sequence: 1_200
+            )
+            let repository = values.fixture.makeDossierRepository(sequence: 1_220)
+            let snapshot = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let suggestion = try #require(snapshot.suggestions.first)
+            await #expect(throws: DossierRepositoryError.staleInput) {
+                try await repository.acceptPersonSuggestion(
+                    dossierID: values.dossier.id,
+                    documentID: PersonDossierFixture.repositoryUUID(9_999),
+                    expectedSupport: suggestion.commandSupport,
+                    expectedToken: snapshot.token
+                )
+            }
+            #expect(try await values.confirmations().isEmpty)
+        }
+    }
+
+    @Test func acceptanceRejectsAlreadyAcceptedMissingAndCostsDossiersWithoutExtraWrites() async throws {
+        let values = try await PersonSuggestionCommandScenario.make(
+            variant: .secondaryRole,
+            sequence: 1_300
+        )
+        let repository = values.fixture.makeDossierRepository(sequence: 1_320)
+        let initial = try await repository.personDossierSnapshot(id: values.dossier.id)
+        let suggestion = try #require(initial.suggestions.first)
+
+        let accepted = try await repository.acceptPersonSuggestion(
+            dossierID: values.dossier.id,
+            documentID: values.candidate.document.id,
+            expectedSupport: suggestion.commandSupport,
+            expectedToken: initial.token
+        )
+        await #expect(throws: DossierRepositoryError.staleInput) {
+            try await repository.acceptPersonSuggestion(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: accepted.token
+            )
+        }
+        #expect(try await values.confirmations().count == 1)
+
+        let missingID = PersonDossierFixture.repositoryUUID(9_998)
+        await #expect(throws: DossierRepositoryError.dossierNotFound) {
+            try await repository.acceptPersonSuggestion(
+                dossierID: missingID,
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: initial.token
+            )
+        }
+        let costsDossier = try DossierRecord(
+            id: PersonDossierFixture.repositoryUUID(1_330),
+            kind: .costsAndPayments,
+            displayName: "Costs",
+            anchor: .document(values.candidate.document.id),
+            createdAt: PersonDossierFixture.repositoryDate(1_330),
+            updatedAt: PersonDossierFixture.repositoryDate(1_330)
+        )
+        try await values.fixture.database.write { db in
+            _ = try DossierStore.insertOrFetchAnchored(in: db, proposed: costsDossier)
+        }
+        await #expect(throws: DossierRepositoryError.invalidStoredState) {
+            try await repository.acceptPersonSuggestion(
+                dossierID: costsDossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: initial.token
+            )
+        }
+        #expect(try await values.confirmations().count == 1)
+        #expect(try await values.fixture.database.read { db in
+            try DossierStore.confirmations(in: db, dossierID: costsDossier.id)
+        }.isEmpty)
+    }
+
+    @Test func rejectsCurrentSecondaryAndBirthConflictSuggestionsExactly() async throws {
+        for (index, variant) in PersonSuggestionCommandScenario.Variant.allCases.enumerated() {
+            let values = try await PersonSuggestionCommandScenario.make(
+                variant: variant,
+                sequence: 1_400 + index * 100
+            )
+            let revisionID = PersonDossierFixture.repositoryUUID(1_600 + index)
+            let excludedAt = PersonDossierFixture.repositoryDate(TimeInterval(1_600 + index))
+            let repository = values.fixture.makeDossierRepository(
+                sequence: 1_600 + index,
+                timestamp: excludedAt
+            )
+            let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let suggestion = try #require(before.suggestions.first {
+                $0.document.id == values.candidate.document.id
+            })
+
+            let rejected = try await repository.rejectPersonSuggestion(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: before.token
+            )
+
+            let exclusions = try await values.fixture.database.read { db in
+                try DossierStore.exclusions(in: db, dossierID: values.dossier.id)
+            }
+            #expect(exclusions.count == 1)
+            let exclusion = try #require(exclusions.first)
+            #expect(exclusion == DossierMembershipExclusion(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                revisionID: revisionID,
+                excludedAt: excludedAt
+            ))
+            #expect(!rejected.suggestions.contains { $0.document.id == values.candidate.document.id })
+            #expect(!(rejected.directMembers + rejected.costsAndPayments).contains {
+                $0.document.id == values.candidate.document.id
+            })
+            #expect(rejected.corrections.contains {
+                $0.document.id == values.candidate.document.id
+                    && $0.decision == .exclusion(exclusion)
+            })
+            #expect(rejected.token != before.token)
+            #expect(try await repository.personDossierSnapshot(id: values.dossier.id) == rejected)
+            #expect(try await values.confirmations().isEmpty)
+        }
+    }
+
+    @Test func rejectingSuggestionIsIsolatedToTheSelectedDossier() async throws {
+        let values = try await PersonSuggestionCommandScenario.make(
+            variant: .secondaryRole,
+            sequence: 1_700
+        )
+        let foreignPerson = try values.fixture.personFinding(
+            qualifier: PersonDossierRole.resident.rawValue
+        )
+        let foreignOrigin = try await values.fixture.insertSnapshot(
+            id: PersonDossierFixture.repositoryUUID(1_710),
+            path: "commands/foreign-reject-origin.pdf",
+            findings: [foreignPerson],
+            documentType: .correspondence
+        )
+        let (_, foreignDossier) = try await values.fixture.insertPersonDossier(
+            sequence: 1_711,
+            origin: foreignOrigin,
+            finding: foreignPerson
+        )
+        let repository = values.fixture.makeDossierRepository(sequence: 1_720)
+        let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+        let suggestion = try #require(before.suggestions.first)
+        let foreignBefore = try await repository.personDossierSnapshot(id: foreignDossier.id)
+
+        _ = try await repository.rejectPersonSuggestion(
+            dossierID: values.dossier.id,
+            documentID: values.candidate.document.id,
+            expectedSupport: suggestion.commandSupport,
+            expectedToken: before.token
+        )
+
+        #expect(try await repository.personDossierSnapshot(id: foreignDossier.id) == foreignBefore)
+        #expect(try await values.fixture.database.read { db in
+            try DossierStore.exclusions(in: db, dossierID: foreignDossier.id)
+        }.isEmpty)
+        #expect(try await values.confirmations().isEmpty)
+    }
+
+    @Test func rejectionRejectsStaleTokenForeignSupportAndWrongDocumentWithoutWrites() async throws {
+        do {
+            let values = try await PersonSuggestionCommandScenario.make(
+                variant: .secondaryRole,
+                sequence: 1_800
+            )
+            let repository = values.fixture.makeDossierRepository(sequence: 1_820)
+            let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let suggestion = try #require(before.suggestions.first)
+            try await values.fixture.database.write { db in
+                try db.execute(
+                    sql: "UPDATE dossier SET updatedAt = ? WHERE id = ?",
+                    arguments: [PersonDossierFixture.repositoryDate(1_899), values.dossier.id]
+                )
+            }
+            await #expect(throws: DossierRepositoryError.staleInput) {
+                try await repository.rejectPersonSuggestion(
+                    dossierID: values.dossier.id,
+                    documentID: values.candidate.document.id,
+                    expectedSupport: suggestion.commandSupport,
+                    expectedToken: before.token
+                )
+            }
+            #expect(try await values.exclusions().isEmpty)
+        }
+
+        do {
+            let values = try await PersonSuggestionCommandScenario.make(
+                variant: .secondaryRole,
+                sequence: 1_900,
+                additionalSuggestion: true
+            )
+            let repository = values.fixture.makeDossierRepository(sequence: 1_920)
+            let snapshot = try await repository.personDossierSnapshot(id: values.dossier.id)
+            #expect(snapshot.suggestions.count == 2)
+            await #expect(throws: DossierRepositoryError.staleInput) {
+                try await repository.rejectPersonSuggestion(
+                    dossierID: values.dossier.id,
+                    documentID: snapshot.suggestions[0].document.id,
+                    expectedSupport: snapshot.suggestions[1].commandSupport,
+                    expectedToken: snapshot.token
+                )
+            }
+            await #expect(throws: DossierRepositoryError.staleInput) {
+                try await repository.rejectPersonSuggestion(
+                    dossierID: values.dossier.id,
+                    documentID: PersonDossierFixture.repositoryUUID(9_997),
+                    expectedSupport: snapshot.suggestions[0].commandSupport,
+                    expectedToken: snapshot.token
+                )
+            }
+            #expect(try await values.exclusions().isEmpty)
+            #expect(try await values.confirmations().isEmpty)
+        }
+    }
+
+    @Test func rejectionRejectsAlreadyCorrectedMissingAndCostsDossiersWithoutExtraWrites() async throws {
+        let values = try await PersonSuggestionCommandScenario.make(
+            variant: .birthDateConflict,
+            sequence: 2_000
+        )
+        let repository = values.fixture.makeDossierRepository(sequence: 2_020)
+        let initial = try await repository.personDossierSnapshot(id: values.dossier.id)
+        let suggestion = try #require(initial.suggestions.first)
+
+        let rejected = try await repository.rejectPersonSuggestion(
+            dossierID: values.dossier.id,
+            documentID: values.candidate.document.id,
+            expectedSupport: suggestion.commandSupport,
+            expectedToken: initial.token
+        )
+        await #expect(throws: DossierRepositoryError.staleInput) {
+            try await repository.rejectPersonSuggestion(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: rejected.token
+            )
+        }
+        #expect(try await values.exclusions().count == 1)
+
+        await #expect(throws: DossierRepositoryError.dossierNotFound) {
+            try await repository.rejectPersonSuggestion(
+                dossierID: PersonDossierFixture.repositoryUUID(9_996),
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: initial.token
+            )
+        }
+        let costsDossier = try DossierRecord(
+            id: PersonDossierFixture.repositoryUUID(2_030),
+            kind: .costsAndPayments,
+            displayName: "Costs",
+            anchor: .document(values.candidate.document.id),
+            createdAt: PersonDossierFixture.repositoryDate(2_030),
+            updatedAt: PersonDossierFixture.repositoryDate(2_030)
+        )
+        try await values.fixture.database.write { db in
+            _ = try DossierStore.insertOrFetchAnchored(in: db, proposed: costsDossier)
+        }
+        await #expect(throws: DossierRepositoryError.invalidStoredState) {
+            try await repository.rejectPersonSuggestion(
+                dossierID: costsDossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: initial.token
+            )
+        }
+        #expect(try await values.exclusions().count == 1)
+        #expect(try await values.fixture.database.read { db in
+            try DossierStore.exclusions(in: db, dossierID: costsDossier.id)
+        }.isEmpty)
+        #expect(try await values.confirmations().isEmpty)
+    }
 }
 
 private enum PersonRepositoryOperation: CaseIterable {
@@ -703,6 +1195,7 @@ private struct PersistedPersonDossierScenario: Sendable {
     let confirmation: DossierMembershipConfirmation
     let exclusion: DossierMembershipExclusion
     let relationshipDecision: InvoicePaymentDecisionRecord
+    let unrelatedDecision: InvoicePaymentDecisionRecord
     let sourceDisplayNames: [UUID: String]
     let includedReference: String
     let excludedReference: String
@@ -969,6 +1462,7 @@ private struct PersistedPersonDossierScenario: Sendable {
             confirmation: confirmation,
             exclusion: exclusion,
             relationshipDecision: relationshipDecision,
+            unrelatedDecision: unrelatedDecision,
             sourceDisplayNames: [
                 fixture.source.id: fixture.source.displayName,
                 south.id: south.displayName,
@@ -978,6 +1472,124 @@ private struct PersistedPersonDossierScenario: Sendable {
             excludedReference: excludedReference,
             unrelatedReference: unrelatedReference
         )
+    }
+}
+
+private struct PersonSuggestionCommandScenario: Sendable {
+    enum Variant: CaseIterable {
+        case secondaryRole
+        case birthDateConflict
+    }
+
+    let fixture: PersonDossierFixture
+    let dossier: DossierRecord
+    let candidate: CurrentDocumentDNA
+
+    static func make(
+        variant: Variant,
+        sequence: Int,
+        additionalSuggestion: Bool = false
+    ) async throws -> Self {
+        let fixture = try await PersonDossierFixture.make()
+        let originPerson = try fixture.personFinding(
+            qualifier: PersonDossierRole.resident.rawValue
+        )
+        let originBirthFinding = try fixture.birthDateFinding(
+            normalizedValue: "1940-02-01"
+        )
+        let origin = try await fixture.insertSnapshot(
+            id: PersonDossierFixture.repositoryUUID(sequence),
+            path: "commands/\(sequence)-origin.pdf",
+            findings: [originPerson, originBirthFinding],
+            documentType: .correspondence,
+            analyzedAt: PersonDossierFixture.repositoryDate(TimeInterval(sequence))
+        )
+        let birthDate = try PersonDossierBirthDate(
+            displayValue: originBirthFinding.displayValue,
+            normalizedValue: originBirthFinding.normalizedValue,
+            evidence: originBirthFinding.evidence
+        )
+        let anchor = try fixture.makePersonAnchor(
+            sequence: sequence + 1,
+            origin: origin,
+            finding: originPerson,
+            birthDate: birthDate
+        )
+        let dossier = try DossierRecord(
+            id: PersonDossierFixture.repositoryUUID(sequence + 2),
+            kind: .personMatter,
+            displayName: "Suggestion commands",
+            anchor: .person(anchor),
+            createdAt: PersonDossierFixture.repositoryDate(TimeInterval(sequence + 2)),
+            updatedAt: PersonDossierFixture.repositoryDate(TimeInterval(sequence + 2))
+        )
+        try await fixture.database.write { db in
+            let storedAnchor = try PersonDossierAnchorStore.insertOrFetch(
+                in: db,
+                proposed: anchor
+            )
+            _ = try DossierStore.insertOrFetchAnchored(
+                in: db,
+                proposed: try DossierRecord(
+                    id: dossier.id,
+                    kind: dossier.kind,
+                    displayName: dossier.displayName,
+                    anchor: .person(storedAnchor),
+                    createdAt: dossier.createdAt,
+                    updatedAt: dossier.updatedAt
+                )
+            )
+        }
+
+        let candidateFindings: [DocumentDNAFinding]
+        let candidateType: DocumentType
+        switch variant {
+        case .secondaryRole:
+            candidateFindings = [try fixture.personFinding(
+                qualifier: PersonDossierRole.authorizedPerson.rawValue
+            )]
+            candidateType = .powerOfAttorney
+        case .birthDateConflict:
+            candidateFindings = [
+                try fixture.personFinding(qualifier: PersonDossierRole.insuredPerson.rawValue),
+                try fixture.birthDateFinding(
+                    displayValue: "02.03.1941",
+                    normalizedValue: "1941-03-02"
+                ),
+            ]
+            candidateType = .correspondence
+        }
+        let candidate = try await fixture.insertSnapshot(
+            id: PersonDossierFixture.repositoryUUID(sequence + 3),
+            path: "commands/\(sequence)-candidate.pdf",
+            findings: candidateFindings,
+            documentType: candidateType,
+            analyzedAt: PersonDossierFixture.repositoryDate(TimeInterval(sequence + 3))
+        )
+        if additionalSuggestion {
+            _ = try await fixture.insertSnapshot(
+                id: PersonDossierFixture.repositoryUUID(sequence + 4),
+                path: "commands/\(sequence)-second-candidate.pdf",
+                findings: [try fixture.personFinding(
+                    qualifier: PersonDossierRole.authorizedPerson.rawValue
+                )],
+                documentType: .contract,
+                analyzedAt: PersonDossierFixture.repositoryDate(TimeInterval(sequence + 4))
+            )
+        }
+        return Self(fixture: fixture, dossier: dossier, candidate: candidate)
+    }
+
+    func confirmations() async throws -> [DossierMembershipConfirmation] {
+        try await fixture.database.read { db in
+            try DossierStore.confirmations(in: db, dossierID: dossier.id)
+        }
+    }
+
+    func exclusions() async throws -> [DossierMembershipExclusion] {
+        try await fixture.database.read { db in
+            try DossierStore.exclusions(in: db, dossierID: dossier.id)
+        }
     }
 }
 
