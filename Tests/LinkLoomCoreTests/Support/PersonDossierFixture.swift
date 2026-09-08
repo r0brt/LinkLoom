@@ -32,6 +32,207 @@ struct PersonDossierFixture: Sendable {
         )
     }
 
+    func makeAcceptanceCorpus(
+        documentCount: Int
+    ) async throws -> PersonDossierAcceptanceCorpus {
+        guard documentCount >= 4 else {
+            throw PersonDossierFixtureError.invalidAcceptanceDocumentCount
+        }
+        let ids = (0..<documentCount).map { index in
+            UUID(uuidString: String(
+                format: "76000000-0000-0000-0000-%012d",
+                index + 1
+            ))!
+        }
+        let directDocumentID = ids[0]
+        let invoiceDocumentID = ids[1]
+        let secondaryDocumentID = ids[2]
+        let paymentDocumentID = ids[3]
+        let anchorNormalizedName = "elise muster"
+        let relationshipReference = "REL000001"
+        let storedDate = Self.date.timeIntervalSinceReferenceDate
+        let emptyOCRIndexes = Data("[]".utf8)
+
+        try await database.write { db in
+            let insertDocument = try db.makeStatement(sql: """
+                INSERT INTO document (
+                    id, sourceRootID, relativePath, contentHash, byteCount, modifiedAt,
+                    mediaType, status, availability, pageCount, failureCode, lastSeenAt,
+                    lastFingerprintAt
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+                """)
+            let insertExtraction = try db.makeStatement(sql: """
+                INSERT INTO documentExtraction (
+                    documentID, analysisVersion, method, joinedText, updatedAt
+                ) VALUES (?, ?, ?, ?, ?)
+                """)
+            let insertDNA = try db.makeStatement(sql: """
+                INSERT INTO documentDNA (
+                    documentID, schemaVersion, analyzerIdentifier, analyzerVersion,
+                    inputContentHash, inputExtractionVersion, analyzedAt
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """)
+            let insertFinding = try db.makeStatement(sql: """
+                INSERT INTO documentDNAFinding (
+                    documentID, kind, qualifier, displayValue, normalizedValue,
+                    secondaryNormalizedValue, confidence, sortOrder
+                ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?)
+                """)
+            let insertEvidence = try db.makeStatement(sql: """
+                INSERT INTO documentDNAEvidence (
+                    findingID, evidenceOrder, pageIndex, startUTF16, lengthUTF16,
+                    exactText, ocrRegionIndexesJSON
+                ) VALUES (?, 0, 0, 0, 1, 'x', ?)
+                """)
+
+            func addFinding(
+                documentID: UUID,
+                kind: DocumentDNAFindingKind,
+                qualifier: String?,
+                normalizedValue: String,
+                sortOrder: Int
+            ) throws {
+                try insertFinding.execute(arguments: [
+                    documentID,
+                    kind.rawValue,
+                    qualifier,
+                    "x",
+                    normalizedValue,
+                    1.0,
+                    sortOrder,
+                ])
+                try insertEvidence.execute(arguments: [db.lastInsertedRowID, emptyOCRIndexes])
+            }
+
+            for (index, documentID) in ids.enumerated() {
+                let path = String(format: "acceptance/%05d.pdf", index)
+                let contentHash = String(format: "hash-%05d", index)
+                let documentType: DocumentType = switch index {
+                case 1: .invoice
+                case 2: .powerOfAttorney
+                case 3: .paymentConfirmation
+                default: .correspondence
+                }
+                let role: PersonDossierRole = switch index {
+                case 1: .invoiceRecipient
+                case 2: .authorizedPerson
+                default: .resident
+                }
+                let normalizedName = index < 3
+                    ? anchorNormalizedName
+                    : String(format: "unrelated person %05d", index)
+                let normalizedReference = index == 1 || index == 3
+                    ? relationshipReference
+                    : String(format: "REF%06d", index)
+                let referenceRole: DocumentDNAReferenceNumberKind = index == 3
+                    ? .paymentReference
+                    : .invoiceNumber
+
+                try insertDocument.execute(arguments: [
+                    documentID,
+                    source.id,
+                    path,
+                    contentHash,
+                    1,
+                    storedDate,
+                    SupportedMediaType.pdf.rawValue,
+                    DocumentStatus.ready.rawValue,
+                    DocumentAvailability.available.rawValue,
+                    1,
+                    storedDate,
+                    storedDate,
+                ])
+                try insertExtraction.execute(arguments: [
+                    documentID,
+                    "text-v1",
+                    ExtractionMethod.embeddedPDFText.rawValue,
+                    "x",
+                    storedDate,
+                ])
+                try insertDNA.execute(arguments: [
+                    documentID,
+                    target.schemaVersion,
+                    target.analyzerIdentifier,
+                    target.analyzerVersion,
+                    contentHash,
+                    "text-v1",
+                    storedDate,
+                ])
+                try addFinding(
+                    documentID: documentID,
+                    kind: .documentType,
+                    qualifier: nil,
+                    normalizedValue: documentType.rawValue,
+                    sortOrder: 0
+                )
+                try addFinding(
+                    documentID: documentID,
+                    kind: .person,
+                    qualifier: role.rawValue,
+                    normalizedValue: normalizedName,
+                    sortOrder: 1
+                )
+                try addFinding(
+                    documentID: documentID,
+                    kind: .referenceNumber,
+                    qualifier: referenceRole.rawValue,
+                    normalizedValue: normalizedReference,
+                    sortOrder: 2
+                )
+                if index == 1 || index == 3 {
+                    try addFinding(
+                        documentID: documentID,
+                        kind: .monetaryAmount,
+                        qualifier: "CHF",
+                        normalizedValue: "1250",
+                        sortOrder: 3
+                    )
+                }
+            }
+        }
+
+        let evidence = try Self.evidence(displayText: "x")
+        let anchor = try PersonDossierAnchor(
+            id: UUID(uuidString: "76000000-0000-0000-0001-000000000001")!,
+            displayName: "x",
+            normalizedName: anchorNormalizedName,
+            primaryRole: .resident,
+            originDocumentID: directDocumentID,
+            originContentHash: "hash-00000",
+            originExtractionVersion: "text-v1",
+            originDNASchemaVersion: target.schemaVersion,
+            originDNAAnalyzerIdentifier: target.analyzerIdentifier,
+            originDNAAnalyzerVersion: target.analyzerVersion,
+            originDNAAnalyzedAt: Self.date,
+            personEvidence: [evidence],
+            birthDate: nil,
+            createdAt: Self.date,
+            updatedAt: Self.date
+        )
+        let dossier = try DossierRecord(
+            id: UUID(uuidString: "76000000-0000-0000-0002-000000000001")!,
+            kind: .personMatter,
+            displayName: "Acceptance dossier",
+            anchor: .person(anchor),
+            createdAt: Self.date,
+            updatedAt: Self.date
+        )
+        return PersonDossierAcceptanceCorpus(
+            dossier: dossier,
+            anchor: anchor,
+            directDocumentID: directDocumentID,
+            invoiceDocumentID: invoiceDocumentID,
+            secondaryDocumentID: secondaryDocumentID,
+            paymentDocumentID: paymentDocumentID,
+            expectedPersonMatchIDs: [
+                directDocumentID,
+                invoiceDocumentID,
+                secondaryDocumentID,
+            ],
+            unrelatedDocumentIDs: Set(ids.dropFirst(4))
+        )
+    }
+
     static func currentDocument(
         id: UUID,
         sourceRootID: UUID,
@@ -404,6 +605,18 @@ enum PersonDossierStaleness: CaseIterable {
     case analyzerVersion
 }
 
+struct PersonDossierAcceptanceCorpus: Sendable {
+    let dossier: DossierRecord
+    let anchor: PersonDossierAnchor
+    let directDocumentID: UUID
+    let invoiceDocumentID: UUID
+    let secondaryDocumentID: UUID
+    let paymentDocumentID: UUID
+    let expectedPersonMatchIDs: [UUID]
+    let unrelatedDocumentIDs: Set<UUID>
+}
+
 private enum PersonDossierFixtureError: Error {
     case missingRelationshipCandidate
+    case invalidAcceptanceDocumentCount
 }
