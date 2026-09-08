@@ -195,7 +195,7 @@ struct CostsAndPaymentsDossierProjector: Sendable {
     }
 }
 
-private struct DossierCandidateTieBreakKey: Comparable {
+struct DossierCandidateTieBreakKey: Comparable {
     let resolverVersion: String
     let invoiceAnalyzedAt: UInt64
     let paymentAnalyzedAt: UInt64

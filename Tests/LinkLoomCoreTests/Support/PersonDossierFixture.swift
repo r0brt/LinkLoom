@@ -88,6 +88,91 @@ struct PersonDossierFixture: Sendable {
         )
     }
 
+    static func invoicePaymentDocument(
+        id: UUID,
+        sourceRootID: UUID,
+        path: String,
+        documentType: DocumentType,
+        contentHash: String? = nil,
+        analyzedAt: Date = date,
+        personFindings: [DocumentDNAFinding] = []
+    ) throws -> CurrentDocumentDNA {
+        let referenceQualifier: DocumentDNAReferenceNumberKind = documentType == .invoice
+            ? .invoiceNumber : .paymentReference
+        let organizationQualifier = documentType == .invoice ? "issuer" : "payee"
+        return try currentDocument(
+            id: id,
+            sourceRootID: sourceRootID,
+            path: path,
+            documentType: documentType,
+            contentHash: contentHash,
+            analyzedAt: analyzedAt,
+            personFindings: personFindings + [
+                try finding(
+                    kind: .referenceNumber,
+                    qualifier: referenceQualifier.rawValue,
+                    displayValue: "INV-42",
+                    normalizedValue: "INV42"
+                ),
+                try finding(
+                    kind: .monetaryAmount,
+                    qualifier: "CHF",
+                    displayValue: "CHF 1250",
+                    normalizedValue: "1250"
+                ),
+                try finding(
+                    kind: .organization,
+                    qualifier: organizationQualifier,
+                    displayValue: "Alpha AG",
+                    normalizedValue: "alpha ag"
+                ),
+            ]
+        )
+    }
+
+    static func invoicePaymentCandidate(
+        invoice: CurrentDocumentDNA,
+        payment: CurrentDocumentDNA,
+        disposition: InvoicePaymentCandidateDisposition? = nil,
+        resolverVersion: String? = nil,
+        signals: [InvoicePaymentCandidateSignal]? = nil
+    ) throws -> InvoicePaymentCandidate {
+        guard let resolved = InvoicePaymentCandidateResolver().candidates(
+            matching: "INV42",
+            in: [invoice, payment]
+        ).first else {
+            throw PersonDossierFixtureError.missingRelationshipCandidate
+        }
+        return InvoicePaymentCandidate(
+            invoice: invoice,
+            payment: payment,
+            disposition: disposition ?? resolved.disposition,
+            resolverVersion: resolverVersion ?? resolved.resolverVersion,
+            signals: signals ?? resolved.signals
+        )
+    }
+
+    static func relationshipDecision(
+        for candidate: InvoicePaymentCandidate,
+        decision: InvoicePaymentUserDecision = .confirmed,
+        updatedAt: Date = date.addingTimeInterval(50),
+        invoiceContentHash: String? = nil,
+        paymentContentHash: String? = nil
+    ) throws -> (InvoicePaymentDecisionKey, InvoicePaymentDecisionRecord) {
+        let key = try InvoicePaymentDecisionKey(
+            relationshipType: .paymentSettlesInvoice,
+            invoiceDocumentID: candidate.invoice.document.id,
+            paymentDocumentID: candidate.payment.document.id,
+            invoiceContentHash: invoiceContentHash ?? candidate.invoice.document.contentHash,
+            paymentContentHash: paymentContentHash ?? candidate.payment.document.contentHash
+        )
+        return (key, InvoicePaymentDecisionRecord(
+            key: key,
+            decision: decision,
+            updatedAt: updatedAt
+        ))
+    }
+
     static func document(
         id: UUID,
         sourceRootID: UUID,
@@ -317,4 +402,8 @@ enum PersonDossierStaleness: CaseIterable {
     case schemaVersion
     case analyzerIdentifier
     case analyzerVersion
+}
+
+private enum PersonDossierFixtureError: Error {
+    case missingRelationshipCandidate
 }

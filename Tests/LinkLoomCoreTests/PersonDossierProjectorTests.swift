@@ -469,6 +469,385 @@ struct PersonDossierProjectorTests {
         #expect(changed.origin.validity == .stale)
         #expect(changed.token != baseline.token)
     }
+
+    @Test func confirmedCurrentCandidateAddsPaymentFromDirectInvoice() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let invoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident)
+        let payment = try fixture.relationshipDocument(idSuffix: 3, type: .paymentConfirmation)
+        let candidate = try PersonDossierFixture.invoicePaymentCandidate(invoice: invoice, payment: payment)
+        let decision = try PersonDossierFixture.relationshipDecision(for: candidate)
+
+        let snapshot = try PersonDossierProjector().project(fixture.input(
+            documents: [invoice, payment],
+            personCandidates: [invoice],
+            relationshipCandidates: [candidate],
+            relationshipDecisionsByKey: [decision.0: decision.1]
+        ))
+
+        #expect(snapshot.costsAndPayments.map(\.id) == [invoice.document.id, payment.document.id])
+        guard let projectedPayment = snapshot.costsAndPayments.first(where: { $0.id == payment.document.id }),
+              case let .confirmedPayment(support) = projectedPayment.supports[0] else {
+            Issue.record("Expected a confirmed relationship support")
+            return
+        }
+        #expect(support.relationship.decisionKey == decision.0)
+        #expect(support.relationship.decisionUpdatedAt == decision.1.updatedAt)
+        #expect(support.relationship.invoiceDNAAnalyzedAt == invoice.snapshot.analyzedAt)
+        #expect(support.relationship.paymentDNAAnalyzedAt == payment.snapshot.analyzedAt)
+        #expect(support.relationship.resolverVersion == candidate.resolverVersion)
+        #expect(support.signals.map(\.kind) == [.referenceNumber, .monetaryAmount, .organization])
+        guard case let .exactPerson(invoiceSupports) = support.invoiceMembershipBasis else {
+            Issue.record("Expected exact person invoice basis")
+            return
+        }
+        #expect(invoiceSupports.map(\.documentID) == [invoice.document.id])
+        #expect(projectedPayment.preferredPaymentSupport == support)
+    }
+
+    @Test func confirmedCurrentCandidateAddsPaymentFromManuallyConfirmedInvoice() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let invoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .authorizedPerson)
+        let payment = try fixture.relationshipDocument(idSuffix: 3, type: .paymentConfirmation)
+        let confirmation = try fixture.confirmation(for: invoice)
+        let candidate = try PersonDossierFixture.invoicePaymentCandidate(invoice: invoice, payment: payment)
+        let decision = try PersonDossierFixture.relationshipDecision(for: candidate)
+
+        let snapshot = try PersonDossierProjector().project(fixture.input(
+            documents: [invoice, payment],
+            personCandidates: [invoice],
+            relationshipCandidates: [candidate],
+            relationshipDecisionsByKey: [decision.0: decision.1],
+            confirmations: [confirmation]
+        ))
+
+        guard let projectedPayment = snapshot.costsAndPayments.first(where: { $0.id == payment.document.id }),
+              case let .confirmedPayment(support) = projectedPayment.supports[0],
+              case let .manualConfirmation(revisionID) = support.invoiceMembershipBasis else {
+            Issue.record("Expected manual invoice basis")
+            return
+        }
+        #expect(revisionID == confirmation.revisionID)
+    }
+
+    @Test func undecidedExcludedAndContentStaleRelationshipsAddNothing() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let invoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident)
+        let payment = try fixture.relationshipDocument(idSuffix: 3, type: .paymentConfirmation)
+        let candidate = try PersonDossierFixture.invoicePaymentCandidate(invoice: invoice, payment: payment)
+        let excluded = try PersonDossierFixture.relationshipDecision(for: candidate, decision: .excluded)
+        let staleInvoice = try PersonDossierFixture.relationshipDecision(for: candidate, invoiceContentHash: "old-invoice")
+        let stalePayment = try PersonDossierFixture.relationshipDecision(for: candidate, paymentContentHash: "old-payment")
+        let decisions: [[InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord]] = [
+            [:], [excluded.0: excluded.1], [staleInvoice.0: staleInvoice.1], [stalePayment.0: stalePayment.1],
+        ]
+
+        for records in decisions {
+            let snapshot = try PersonDossierProjector().project(fixture.input(
+                documents: [invoice, payment],
+                personCandidates: [invoice],
+                relationshipCandidates: [candidate],
+                relationshipDecisionsByKey: records
+            ))
+            #expect(snapshot.costsAndPayments.map(\.id) == [invoice.document.id])
+        }
+    }
+
+    @Test func personExclusionSuppressesOtherwiseConfirmedPayment() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let invoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident)
+        let payment = try fixture.relationshipDocument(idSuffix: 3, type: .paymentConfirmation)
+        let candidate = try PersonDossierFixture.invoicePaymentCandidate(invoice: invoice, payment: payment)
+        let decision = try PersonDossierFixture.relationshipDecision(for: candidate)
+        let exclusion = fixture.exclusion(for: payment)
+
+        let snapshot = try PersonDossierProjector().project(fixture.input(
+            documents: [invoice, payment], personCandidates: [invoice],
+            relationshipCandidates: [candidate], relationshipDecisionsByKey: [decision.0: decision.1],
+            exclusions: [exclusion]
+        ))
+
+        #expect(snapshot.costsAndPayments.map(\.id) == [invoice.document.id])
+        #expect(snapshot.corrections.map(\.id) == [payment.document.id])
+        guard case .exclusion = snapshot.corrections[0].decision else {
+            Issue.record("Expected exclusion correction")
+            return
+        }
+    }
+
+    @Test func doesNotExpandFromSuggestionExcludedInvoiceOrInferredPayment() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let suggestedInvoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .authorizedPerson)
+        let excludedInvoice = try fixture.relationshipDocument(idSuffix: 3, type: .invoice, role: .resident)
+        let inferredInvoice = try fixture.relationshipDocument(idSuffix: 4, type: .invoice)
+        let payment = try fixture.relationshipDocument(idSuffix: 5, type: .paymentConfirmation)
+        let candidates = try [suggestedInvoice, excludedInvoice, inferredInvoice].map {
+            try PersonDossierFixture.invoicePaymentCandidate(invoice: $0, payment: payment)
+        }
+        let decisions = try Dictionary(uniqueKeysWithValues: candidates.map {
+            try PersonDossierFixture.relationshipDecision(for: $0)
+        })
+
+        let snapshot = try PersonDossierProjector().project(fixture.input(
+            documents: [suggestedInvoice, excludedInvoice, inferredInvoice, payment],
+            personCandidates: [suggestedInvoice, excludedInvoice],
+            relationshipCandidates: candidates,
+            relationshipDecisionsByKey: decisions,
+            exclusions: [fixture.exclusion(for: excludedInvoice)]
+        ))
+
+        #expect(snapshot.costsAndPayments.isEmpty)
+        #expect(snapshot.suggestions.map(\.id) == [suggestedInvoice.document.id])
+    }
+
+    @Test func stopsAfterPaymentAndNeverAddsSecondInvoice() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let invoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident)
+        let paymentShapedAsInvoice = try fixture.relationshipDocument(idSuffix: 3, type: .invoice)
+        let resolverPayment = try fixture.relationshipDocument(idSuffix: 3, type: .paymentConfirmation)
+        let secondPayment = try fixture.relationshipDocument(idSuffix: 4, type: .paymentConfirmation)
+        let resolvedFirst = try PersonDossierFixture.invoicePaymentCandidate(
+            invoice: invoice,
+            payment: resolverPayment
+        )
+        let first = InvoicePaymentCandidate(
+            invoice: invoice,
+            payment: paymentShapedAsInvoice,
+            disposition: resolvedFirst.disposition,
+            resolverVersion: resolvedFirst.resolverVersion,
+            signals: resolvedFirst.signals
+        )
+        let resolvedSecond = try PersonDossierFixture.invoicePaymentCandidate(
+            invoice: paymentShapedAsInvoice,
+            payment: secondPayment
+        )
+        let second = resolvedSecond
+        let firstDecision = try PersonDossierFixture.relationshipDecision(for: first)
+        let secondDecision = try PersonDossierFixture.relationshipDecision(for: second)
+
+        let snapshot = try PersonDossierProjector().project(fixture.input(
+            documents: [invoice, paymentShapedAsInvoice, secondPayment], personCandidates: [invoice],
+            relationshipCandidates: [first, second],
+            relationshipDecisionsByKey: [firstDecision.0: firstDecision.1, secondDecision.0: secondDecision.1]
+        ))
+
+        #expect(snapshot.costsAndPayments.map(\.id) == [invoice.document.id, paymentShapedAsInvoice.document.id])
+    }
+
+    @Test func removingSoleInvoiceRemovesDerivedPayment() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let invoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident)
+        let payment = try fixture.relationshipDocument(idSuffix: 3, type: .paymentConfirmation)
+        let candidate = try PersonDossierFixture.invoicePaymentCandidate(invoice: invoice, payment: payment)
+        let decision = try PersonDossierFixture.relationshipDecision(for: candidate)
+
+        let snapshot = try PersonDossierProjector().project(fixture.input(
+            documents: [invoice, payment], personCandidates: [invoice],
+            relationshipCandidates: [candidate], relationshipDecisionsByKey: [decision.0: decision.1],
+            exclusions: [fixture.exclusion(for: invoice)]
+        ))
+
+        #expect(snapshot.costsAndPayments.isEmpty)
+        #expect(snapshot.corrections.map(\.id) == [invoice.document.id])
+    }
+
+    @Test func keepsPaymentWithIndependentDirectManualOrSecondInvoiceSupport() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let invoiceA = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident)
+        let invoiceB = try fixture.relationshipDocument(idSuffix: 3, type: .invoice, role: .resident)
+        let directPayment = try fixture.relationshipDocument(idSuffix: 4, type: .paymentConfirmation, role: .resident)
+        let manualPayment = try fixture.relationshipDocument(idSuffix: 5, type: .paymentConfirmation, role: .authorizedPerson)
+        let sharedPayment = try fixture.relationshipDocument(idSuffix: 6, type: .paymentConfirmation)
+        let directCandidate = try PersonDossierFixture.invoicePaymentCandidate(invoice: invoiceA, payment: directPayment)
+        let manualCandidate = try PersonDossierFixture.invoicePaymentCandidate(invoice: invoiceA, payment: manualPayment)
+        let sharedA = try PersonDossierFixture.invoicePaymentCandidate(invoice: invoiceA, payment: sharedPayment)
+        let sharedB = try PersonDossierFixture.invoicePaymentCandidate(invoice: invoiceB, payment: sharedPayment)
+        let allCandidates = [directCandidate, manualCandidate, sharedA, sharedB]
+        let decisions = try Dictionary(uniqueKeysWithValues: allCandidates.map {
+            try PersonDossierFixture.relationshipDecision(for: $0)
+        })
+        let snapshot = try PersonDossierProjector().project(fixture.input(
+            documents: [invoiceA, invoiceB, directPayment, manualPayment, sharedPayment],
+            personCandidates: [invoiceA, invoiceB, directPayment, manualPayment],
+            relationshipCandidates: allCandidates,
+            relationshipDecisionsByKey: decisions,
+            confirmations: [try fixture.confirmation(for: manualPayment)],
+            exclusions: [fixture.exclusion(for: invoiceA)]
+        ))
+
+        #expect(snapshot.costsAndPayments.map(\.id) == [
+            invoiceB.document.id, directPayment.document.id, manualPayment.document.id, sharedPayment.document.id,
+        ])
+        #expect(snapshot.costsAndPayments.first { $0.id == directPayment.document.id }?.supports.count == 1)
+        #expect(snapshot.costsAndPayments.first { $0.id == manualPayment.document.id }?.supports.count == 1)
+        #expect(snapshot.costsAndPayments.first { $0.id == sharedPayment.document.id }?.supports.count == 1)
+    }
+
+    @Test func deduplicatesPaymentAndRetainsAllConfirmedPaths() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let invoiceA = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident, path: "a.pdf")
+        let invoiceB = try fixture.relationshipDocument(idSuffix: 3, type: .invoice, role: .resident, path: "b.pdf")
+        let payment = try fixture.relationshipDocument(idSuffix: 4, type: .paymentConfirmation)
+        let candidates = try [invoiceA, invoiceB].map {
+            try PersonDossierFixture.invoicePaymentCandidate(invoice: $0, payment: payment)
+        }
+        let decisions = try Dictionary(uniqueKeysWithValues: candidates.map {
+            try PersonDossierFixture.relationshipDecision(for: $0)
+        })
+
+        let snapshot = try PersonDossierProjector().project(fixture.input(
+            documents: [invoiceA, invoiceB, payment], personCandidates: [invoiceA, invoiceB],
+            relationshipCandidates: candidates + [candidates[0]], relationshipDecisionsByKey: decisions
+        ))
+
+        let projectedPayment = snapshot.costsAndPayments.first { $0.id == payment.document.id }
+        #expect(projectedPayment?.supports.count == 2)
+        #expect(projectedPayment?.supports.compactMap(\.confirmedPaymentValue).map(\.invoiceDocumentID)
+            == [invoiceA.document.id, invoiceB.document.id])
+    }
+
+    @Test func selectsPreferredPaymentCommandSupportByExistingRanking() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let invoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident)
+        let payment = try fixture.relationshipDocument(idSuffix: 3, type: .paymentConfirmation)
+        let base = try PersonDossierFixture.invoicePaymentCandidate(invoice: invoice, payment: payment)
+        let weak = try PersonDossierFixture.invoicePaymentCandidate(
+            invoice: invoice, payment: payment, disposition: .suggestion,
+            resolverVersion: "z", signals: [base.signals[0]]
+        )
+        let strongLater = try PersonDossierFixture.invoicePaymentCandidate(
+            invoice: invoice, payment: payment, disposition: .automatic,
+            resolverVersion: "z", signals: Array(base.signals.reversed())
+        )
+        let strongPreferred = try PersonDossierFixture.invoicePaymentCandidate(
+            invoice: invoice, payment: payment, disposition: .automatic,
+            resolverVersion: "a", signals: base.signals
+        )
+        let laterInvoice = try PersonDossierFixture.currentDocument(
+            id: invoice.document.id,
+            sourceRootID: invoice.document.sourceRootID,
+            path: invoice.document.relativePath,
+            documentType: .invoice,
+            contentHash: invoice.document.contentHash,
+            analyzedAt: invoice.snapshot.analyzedAt.addingTimeInterval(100),
+            personFindings: []
+        )
+        let laterPayment = try PersonDossierFixture.currentDocument(
+            id: payment.document.id,
+            sourceRootID: payment.document.sourceRootID,
+            path: payment.document.relativePath,
+            documentType: .paymentConfirmation,
+            contentHash: payment.document.contentHash,
+            analyzedAt: payment.snapshot.analyzedAt.addingTimeInterval(100),
+            personFindings: []
+        )
+        let laterAnalysis = InvoicePaymentCandidate(
+            invoice: laterInvoice,
+            payment: laterPayment,
+            disposition: .automatic,
+            resolverVersion: "a",
+            signals: base.signals
+        )
+        let alternateInvoiceType = try PersonDossierFixture.currentDocument(
+            id: invoice.document.id,
+            sourceRootID: invoice.document.sourceRootID,
+            path: invoice.document.relativePath,
+            documentType: .correspondence,
+            contentHash: invoice.document.contentHash,
+            analyzedAt: invoice.snapshot.analyzedAt,
+            personFindings: []
+        )
+        let alternatePaymentType = try PersonDossierFixture.currentDocument(
+            id: payment.document.id,
+            sourceRootID: payment.document.sourceRootID,
+            path: payment.document.relativePath,
+            documentType: .correspondence,
+            contentHash: payment.document.contentHash,
+            analyzedAt: payment.snapshot.analyzedAt,
+            personFindings: []
+        )
+        let alternateReference = InvoicePaymentCandidateSignal(
+            kind: .referenceNumber,
+            invoiceFinding: try PersonDossierFixture.finding(
+                kind: .referenceNumber,
+                qualifier: DocumentDNAReferenceNumberKind.invoiceNumber.rawValue,
+                displayValue: "ALT-42",
+                normalizedValue: "INV42"
+            ),
+            paymentFinding: base.signals[0].paymentFinding
+        )
+        let preferredByType = InvoicePaymentCandidate(
+            invoice: alternateInvoiceType,
+            payment: alternatePaymentType,
+            disposition: .automatic,
+            resolverVersion: "a",
+            signals: [base.signals[2], base.signals[1], alternateReference]
+        )
+        let candidates = [weak, strongLater, strongPreferred, laterAnalysis, preferredByType]
+        let decision = try PersonDossierFixture.relationshipDecision(for: base)
+        let input = fixture.input(
+            documents: [invoice, payment], personCandidates: [invoice],
+            relationshipCandidates: candidates, relationshipDecisionsByKey: [decision.0: decision.1]
+        )
+        let forward = try PersonDossierProjector().project(input)
+        let reverse = try PersonDossierProjector().project(fixture.input(
+            documents: [payment, invoice], personCandidates: [invoice],
+            relationshipCandidates: Array(candidates.reversed()), relationshipDecisionsByKey: [decision.0: decision.1]
+        ))
+        let preferred = forward.costsAndPayments.first { $0.id == payment.document.id }?.preferredPaymentSupport
+
+        #expect(preferred?.relationship.resolverVersion == "a")
+        #expect(preferred?.signals.map(\.kind) == [.referenceNumber, .monetaryAmount, .organization])
+        #expect(preferred?.signals[0].invoiceFinding.displayValue == "ALT-42")
+        #expect(reverse == forward)
+    }
+
+    @Test func ordersRelationshipSignalsAndSupportsDeterministically() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let invoiceB = try fixture.relationshipDocument(idSuffix: 3, type: .invoice, role: .resident, path: "b.pdf")
+        let invoiceA = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident, path: "a.pdf")
+        let payment = try fixture.relationshipDocument(idSuffix: 4, type: .paymentConfirmation)
+        let a = try PersonDossierFixture.invoicePaymentCandidate(invoice: invoiceA, payment: payment)
+        let bBase = try PersonDossierFixture.invoicePaymentCandidate(invoice: invoiceB, payment: payment)
+        let b = try PersonDossierFixture.invoicePaymentCandidate(
+            invoice: invoiceB, payment: payment, signals: Array(bBase.signals.reversed())
+        )
+        let decisions = try Dictionary(uniqueKeysWithValues: [a, b].map {
+            try PersonDossierFixture.relationshipDecision(for: $0)
+        })
+        let forward = try PersonDossierProjector().project(fixture.input(
+            documents: [invoiceB, payment, invoiceA], personCandidates: [invoiceB, invoiceA],
+            relationshipCandidates: [b, a], relationshipDecisionsByKey: decisions
+        ))
+        let reverse = try PersonDossierProjector().project(fixture.input(
+            documents: [invoiceA, payment, invoiceB], personCandidates: [invoiceA, invoiceB],
+            relationshipCandidates: [a, b], relationshipDecisionsByKey: decisions
+        ))
+        let supports = forward.costsAndPayments.first { $0.id == payment.document.id }?.supports
+            .compactMap(\.confirmedPaymentValue)
+
+        #expect(supports?.map(\.invoiceDocumentID) == [invoiceA.document.id, invoiceB.document.id])
+        #expect(supports?.allSatisfy { $0.signals.map(\.kind) == [
+            .referenceNumber, .monetaryAmount, .organization,
+        ] } == true)
+        #expect(reverse == forward)
+    }
+
+    @Test func relationshipOnlyPaymentNeverBecomesPersonSuggestion() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let invoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident)
+        let payment = try fixture.relationshipDocument(idSuffix: 3, type: .paymentConfirmation)
+        let candidate = try PersonDossierFixture.invoicePaymentCandidate(invoice: invoice, payment: payment)
+        let excluded = try PersonDossierFixture.relationshipDecision(for: candidate, decision: .excluded)
+
+        for decisions in [[:], [excluded.0: excluded.1]] {
+            let snapshot = try PersonDossierProjector().project(fixture.input(
+                documents: [invoice, payment], personCandidates: [invoice],
+                relationshipCandidates: [candidate], relationshipDecisionsByKey: decisions
+            ))
+            #expect(snapshot.suggestions.isEmpty)
+            #expect(snapshot.costsAndPayments.map(\.id) == [invoice.document.id])
+        }
+    }
 }
 
 private struct PersonProjectorFixture {
@@ -533,6 +912,23 @@ private struct PersonProjectorFixture {
             path: path ?? "candidate-\(idSuffix).pdf",
             documentType: type,
             personFindings: [try PersonDossierFixture.personFinding(role: role)]
+        )
+    }
+
+    func relationshipDocument(
+        idSuffix: Int,
+        type: DocumentType,
+        role: PersonDossierRole? = nil,
+        path: String? = nil
+    ) throws -> CurrentDocumentDNA {
+        let id = UUID(uuidString: String(format: "74000000-0000-0000-0000-%012d", idSuffix))!
+        return try PersonDossierFixture.invoicePaymentDocument(
+            id: id,
+            sourceRootID: sourceID,
+            path: path ?? "relationship-\(idSuffix).pdf",
+            documentType: type,
+            analyzedAt: PersonDossierFixture.date.addingTimeInterval(TimeInterval(idSuffix)),
+            personFindings: try role.map { [try PersonDossierFixture.personFinding(role: $0)] } ?? []
         )
     }
 
@@ -622,6 +1018,8 @@ private struct PersonProjectorFixture {
         currentDocumentsByID: [UUID: CurrentDocumentDNA]? = nil,
         documents: [CurrentDocumentDNA] = [],
         personCandidates: [CurrentDocumentDNA]? = nil,
+        relationshipCandidates: [InvoicePaymentCandidate] = [],
+        relationshipDecisionsByKey: [InvoicePaymentDecisionKey: InvoicePaymentDecisionRecord] = [:],
         confirmations: [DossierMembershipConfirmation] = [],
         exclusions: [DossierMembershipExclusion] = [],
         sourceDisplayNames: [UUID: String]? = nil
@@ -638,8 +1036,8 @@ private struct PersonProjectorFixture {
                 uniqueKeysWithValues: all.map { ($0.document.id, $0) }
             ),
             personCandidates: personCandidates ?? documents,
-            relationshipCandidates: [],
-            relationshipDecisionsByKey: [:],
+            relationshipCandidates: relationshipCandidates,
+            relationshipDecisionsByKey: relationshipDecisionsByKey,
             sourceDisplayNames: sourceDisplayNames ?? [sourceID: "Archive"],
             confirmations: confirmations,
             exclusions: exclusions
@@ -655,6 +1053,12 @@ private extension PersonDossierMembershipSupport {
     var exactPrimaryRole: PersonDossierRole? {
         guard case let .exactPrimary(support) = self else { return nil }
         return support.role
+    }
+
+
+    var confirmedPaymentValue: PersonDossierPaymentSupportIdentity? {
+        guard case let .confirmedPayment(support) = self else { return nil }
+        return support
     }
 }
 

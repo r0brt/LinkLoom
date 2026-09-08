@@ -25,10 +25,14 @@ struct PersonDossierProjector: Sendable {
             let anchor = try validatedAnchor(input)
             let origin = try originState(input: input, anchor: anchor)
             let projected = try directProjection(input: input, anchor: anchor)
-            let directMembers = projected.members
+            let expandedMembers = try expandingConfirmedPayments(
+                input: input,
+                frozenMembers: projected.members
+            )
+            let directMembers = expandedMembers
                 .filter { $0.section == .directDocuments }
                 .sorted(by: presentationOrder)
-            let costsAndPayments = projected.members
+            let costsAndPayments = expandedMembers
                 .filter { $0.section == .costsAndPayments }
                 .sorted(by: presentationOrder)
             let suggestions = projected.suggestions.sorted(by: presentationOrder)
@@ -60,6 +64,12 @@ struct PersonDossierProjector: Sendable {
     private struct DirectProjection {
         var members: [PersonDossierMember]
         var suggestions: [PersonDossierSuggestion]
+    }
+
+    private struct ConfirmedPaymentPath {
+        let candidate: InvoicePaymentCandidate
+        let support: PersonDossierPaymentSupportIdentity
+        let invoiceMember: PersonDossierMember
     }
 
     private func validatedAnchor(
@@ -273,6 +283,150 @@ struct PersonDossierProjector: Sendable {
             )
         }
         return DirectProjection(members: members, suggestions: suggestions)
+    }
+
+    private func expandingConfirmedPayments(
+        input: PersonDossierProjectionInput,
+        frozenMembers: [PersonDossierMember]
+    ) throws -> [PersonDossierMember] {
+        let excludedIDs = Set(input.exclusions.map(\.documentID))
+        let frozenMembersByID = Dictionary(
+            uniqueKeysWithValues: frozenMembers.map { ($0.document.id, $0) }
+        )
+        var pathsByPaymentID: [UUID: [ConfirmedPaymentPath]] = [:]
+
+        for candidate in input.relationshipCandidates {
+            let invoiceID = candidate.invoice.document.id
+            let paymentID = candidate.payment.document.id
+            guard let invoiceMember = frozenMembersByID[invoiceID],
+                  input.currentDocumentsByID[invoiceID]?.documentType == .invoice,
+                  let currentInvoice = input.documentsByID[invoiceID],
+                  let currentPayment = input.documentsByID[paymentID],
+                  !excludedIDs.contains(paymentID),
+                  let decisionKey = try? InvoicePaymentDecisionKey(candidate: candidate),
+                  let decision = input.relationshipDecisionsByKey[decisionKey],
+                  decision.key == decisionKey,
+                  decision.decision == .confirmed,
+                  binaryEqual(decisionKey.invoiceContentHash, currentInvoice.contentHash),
+                  binaryEqual(decisionKey.paymentContentHash, currentPayment.contentHash),
+                  let invoiceMembershipBasis = invoiceMembershipBasis(invoiceMember)
+            else {
+                continue
+            }
+            let relationship = DossierMembershipSupportIdentity(
+                decisionKey: decisionKey,
+                decisionUpdatedAt: decision.updatedAt,
+                invoiceDNAAnalyzedAt: candidate.invoice.snapshot.analyzedAt,
+                paymentDNAAnalyzedAt: candidate.payment.snapshot.analyzedAt,
+                resolverVersion: candidate.resolverVersion
+            )
+            let support = try PersonDossierPaymentSupportIdentity(
+                invoiceDocumentID: invoiceID,
+                invoiceMembershipBasis: invoiceMembershipBasis,
+                relationship: relationship,
+                signals: DossierCandidateTieBreakKey.canonicalSignals(candidate.signals)
+            )
+            pathsByPaymentID[paymentID, default: []].append(ConfirmedPaymentPath(
+                candidate: candidate,
+                support: support,
+                invoiceMember: invoiceMember
+            ))
+        }
+
+        var membersByID = frozenMembersByID
+        for (paymentID, paths) in pathsByPaymentID {
+            let canonicalPaths = canonicalPaymentPaths(paths)
+            guard let preferredPath = preferredPaymentPath(canonicalPaths),
+                  let document = input.documentsByID[paymentID],
+                  let current = input.currentDocumentsByID[paymentID]
+            else {
+                throw PersonDossierProjectionError.invalidStoredState
+            }
+            let relationshipSupports = canonicalPaths.map {
+                PersonDossierMembershipSupport.confirmedPayment($0.support)
+            }
+            if let existing = membersByID[paymentID] {
+                membersByID[paymentID] = try PersonDossierMember(
+                    document: existing.document,
+                    sourceDisplayName: existing.sourceDisplayName,
+                    documentType: existing.documentType,
+                    section: existing.section,
+                    supports: existing.supports + relationshipSupports,
+                    isConfirmationAuthoritative: existing.isConfirmationAuthoritative,
+                    preferredPaymentSupport: preferredPath.support
+                )
+            } else {
+                membersByID[paymentID] = try PersonDossierMember(
+                    document: document,
+                    sourceDisplayName: sourceDisplayName(
+                        for: document,
+                        names: input.sourceDisplayNames
+                    ),
+                    documentType: current.documentType,
+                    section: section(for: current.documentType),
+                    supports: relationshipSupports,
+                    isConfirmationAuthoritative: false,
+                    preferredPaymentSupport: preferredPath.support
+                )
+            }
+        }
+        return Array(membersByID.values)
+    }
+
+    private func invoiceMembershipBasis(
+        _ member: PersonDossierMember
+    ) -> PersonDossierInvoiceMembershipBasis? {
+        let exactSupports: [PersonDossierFindingSupportIdentity] = member.supports.compactMap { support in
+            guard case let .exactPrimary(value) = support else { return nil }
+            return value
+        }
+        if !exactSupports.isEmpty {
+            return .exactPerson(exactSupports)
+        }
+        let manualBases: [PersonDossierInvoiceMembershipBasis] = member.supports.compactMap { support in
+            guard case let .manualConfirmation(confirmation, _) = support else { return nil }
+            return PersonDossierInvoiceMembershipBasis.manualConfirmation(
+                revisionID: confirmation.revisionID
+            )
+        }
+        return manualBases.first
+    }
+
+    private func canonicalPaymentPaths(
+        _ paths: [ConfirmedPaymentPath]
+    ) -> [ConfirmedPaymentPath] {
+        var unique: [ConfirmedPaymentPath] = []
+        for path in paths where !unique.contains(where: { $0.support == path.support }) {
+            unique.append(path)
+        }
+        return unique.sorted { lhs, rhs in
+            let lhsInvoice = presentationOrder(
+                sourceDisplayName: lhs.invoiceMember.sourceDisplayName,
+                document: lhs.invoiceMember.document
+            )
+            let rhsInvoice = presentationOrder(
+                sourceDisplayName: rhs.invoiceMember.sourceDisplayName,
+                document: rhs.invoiceMember.document
+            )
+            if lhsInvoice != rhsInvoice { return lhsInvoice < rhsInvoice }
+            let lhsKey = DossierCandidateTieBreakKey(lhs.candidate)
+            let rhsKey = DossierCandidateTieBreakKey(rhs.candidate)
+            if lhsKey != rhsKey { return lhsKey < rhsKey }
+            return lhs.support.relationship.decisionUpdatedAt
+                < rhs.support.relationship.decisionUpdatedAt
+        }
+    }
+
+    private func preferredPaymentPath(
+        _ paths: [ConfirmedPaymentPath]
+    ) -> ConfirmedPaymentPath? {
+        paths.max { lhs, rhs in
+            let lhsStrength = InvoicePaymentCandidateStrength(lhs.candidate)
+            let rhsStrength = InvoicePaymentCandidateStrength(rhs.candidate)
+            if lhsStrength != rhsStrength { return lhsStrength < rhsStrength }
+            return DossierCandidateTieBreakKey(rhs.candidate)
+                < DossierCandidateTieBreakKey(lhs.candidate)
+        }
     }
 
     private func corrections(
