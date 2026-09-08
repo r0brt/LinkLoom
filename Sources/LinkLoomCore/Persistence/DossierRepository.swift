@@ -403,6 +403,118 @@ public actor DossierRepository {
         }
     }
 
+    public func removePersonMember(
+        dossierID: UUID,
+        documentID: UUID,
+        expectedSupport: PersonDossierMembershipSupport,
+        expectedToken: PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot {
+        let makeUUID = self.makeUUID
+        let now = self.now
+        do {
+            return try await dbWriter.write { db in
+                try Task.checkCancellation()
+                guard let dossier = try DossierStore.record(in: db, id: dossierID) else {
+                    throw DossierRepositoryError.dossierNotFound
+                }
+                let snapshot = try self.personProjectionReader.snapshot(
+                    in: db,
+                    dossier: dossier
+                )
+                let members = snapshot.directMembers + snapshot.costsAndPayments
+                guard snapshot.token == expectedToken,
+                      documentID != snapshot.anchor.originDocumentID,
+                      let member = members.first(where: { $0.document.id == documentID }),
+                      try member.commandSupport == expectedSupport
+                else {
+                    throw DossierRepositoryError.staleInput
+                }
+
+                if case let .manualConfirmation(confirmation, _) = expectedSupport {
+                    guard try DossierStore.deleteConfirmation(
+                        in: db,
+                        dossierID: dossierID,
+                        documentID: documentID,
+                        expectedRevisionID: confirmation.revisionID
+                    ) else {
+                        throw DossierRepositoryError.staleInput
+                    }
+                }
+
+                let exclusion = DossierMembershipExclusion(
+                    dossierID: dossierID,
+                    documentID: documentID,
+                    revisionID: makeUUID(),
+                    excludedAt: now()
+                )
+                do {
+                    try DossierStore.insertExclusion(in: db, exclusion: exclusion)
+                } catch let error as DatabaseError
+                    where error.extendedResultCode == .SQLITE_CONSTRAINT_PRIMARYKEY
+                        || error.extendedResultCode == .SQLITE_CONSTRAINT_UNIQUE
+                {
+                    throw DossierRepositoryError.staleInput
+                }
+                try Task.checkCancellation()
+                return try self.personProjectionReader.snapshot(in: db, dossier: dossier)
+            }
+        } catch {
+            throw mappedError(error)
+        }
+    }
+
+    public func resetPersonCorrection(
+        dossierID: UUID,
+        documentID: UUID,
+        expectedDecision: PersonDossierCorrectionDecision,
+        expectedToken: PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot {
+        do {
+            return try await dbWriter.write { db in
+                try Task.checkCancellation()
+                guard let dossier = try DossierStore.record(in: db, id: dossierID) else {
+                    throw DossierRepositoryError.dossierNotFound
+                }
+                let snapshot = try self.personProjectionReader.snapshot(
+                    in: db,
+                    dossier: dossier
+                )
+                guard snapshot.token == expectedToken,
+                      snapshot.corrections.contains(where: {
+                          $0.document.id == documentID
+                              && $0.decision == expectedDecision
+                      })
+                else {
+                    throw DossierRepositoryError.staleInput
+                }
+
+                let deleted = switch expectedDecision {
+                case let .confirmation(confirmation):
+                    try DossierStore.deleteConfirmation(
+                        in: db,
+                        dossierID: dossierID,
+                        documentID: documentID,
+                        expectedRevisionID: confirmation.revisionID
+                    )
+                case let .exclusion(exclusion):
+                    try DossierStore.deleteExclusion(
+                        in: db,
+                        dossierID: dossierID,
+                        documentID: documentID,
+                        expectedRevisionID: exclusion.revisionID
+                    )
+                }
+                guard deleted else {
+                    throw DossierRepositoryError.staleInput
+                }
+                try Task.checkCancellation()
+                return try self.personProjectionReader.snapshot(in: db, dossier: dossier)
+            }
+        } catch {
+            throw mappedError(error)
+        }
+    }
+
     public func excludeMember(
         dossierID: UUID,
         documentID: UUID,

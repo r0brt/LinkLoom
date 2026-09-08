@@ -1151,6 +1151,759 @@ struct PersonDossierRepositoryTests {
         }.isEmpty)
         #expect(try await values.confirmations().isEmpty)
     }
+
+    @Test func removesExactPrimaryAndRelationshipMembersWithExactDisplayedIdentity() async throws {
+        for index in 0..<2 {
+            let values = try await PersistedPersonDossierScenario.make()
+            let selectedDocument = index == 0 ? values.direct : values.payment
+            let revisionID = PersonDossierFixture.repositoryUUID(2_100 + index)
+            let excludedAt = PersonDossierFixture.repositoryDate(TimeInterval(2_100 + index))
+            let repository = values.fixture.makeDossierRepository(
+                sequence: 2_100 + index,
+                timestamp: excludedAt
+            )
+            let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let member = try #require(
+                (before.directMembers + before.costsAndPayments).first {
+                    $0.document.id == selectedDocument.document.id
+                }
+            )
+            let support = try member.commandSupport
+
+            if index == 0 {
+                guard case .exactPrimary = support else {
+                    Issue.record("Expected exact-primary command support")
+                    continue
+                }
+            } else {
+                guard case .confirmedPayment = support else {
+                    Issue.record("Expected confirmed-payment command support")
+                    continue
+                }
+            }
+
+            let removed = try await repository.removePersonMember(
+                dossierID: values.dossier.id,
+                documentID: selectedDocument.document.id,
+                expectedSupport: support,
+                expectedToken: before.token
+            )
+
+            let exclusion = DossierMembershipExclusion(
+                dossierID: values.dossier.id,
+                documentID: selectedDocument.document.id,
+                revisionID: revisionID,
+                excludedAt: excludedAt
+            )
+            #expect(try await values.fixture.database.read { db in
+                try DossierStore.exclusions(in: db, dossierID: values.dossier.id)
+            }.contains(exclusion))
+            #expect(!(removed.directMembers + removed.costsAndPayments).contains {
+                $0.document.id == selectedDocument.document.id
+            })
+            #expect(!removed.suggestions.contains {
+                $0.document.id == selectedDocument.document.id
+            })
+            #expect(removed.corrections.contains {
+                $0.document.id == selectedDocument.document.id
+                    && $0.decision == .exclusion(exclusion)
+            })
+            #expect(removed.token != before.token)
+            #expect(try await repository.personDossierSnapshot(id: values.dossier.id) == removed)
+        }
+    }
+
+    @Test func removalAcceptsOnlyCanonicalPreferredSupportForMultiplySupportedPayment() async throws {
+        let values = try await PersistedPersonDossierScenario.make()
+        let secondInvoice = try await values.fixture.insertSnapshot(
+            id: PersonDossierFixture.repositoryUUID(2_200),
+            path: "billing/second-invoice.pdf",
+            findings: [
+                try values.fixture.personFinding(
+                    qualifier: PersonDossierRole.invoiceRecipient.rawValue
+                ),
+                try values.fixture.finding(
+                    kind: .referenceNumber,
+                    qualifier: DocumentDNAReferenceNumberKind.invoiceNumber.rawValue,
+                    displayValue: values.includedReference,
+                    normalizedValue: values.includedReference
+                ),
+                try values.fixture.finding(
+                    kind: .monetaryAmount,
+                    qualifier: "CHF",
+                    displayValue: "1250",
+                    normalizedValue: "1250"
+                ),
+                try values.fixture.finding(
+                    kind: .organization,
+                    qualifier: "issuer",
+                    displayValue: "Alpha AG",
+                    normalizedValue: "alpha ag"
+                ),
+            ],
+            documentType: .invoice,
+            analyzedAt: PersonDossierFixture.repositoryDate(2_200)
+        )
+        let candidate = try #require(InvoicePaymentCandidateProjector().candidates(
+            from: InvoicePaymentCandidateProjectionInput(
+                selected: secondInvoice,
+                matchesByNormalizedReference: [
+                    values.includedReference: [secondInvoice, values.payment],
+                ]
+            )
+        ).first)
+        let (_, decision) = try PersonDossierFixture.relationshipDecision(
+            for: candidate,
+            updatedAt: PersonDossierFixture.repositoryDate(2_201)
+        )
+        try await values.fixture.insertDecision(decision)
+        let repository = values.fixture.makeDossierRepository(sequence: 2_202)
+        let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+        let payment = try #require(before.costsAndPayments.first {
+            $0.document.id == values.payment.document.id
+        })
+        let paymentSupports = payment.supports.filter {
+            if case .confirmedPayment = $0 { return true }
+            return false
+        }
+        #expect(paymentSupports.count == 2)
+        let commandSupport = try payment.commandSupport
+        let nonCommandSupport = try #require(paymentSupports.first { $0 != commandSupport })
+        let rowsBefore = try await correctionRows(values.fixture.database, values.dossier.id)
+
+        await #expect(throws: DossierRepositoryError.staleInput) {
+            try await repository.removePersonMember(
+                dossierID: values.dossier.id,
+                documentID: values.payment.document.id,
+                expectedSupport: nonCommandSupport,
+                expectedToken: before.token
+            )
+        }
+        #expect(try await correctionRows(values.fixture.database, values.dossier.id) == rowsBefore)
+
+        let removed = try await repository.removePersonMember(
+            dossierID: values.dossier.id,
+            documentID: values.payment.document.id,
+            expectedSupport: commandSupport,
+            expectedToken: before.token
+        )
+        #expect(!removed.costsAndPayments.contains {
+            $0.document.id == values.payment.document.id
+        })
+    }
+
+    @Test func removalRejectsStaleForeignWrongAlreadyRemovedMissingCostsAndAnchorInputsWithoutWrites() async throws {
+        do {
+            let values = try await PersistedPersonDossierScenario.make()
+            let repository = values.fixture.makeDossierRepository(sequence: 2_300)
+            let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let member = try #require(before.directMembers.first {
+                $0.document.id == values.direct.document.id
+            })
+            let rowsBefore = try await correctionRows(values.fixture.database, values.dossier.id)
+            try await values.fixture.database.write { db in
+                try db.execute(
+                    sql: "UPDATE dossier SET updatedAt = ? WHERE id = ?",
+                    arguments: [PersonDossierFixture.repositoryDate(2_399), values.dossier.id]
+                )
+            }
+            await #expect(throws: DossierRepositoryError.staleInput) {
+                try await repository.removePersonMember(
+                    dossierID: values.dossier.id,
+                    documentID: values.direct.document.id,
+                    expectedSupport: try member.commandSupport,
+                    expectedToken: before.token
+                )
+            }
+            #expect(try await correctionRows(values.fixture.database, values.dossier.id) == rowsBefore)
+        }
+
+        do {
+            let values = try await PersistedPersonDossierScenario.make()
+            let repository = values.fixture.makeDossierRepository(sequence: 2_400)
+            let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let direct = try #require(before.directMembers.first {
+                $0.document.id == values.direct.document.id
+            })
+            let invoice = try #require(before.costsAndPayments.first {
+                $0.document.id == values.invoice.document.id
+            })
+            let origin = try #require(before.directMembers.first {
+                $0.document.id == values.origin.document.id
+            })
+            let rowsBefore = try await correctionRows(values.fixture.database, values.dossier.id)
+
+            for (documentID, support) in [
+                (values.direct.document.id, try invoice.commandSupport),
+                (PersonDossierFixture.repositoryUUID(9_995), try direct.commandSupport),
+                (values.origin.document.id, try origin.commandSupport),
+            ] {
+                await #expect(throws: DossierRepositoryError.staleInput) {
+                    try await repository.removePersonMember(
+                        dossierID: values.dossier.id,
+                        documentID: documentID,
+                        expectedSupport: support,
+                        expectedToken: before.token
+                    )
+                }
+                #expect(
+                    try await correctionRows(values.fixture.database, values.dossier.id)
+                        == rowsBefore
+                )
+            }
+
+            await #expect(throws: DossierRepositoryError.dossierNotFound) {
+                try await repository.removePersonMember(
+                    dossierID: PersonDossierFixture.repositoryUUID(9_994),
+                    documentID: values.direct.document.id,
+                    expectedSupport: try direct.commandSupport,
+                    expectedToken: before.token
+                )
+            }
+            await #expect(throws: DossierRepositoryError.invalidStoredState) {
+                try await repository.removePersonMember(
+                    dossierID: values.costsDossier.id,
+                    documentID: values.direct.document.id,
+                    expectedSupport: try direct.commandSupport,
+                    expectedToken: before.token
+                )
+            }
+            #expect(try await correctionRows(values.fixture.database, values.dossier.id) == rowsBefore)
+            #expect(try await correctionRows(values.fixture.database, values.costsDossier.id)
+                == PersonCorrectionRows(confirmations: [], exclusions: []))
+
+            let removed = try await repository.removePersonMember(
+                dossierID: values.dossier.id,
+                documentID: values.direct.document.id,
+                expectedSupport: try direct.commandSupport,
+                expectedToken: before.token
+            )
+            let rowsAfterRemoval = try await correctionRows(
+                values.fixture.database,
+                values.dossier.id
+            )
+            await #expect(throws: DossierRepositoryError.staleInput) {
+                try await repository.removePersonMember(
+                    dossierID: values.dossier.id,
+                    documentID: values.direct.document.id,
+                    expectedSupport: try direct.commandSupport,
+                    expectedToken: removed.token
+                )
+            }
+            #expect(try await correctionRows(values.fixture.database, values.dossier.id)
+                == rowsAfterRemoval)
+        }
+    }
+
+    @Test func removingManualMemberAtomicallyReplacesExactConfirmationWithExclusion() async throws {
+        let values = try await PersonSuggestionCommandScenario.make(
+            variant: .secondaryRole,
+            sequence: 2_500
+        )
+        let confirmedAt = PersonDossierFixture.repositoryDate(2_510)
+        let removedAt = PersonDossierFixture.repositoryDate(2_511)
+        let repository = values.fixture.makeDossierRepository(
+            sequence: 2_510,
+            timestamp: confirmedAt
+        )
+        let initial = try await repository.personDossierSnapshot(id: values.dossier.id)
+        let suggestion = try #require(initial.suggestions.first)
+        let accepted = try await repository.acceptPersonSuggestion(
+            dossierID: values.dossier.id,
+            documentID: values.candidate.document.id,
+            expectedSupport: suggestion.commandSupport,
+            expectedToken: initial.token
+        )
+        let member = try #require(accepted.directMembers.first {
+            $0.document.id == values.candidate.document.id
+        })
+        let confirmation = try #require(try await values.confirmations().first)
+        let removalRepository = values.fixture.makeDossierRepository(
+            sequence: 2_511,
+            timestamp: removedAt
+        )
+
+        let removed = try await removalRepository.removePersonMember(
+            dossierID: values.dossier.id,
+            documentID: values.candidate.document.id,
+            expectedSupport: try member.commandSupport,
+            expectedToken: accepted.token
+        )
+
+        let exclusion = DossierMembershipExclusion(
+            dossierID: values.dossier.id,
+            documentID: values.candidate.document.id,
+            revisionID: PersonDossierFixture.repositoryUUID(2_511),
+            excludedAt: removedAt
+        )
+        #expect(confirmation.revisionID == PersonDossierFixture.repositoryUUID(2_510))
+        #expect(try await values.confirmations().isEmpty)
+        #expect(try await values.exclusions() == [exclusion])
+        #expect(removed.corrections.filter {
+            $0.document.id == values.candidate.document.id
+        }.map(\.decision) == [.exclusion(exclusion)])
+        #expect(!(removed.directMembers + removed.costsAndPayments).contains {
+            $0.document.id == values.candidate.document.id
+        })
+    }
+
+    @Test func manualRemovalRollsBackConfirmationDeletionWhenFinalProjectionFails() async throws {
+        let values = try await PersonSuggestionCommandScenario.make(
+            variant: .secondaryRole,
+            sequence: 2_600
+        )
+        let repository = values.fixture.makeDossierRepository(sequence: 2_610)
+        let initial = try await repository.personDossierSnapshot(id: values.dossier.id)
+        let suggestion = try #require(initial.suggestions.first)
+        let accepted = try await repository.acceptPersonSuggestion(
+            dossierID: values.dossier.id,
+            documentID: values.candidate.document.id,
+            expectedSupport: suggestion.commandSupport,
+            expectedToken: initial.token
+        )
+        let member = try #require(accepted.directMembers.first {
+            $0.document.id == values.candidate.document.id
+        })
+        let confirmation = try #require(try await values.confirmations().first)
+        try await values.fixture.database.write { db in
+            try db.execute(sql: """
+                CREATE TABLE person_confirmation_backup AS
+                SELECT * FROM dossierMembershipConfirmation
+                WHERE dossierID = x'\(values.dossier.id.sqliteBytes)'
+                  AND documentID = x'\(values.candidate.document.id.sqliteBytes)'
+                """)
+            try db.execute(sql: """
+                CREATE TRIGGER restore_conflicting_person_confirmation
+                AFTER INSERT ON dossierMembershipExclusion
+                WHEN NEW.dossierID = x'\(values.dossier.id.sqliteBytes)'
+                  AND NEW.documentID = x'\(values.candidate.document.id.sqliteBytes)'
+                BEGIN
+                    INSERT INTO dossierMembershipConfirmation
+                    SELECT * FROM person_confirmation_backup;
+                END
+                """)
+        }
+
+        await #expect(throws: DossierRepositoryError.invalidStoredState) {
+            try await repository.removePersonMember(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: try member.commandSupport,
+                expectedToken: accepted.token
+            )
+        }
+
+        #expect(try await values.confirmations() == [confirmation])
+        #expect(try await values.exclusions().isEmpty)
+        #expect(try await repository.personDossierSnapshot(id: values.dossier.id) == accepted)
+    }
+
+    @Test func resettingConfirmationReturnsOnlyCurrentEvidenceToSuggestion() async throws {
+        do {
+            let values = try await PersonSuggestionCommandScenario.make(
+                variant: .secondaryRole,
+                sequence: 2_700
+            )
+            let repository = values.fixture.makeDossierRepository(sequence: 2_710)
+            let initial = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let suggestion = try #require(initial.suggestions.first)
+            let accepted = try await repository.acceptPersonSuggestion(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: initial.token
+            )
+            let correction = try #require(accepted.corrections.first {
+                $0.document.id == values.candidate.document.id
+            })
+
+            let reset = try await repository.resetPersonCorrection(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedDecision: correction.decision,
+                expectedToken: accepted.token
+            )
+
+            #expect(try await values.confirmations().isEmpty)
+            #expect(reset.suggestions.contains {
+                $0.document.id == values.candidate.document.id
+                    && $0.commandSupport == suggestion.commandSupport
+            })
+            #expect(!(reset.directMembers + reset.costsAndPayments).contains {
+                $0.document.id == values.candidate.document.id
+            })
+            #expect(!reset.corrections.contains {
+                $0.document.id == values.candidate.document.id
+            })
+            #expect(reset.token != accepted.token)
+        }
+
+        do {
+            let values = try await PersistedPersonDossierScenario.make()
+            let repository = values.fixture.makeDossierRepository(sequence: 2_720)
+            let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let correction = try #require(before.corrections.first {
+                $0.document.id == values.manualDocument.id
+            })
+            guard case .confirmation = correction.decision else {
+                Issue.record("Expected confirmation correction")
+                return
+            }
+
+            let reset = try await repository.resetPersonCorrection(
+                dossierID: values.dossier.id,
+                documentID: values.manualDocument.id,
+                expectedDecision: correction.decision,
+                expectedToken: before.token
+            )
+
+            #expect(try await correctionRows(values.fixture.database, values.dossier.id)
+                == PersonCorrectionRows(confirmations: [], exclusions: [values.exclusion]))
+            #expect(!(reset.directMembers + reset.costsAndPayments).contains {
+                $0.document.id == values.manualDocument.id
+            })
+            #expect(!reset.suggestions.contains {
+                $0.document.id == values.manualDocument.id
+            })
+            #expect(!reset.corrections.contains {
+                $0.document.id == values.manualDocument.id
+            })
+        }
+    }
+
+    @Test func resettingExclusionReprojectsMemberSuggestionOrHiddenFromCurrentEvidence() async throws {
+        do {
+            let values = try await PersistedPersonDossierScenario.make()
+            let repository = values.fixture.makeDossierRepository(sequence: 2_800)
+            let initial = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let member = try #require(initial.directMembers.first {
+                $0.document.id == values.direct.document.id
+            })
+            let expectedSupport = try member.commandSupport
+            let removed = try await repository.removePersonMember(
+                dossierID: values.dossier.id,
+                documentID: values.direct.document.id,
+                expectedSupport: expectedSupport,
+                expectedToken: initial.token
+            )
+            let correction = try #require(removed.corrections.first {
+                $0.document.id == values.direct.document.id
+            })
+
+            let reset = try await repository.resetPersonCorrection(
+                dossierID: values.dossier.id,
+                documentID: values.direct.document.id,
+                expectedDecision: correction.decision,
+                expectedToken: removed.token
+            )
+
+            let resetMember = try #require(reset.directMembers.first {
+                $0.document.id == values.direct.document.id
+            })
+            #expect(try resetMember.commandSupport == expectedSupport)
+            #expect(!reset.corrections.contains {
+                $0.document.id == values.direct.document.id
+            })
+        }
+
+        do {
+            let values = try await PersonSuggestionCommandScenario.make(
+                variant: .birthDateConflict,
+                sequence: 2_900
+            )
+            let repository = values.fixture.makeDossierRepository(sequence: 2_910)
+            let initial = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let suggestion = try #require(initial.suggestions.first)
+            let rejected = try await repository.rejectPersonSuggestion(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: initial.token
+            )
+            let correction = try #require(rejected.corrections.first)
+
+            let reset = try await repository.resetPersonCorrection(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedDecision: correction.decision,
+                expectedToken: rejected.token
+            )
+
+            #expect(reset.suggestions.contains {
+                $0.document.id == values.candidate.document.id
+                    && $0.commandSupport == suggestion.commandSupport
+            })
+            #expect(try await values.exclusions().isEmpty)
+        }
+
+        do {
+            let values = try await PersistedPersonDossierScenario.make()
+            let repository = values.fixture.makeDossierRepository(sequence: 2_920)
+            let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let correction = try #require(before.corrections.first {
+                $0.document.id == values.excludedInvoice.document.id
+            })
+
+            let reset = try await repository.resetPersonCorrection(
+                dossierID: values.dossier.id,
+                documentID: values.excludedInvoice.document.id,
+                expectedDecision: correction.decision,
+                expectedToken: before.token
+            )
+
+            #expect(!(reset.directMembers + reset.costsAndPayments).contains {
+                $0.document.id == values.excludedInvoice.document.id
+            })
+            #expect(!reset.suggestions.contains {
+                $0.document.id == values.excludedInvoice.document.id
+            })
+            #expect(!reset.corrections.contains {
+                $0.document.id == values.excludedInvoice.document.id
+            })
+        }
+    }
+
+    @Test func resettingManualReplacementExclusionNeverRestoresDeletedConfirmation() async throws {
+        let values = try await PersonSuggestionCommandScenario.make(
+            variant: .secondaryRole,
+            sequence: 3_000
+        )
+        let repository = values.fixture.makeDossierRepository(sequence: 3_010)
+        let initial = try await repository.personDossierSnapshot(id: values.dossier.id)
+        let suggestion = try #require(initial.suggestions.first)
+        let accepted = try await repository.acceptPersonSuggestion(
+            dossierID: values.dossier.id,
+            documentID: values.candidate.document.id,
+            expectedSupport: suggestion.commandSupport,
+            expectedToken: initial.token
+        )
+        let member = try #require(accepted.directMembers.first {
+            $0.document.id == values.candidate.document.id
+        })
+        let removed = try await repository.removePersonMember(
+            dossierID: values.dossier.id,
+            documentID: values.candidate.document.id,
+            expectedSupport: try member.commandSupport,
+            expectedToken: accepted.token
+        )
+        let correction = try #require(removed.corrections.first)
+
+        let reset = try await repository.resetPersonCorrection(
+            dossierID: values.dossier.id,
+            documentID: values.candidate.document.id,
+            expectedDecision: correction.decision,
+            expectedToken: removed.token
+        )
+
+        #expect(try await values.confirmations().isEmpty)
+        #expect(try await values.exclusions().isEmpty)
+        #expect(reset.suggestions.contains {
+            $0.document.id == values.candidate.document.id
+                && $0.commandSupport == suggestion.commandSupport
+        })
+        #expect(!(reset.directMembers + reset.costsAndPayments).contains {
+            $0.document.id == values.candidate.document.id
+        })
+    }
+
+    @Test func resetRejectsStaleReplacedMismatchedAndWrongInputsWithoutDeletion() async throws {
+        do {
+            let values = try await PersistedPersonDossierScenario.make()
+            let repository = values.fixture.makeDossierRepository(sequence: 3_100)
+            let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let correction = try #require(before.corrections.first {
+                $0.document.id == values.excludedInvoice.document.id
+            })
+            let rowsBefore = try await correctionRows(values.fixture.database, values.dossier.id)
+            try await values.fixture.database.write { db in
+                try db.execute(
+                    sql: "UPDATE dossier SET updatedAt = ? WHERE id = ?",
+                    arguments: [PersonDossierFixture.repositoryDate(3_199), values.dossier.id]
+                )
+            }
+
+            await #expect(throws: DossierRepositoryError.staleInput) {
+                try await repository.resetPersonCorrection(
+                    dossierID: values.dossier.id,
+                    documentID: values.excludedInvoice.document.id,
+                    expectedDecision: correction.decision,
+                    expectedToken: before.token
+                )
+            }
+            #expect(try await correctionRows(values.fixture.database, values.dossier.id) == rowsBefore)
+        }
+
+        do {
+            let values = try await PersistedPersonDossierScenario.make()
+            let repository = values.fixture.makeDossierRepository(sequence: 3_200)
+            let original = values.exclusion
+            let replacement = DossierMembershipExclusion(
+                dossierID: original.dossierID,
+                documentID: original.documentID,
+                revisionID: PersonDossierFixture.repositoryUUID(3_201),
+                excludedAt: PersonDossierFixture.repositoryDate(3_201)
+            )
+            try await values.fixture.database.write { db in
+                #expect(try DossierStore.deleteExclusion(
+                    in: db,
+                    dossierID: original.dossierID,
+                    documentID: original.documentID,
+                    expectedRevisionID: original.revisionID
+                ))
+                try DossierStore.insertExclusion(in: db, exclusion: replacement)
+            }
+            let current = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let rowsBefore = try await correctionRows(values.fixture.database, values.dossier.id)
+
+            await #expect(throws: DossierRepositoryError.staleInput) {
+                try await repository.resetPersonCorrection(
+                    dossierID: values.dossier.id,
+                    documentID: original.documentID,
+                    expectedDecision: .exclusion(original),
+                    expectedToken: current.token
+                )
+            }
+            #expect(try await correctionRows(values.fixture.database, values.dossier.id) == rowsBefore)
+
+            let mismatched = DossierMembershipExclusion(
+                dossierID: replacement.dossierID,
+                documentID: replacement.documentID,
+                revisionID: replacement.revisionID,
+                excludedAt: replacement.excludedAt.addingTimeInterval(1)
+            )
+            await #expect(throws: DossierRepositoryError.staleInput) {
+                try await repository.resetPersonCorrection(
+                    dossierID: values.dossier.id,
+                    documentID: replacement.documentID,
+                    expectedDecision: .exclusion(mismatched),
+                    expectedToken: current.token
+                )
+            }
+            await #expect(throws: DossierRepositoryError.staleInput) {
+                try await repository.resetPersonCorrection(
+                    dossierID: values.dossier.id,
+                    documentID: values.direct.document.id,
+                    expectedDecision: .exclusion(replacement),
+                    expectedToken: current.token
+                )
+            }
+            #expect(try await correctionRows(values.fixture.database, values.dossier.id) == rowsBefore)
+
+            let foreignFinding = try values.fixture.personFinding(
+                qualifier: PersonDossierRole.resident.rawValue
+            )
+            let foreignOrigin = try await values.fixture.insertSnapshot(
+                id: PersonDossierFixture.repositoryUUID(3_210),
+                path: "people/reset-wrong-dossier-origin.pdf",
+                findings: [foreignFinding],
+                documentType: .correspondence
+            )
+            let (_, foreignDossier) = try await values.fixture.insertPersonDossier(
+                sequence: 3_211,
+                origin: foreignOrigin,
+                finding: foreignFinding
+            )
+            let foreign = try await repository.personDossierSnapshot(id: foreignDossier.id)
+            await #expect(throws: DossierRepositoryError.staleInput) {
+                try await repository.resetPersonCorrection(
+                    dossierID: foreignDossier.id,
+                    documentID: replacement.documentID,
+                    expectedDecision: .exclusion(replacement),
+                    expectedToken: foreign.token
+                )
+            }
+            await #expect(throws: DossierRepositoryError.dossierNotFound) {
+                try await repository.resetPersonCorrection(
+                    dossierID: PersonDossierFixture.repositoryUUID(9_993),
+                    documentID: replacement.documentID,
+                    expectedDecision: .exclusion(replacement),
+                    expectedToken: current.token
+                )
+            }
+            await #expect(throws: DossierRepositoryError.invalidStoredState) {
+                try await repository.resetPersonCorrection(
+                    dossierID: values.costsDossier.id,
+                    documentID: replacement.documentID,
+                    expectedDecision: .exclusion(replacement),
+                    expectedToken: current.token
+                )
+            }
+            #expect(try await correctionRows(values.fixture.database, values.dossier.id) == rowsBefore)
+            #expect(try await correctionRows(values.fixture.database, foreignDossier.id)
+                == PersonCorrectionRows(confirmations: [], exclusions: []))
+            #expect(try await correctionRows(values.fixture.database, values.costsDossier.id)
+                == PersonCorrectionRows(confirmations: [], exclusions: []))
+        }
+    }
+
+    @Test func resetDeletesOnlyTheSelectedDossiersCorrectionForSharedDocument() async throws {
+        let values = try await PersistedPersonDossierScenario.make()
+        let repository = values.fixture.makeDossierRepository(sequence: 3_300)
+        let foreignFinding = try values.fixture.personFinding(
+            qualifier: PersonDossierRole.resident.rawValue
+        )
+        let foreignOrigin = try await values.fixture.insertSnapshot(
+            id: PersonDossierFixture.repositoryUUID(3_301),
+            path: "people/reset-isolation-origin.pdf",
+            findings: [foreignFinding],
+            documentType: .correspondence
+        )
+        let (_, foreignDossier) = try await values.fixture.insertPersonDossier(
+            sequence: 3_302,
+            origin: foreignOrigin,
+            finding: foreignFinding
+        )
+        let initial = try await repository.personDossierSnapshot(id: values.dossier.id)
+        let member = try #require(initial.directMembers.first {
+            $0.document.id == values.direct.document.id
+        })
+        let removed = try await repository.removePersonMember(
+            dossierID: values.dossier.id,
+            documentID: values.direct.document.id,
+            expectedSupport: try member.commandSupport,
+            expectedToken: initial.token
+        )
+        let primaryCorrection = try #require(removed.corrections.first {
+            $0.document.id == values.direct.document.id
+        })
+        let foreignExclusion = DossierMembershipExclusion(
+            dossierID: foreignDossier.id,
+            documentID: values.direct.document.id,
+            revisionID: PersonDossierFixture.repositoryUUID(3_304),
+            excludedAt: PersonDossierFixture.repositoryDate(3_304)
+        )
+        try await values.fixture.insertExclusion(foreignExclusion)
+        let foreignBefore = try await repository.personDossierSnapshot(id: foreignDossier.id)
+
+        let reset = try await repository.resetPersonCorrection(
+            dossierID: values.dossier.id,
+            documentID: values.direct.document.id,
+            expectedDecision: primaryCorrection.decision,
+            expectedToken: removed.token
+        )
+
+        #expect(reset.directMembers.contains { $0.document.id == values.direct.document.id })
+        #expect(try await repository.personDossierSnapshot(id: foreignDossier.id) == foreignBefore)
+        #expect(try await correctionRows(values.fixture.database, foreignDossier.id)
+            == PersonCorrectionRows(confirmations: [], exclusions: [foreignExclusion]))
+    }
+}
+
+private struct PersonCorrectionRows: Equatable {
+    let confirmations: [DossierMembershipConfirmation]
+    let exclusions: [DossierMembershipExclusion]
+}
+
+private func correctionRows(
+    _ database: DatabaseQueue,
+    _ dossierID: UUID
+) async throws -> PersonCorrectionRows {
+    try await database.read { db in
+        try PersonCorrectionRows(
+            confirmations: DossierStore.confirmations(in: db, dossierID: dossierID),
+            exclusions: DossierStore.exclusions(in: db, dossierID: dossierID)
+        )
+    }
 }
 
 private enum PersonRepositoryOperation: CaseIterable {
@@ -1630,7 +2383,11 @@ private final class PersonDossierRepositorySQLTrace: @unchecked Sendable {
 }
 
 private extension UUID {
+    var sqliteBytes: String {
+        uuidString.replacingOccurrences(of: "-", with: "")
+    }
+
     var sqliteHexLiteral: String {
-        "x'\(uuidString.replacingOccurrences(of: "-", with: ""))'"
+        "x'\(sqliteBytes)'"
     }
 }
