@@ -881,6 +881,82 @@ struct PersonDossierProjectorTests {
         }
     }
 
+    @Test func relationshipCandidateRejectsUnreportedCurrentOrganizationConflict() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let invoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident)
+        let payment = try fixture.relationshipDocument(idSuffix: 3, type: .paymentConfirmation)
+        let resolved = try PersonDossierFixture.invoicePaymentCandidate(
+            invoice: invoice,
+            payment: payment
+        )
+        let conflictingOrganization = try PersonDossierFixture.finding(
+            kind: .organization,
+            qualifier: "payee",
+            displayValue: "Beta AG",
+            normalizedValue: "beta ag"
+        )
+        let conflictingPayment = try PersonDossierFixture.currentDocument(
+            id: payment.document.id,
+            sourceRootID: payment.document.sourceRootID,
+            path: payment.document.relativePath,
+            documentType: .paymentConfirmation,
+            availability: payment.document.availability,
+            contentHash: payment.document.contentHash,
+            extractionVersion: payment.snapshot.inputExtractionVersion,
+            schemaVersion: payment.snapshot.schemaVersion,
+            analyzerIdentifier: payment.snapshot.analyzerIdentifier,
+            analyzerVersion: payment.snapshot.analyzerVersion,
+            analyzedAt: payment.snapshot.analyzedAt,
+            personFindings: Array(payment.snapshot.findings.dropFirst()).filter {
+                $0.kind != .organization
+            } + [conflictingOrganization]
+        )
+        let candidate = InvoicePaymentCandidate(
+            invoice: invoice,
+            payment: conflictingPayment,
+            disposition: .suggestion,
+            resolverVersion: "legacy-resolver",
+            signals: resolved.signals.filter { $0.kind != .organization }
+        )
+        let decision = try PersonDossierFixture.relationshipDecision(for: candidate)
+
+        let snapshot = try PersonDossierProjector().project(fixture.input(
+            documents: [invoice, conflictingPayment],
+            personCandidates: [invoice],
+            relationshipCandidates: [candidate],
+            relationshipDecisionsByKey: [decision.0: decision.1]
+        ))
+
+        #expect(snapshot.costsAndPayments.map(\.id) == [invoice.document.id])
+    }
+
+    @Test func relationshipCandidateRejectsOmittedCurrentMatchingSignal() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let invoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident)
+        let payment = try fixture.relationshipDocument(idSuffix: 3, type: .paymentConfirmation)
+        let resolved = try PersonDossierFixture.invoicePaymentCandidate(
+            invoice: invoice,
+            payment: payment
+        )
+        let candidate = InvoicePaymentCandidate(
+            invoice: invoice,
+            payment: payment,
+            disposition: .suggestion,
+            resolverVersion: "legacy-resolver",
+            signals: resolved.signals.filter { $0.kind != .organization }
+        )
+        let decision = try PersonDossierFixture.relationshipDecision(for: candidate)
+
+        let snapshot = try PersonDossierProjector().project(fixture.input(
+            documents: [invoice, payment],
+            personCandidates: [invoice],
+            relationshipCandidates: [candidate],
+            relationshipDecisionsByKey: [decision.0: decision.1]
+        ))
+
+        #expect(snapshot.costsAndPayments.map(\.id) == [invoice.document.id])
+    }
+
     @Test func relationshipSignalFindingsMustExistInCurrentEndpointSnapshots() throws {
         let fixture = try PersonProjectorFixture.make()
         let invoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident)

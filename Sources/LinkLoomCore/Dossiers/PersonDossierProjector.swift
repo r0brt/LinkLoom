@@ -306,10 +306,6 @@ struct PersonDossierProjector: Sendable {
                   currentPaymentDNA == candidate.payment,
                   currentPaymentDNA.documentType == .paymentConfirmation,
                   relationshipCandidateMatchesResolverRules(candidate),
-                  candidate.signals.allSatisfy({ signal in
-                      candidate.invoice.snapshot.findings.contains(signal.invoiceFinding)
-                          && candidate.payment.snapshot.findings.contains(signal.paymentFinding)
-                  }),
                   let currentInvoice = input.documentsByID[invoiceID],
                   let currentPayment = input.documentsByID[paymentID],
                   !excludedIDs.contains(paymentID),
@@ -386,51 +382,18 @@ struct PersonDossierProjector: Sendable {
     private func relationshipCandidateMatchesResolverRules(
         _ candidate: InvoicePaymentCandidate
     ) -> Bool {
-        guard candidate.invoice.snapshot.schemaVersion == candidate.payment.snapshot.schemaVersion,
-              candidate.invoice.snapshot.analyzerIdentifier
-                == candidate.payment.snapshot.analyzerIdentifier,
-              candidate.invoice.snapshot.analyzerVersion
-                == candidate.payment.snapshot.analyzerVersion
-        else {
+        guard let reference = candidate.signals.first(where: {
+            $0.kind == .referenceNumber
+        }) else { return false }
+        let resolved = InvoicePaymentCandidateResolver().candidates(
+            matching: reference.invoiceFinding.normalizedValue,
+            in: [candidate.invoice, candidate.payment]
+        )
+        guard resolved.count == 1, let resolvedCandidate = resolved.first else {
             return false
         }
-        let signalKinds = candidate.signals.map(\.kind)
-        guard Set(signalKinds.map(\.rawValue)).count == signalKinds.count,
-              signalKinds.contains(.referenceNumber),
-              signalKinds.contains(.monetaryAmount) || signalKinds.contains(.organization)
-        else {
-            return false
-        }
-        return candidate.signals.allSatisfy(relationshipSignalMatchesResolverRules)
-    }
-
-    private func relationshipSignalMatchesResolverRules(
-        _ signal: InvoicePaymentCandidateSignal
-    ) -> Bool {
-        switch signal.kind {
-        case .referenceNumber:
-            return signal.invoiceFinding.kind == .referenceNumber
-                && signal.invoiceFinding.qualifier
-                    == DocumentDNAReferenceNumberKind.invoiceNumber.rawValue
-                && signal.paymentFinding.kind == .referenceNumber
-                && signal.paymentFinding.qualifier
-                    == DocumentDNAReferenceNumberKind.paymentReference.rawValue
-                && signal.invoiceFinding.normalizedValue
-                    == signal.paymentFinding.normalizedValue
-        case .monetaryAmount:
-            return signal.invoiceFinding.kind == .monetaryAmount
-                && signal.paymentFinding.kind == .monetaryAmount
-                && signal.invoiceFinding.qualifier == signal.paymentFinding.qualifier
-                && signal.invoiceFinding.normalizedValue
-                    == signal.paymentFinding.normalizedValue
-        case .organization:
-            return signal.invoiceFinding.kind == .organization
-                && signal.invoiceFinding.qualifier == "issuer"
-                && signal.paymentFinding.kind == .organization
-                && signal.paymentFinding.qualifier == "payee"
-                && signal.invoiceFinding.normalizedValue
-                    == signal.paymentFinding.normalizedValue
-        }
+        return DossierCandidateTieBreakKey.canonicalSignals(candidate.signals)
+            == DossierCandidateTieBreakKey.canonicalSignals(resolvedCandidate.signals)
     }
 
     private func invoiceMembershipBasis(
