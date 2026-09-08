@@ -443,6 +443,32 @@ struct PersonDossierProjectorTests {
 
         #expect(reverse == forward)
     }
+
+    @Test(arguments: OriginTokenMutation.allCases)
+    func staleOriginMutationsChangeProjectionToken(
+        _ mutation: OriginTokenMutation
+    ) throws {
+        let fixture = try PersonProjectorFixture.make()
+        let baselineOrigin = try fixture.staleOrigin()
+        let baseline = try PersonDossierProjector().project(fixture.input(
+            originDocument: baselineOrigin.document,
+            currentOrigin: baselineOrigin,
+            documentsByID: [baselineOrigin.document.id: baselineOrigin.document],
+            currentDocumentsByID: [baselineOrigin.document.id: baselineOrigin]
+        ))
+        let changedOrigin = try fixture.staleOrigin(mutation: mutation)
+        let changed = try PersonDossierProjector().project(fixture.input(
+            originDocument: changedOrigin.document,
+            currentOrigin: changedOrigin,
+            documentsByID: [changedOrigin.document.id: changedOrigin.document],
+            currentDocumentsByID: [changedOrigin.document.id: changedOrigin],
+            sourceDisplayNames: [changedOrigin.document.sourceRootID: "Archive"]
+        ))
+
+        #expect(baseline.origin.validity == .stale)
+        #expect(changed.origin.validity == .stale)
+        #expect(changed.token != baseline.token)
+    }
 }
 
 private struct PersonProjectorFixture {
@@ -507,6 +533,30 @@ private struct PersonProjectorFixture {
             path: path ?? "candidate-\(idSuffix).pdf",
             documentType: type,
             personFindings: [try PersonDossierFixture.personFinding(role: role)]
+        )
+    }
+
+    func staleOrigin(
+        mutation: OriginTokenMutation? = nil
+    ) throws -> CurrentDocumentDNA {
+        let changedSourceID = UUID(
+            uuidString: "74000000-0000-0000-0000-000000000013"
+        )!
+        return try PersonDossierFixture.currentDocument(
+            id: origin.document.id,
+            sourceRootID: mutation == .source ? changedSourceID : origin.document.sourceRootID,
+            path: mutation == .path ? "moved/origin.pdf" : origin.document.relativePath,
+            documentType: .correspondence,
+            availability: mutation == .availability ? .missing : .available,
+            contentHash: mutation == .content ? "changed-origin-hash" : origin.document.contentHash,
+            extractionVersion: origin.snapshot.inputExtractionVersion,
+            schemaVersion: origin.snapshot.schemaVersion,
+            analyzerIdentifier: origin.snapshot.analyzerIdentifier,
+            analyzerVersion: "stale-analyzer-version",
+            analyzedAt: mutation == .analysis
+                ? origin.snapshot.analyzedAt.addingTimeInterval(2)
+                : origin.snapshot.analyzedAt.addingTimeInterval(1),
+            personFindings: [try PersonDossierFixture.personFinding(role: .resident)]
         )
     }
 
@@ -606,4 +656,12 @@ private extension PersonDossierMembershipSupport {
         guard case let .exactPrimary(support) = self else { return nil }
         return support.role
     }
+}
+
+enum OriginTokenMutation: CaseIterable {
+    case content
+    case analysis
+    case availability
+    case path
+    case source
 }

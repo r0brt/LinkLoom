@@ -363,6 +363,9 @@ struct PersonDossierProjector: Sendable {
     ) -> PersonDossierProjectionToken {
         let members = directMembers + costsAndPayments
         var documentsByID: [UUID: DocumentRecord] = [:]
+        if let originDocument = origin.document {
+            documentsByID[originDocument.id] = originDocument
+        }
         for document in members.map(\.document)
             + suggestions.map(\.document)
             + corrections.map(\.document) {
