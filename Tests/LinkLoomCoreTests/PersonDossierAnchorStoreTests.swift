@@ -109,6 +109,50 @@ struct PersonDossierAnchorStoreTests {
         }
     }
 
+    @Test func normalizedNameReadsKeepCanonicallyEquivalentUnicodeStringsDistinct() throws {
+        let fixture = try PersonDossierAnchorStoreFixture.make()
+        let precomposedName = "\u{00E9}lise muster"
+        let decomposedName = "e\u{301}lise muster"
+        let precomposed = try fixture.anchor(
+            id: fixture.firstAnchorID,
+            normalizedName: precomposedName
+        )
+        let decomposed = try fixture.anchor(
+            id: fixture.secondAnchorID,
+            originDocumentID: fixture.secondOriginDocumentID,
+            normalizedName: decomposedName
+        )
+
+        try fixture.db.write { db in
+            _ = try PersonDossierAnchorStore.insertOrFetch(in: db, proposed: precomposed)
+            _ = try PersonDossierAnchorStore.insertOrFetch(in: db, proposed: decomposed)
+
+            #expect(try PersonDossierAnchorStore.record(
+                in: db,
+                originDocumentID: fixture.firstOriginDocumentID,
+                primaryRole: .resident,
+                normalizedName: precomposedName
+            ) == precomposed)
+            #expect(try PersonDossierAnchorStore.record(
+                in: db,
+                originDocumentID: fixture.secondOriginDocumentID,
+                primaryRole: .resident,
+                normalizedName: decomposedName
+            ) == decomposed)
+
+            let precomposedRecords = try PersonDossierAnchorStore.records(
+                in: db,
+                normalizedName: precomposedName
+            )
+            let decomposedRecords = try PersonDossierAnchorStore.records(
+                in: db,
+                normalizedName: decomposedName
+            )
+            #expect(precomposedRecords == [precomposed])
+            #expect(decomposedRecords == [decomposed])
+        }
+    }
+
     @Test func recordsUseExactNormalizedNameIndexAndCreatedAtIDOrder() throws {
         let fixture = try PersonDossierAnchorStoreFixture.make()
         let later = try fixture.anchor(
