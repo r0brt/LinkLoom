@@ -529,6 +529,120 @@ struct PersonDossierProjectorTests {
         #expect(revisionID == confirmation.revisionID)
     }
 
+    @Test func relationshipCandidateEndpointsMustMatchCompleteCurrentSnapshots() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let invoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident)
+        let payment = try fixture.relationshipDocument(idSuffix: 3, type: .paymentConfirmation)
+        let currentCandidate = try PersonDossierFixture.invoicePaymentCandidate(
+            invoice: invoice,
+            payment: payment
+        )
+        let staleInvoice = try PersonDossierFixture.currentDocument(
+            id: invoice.document.id,
+            sourceRootID: invoice.document.sourceRootID,
+            path: invoice.document.relativePath,
+            documentType: .invoice,
+            contentHash: invoice.document.contentHash,
+            analyzedAt: invoice.snapshot.analyzedAt.addingTimeInterval(1),
+            personFindings: Array(invoice.snapshot.findings.dropFirst())
+        )
+        let wrongPaymentType = try PersonDossierFixture.currentDocument(
+            id: payment.document.id,
+            sourceRootID: payment.document.sourceRootID,
+            path: payment.document.relativePath,
+            documentType: .correspondence,
+            contentHash: payment.document.contentHash,
+            analyzedAt: payment.snapshot.analyzedAt,
+            personFindings: Array(payment.snapshot.findings.dropFirst())
+        )
+        let candidates = [
+            InvoicePaymentCandidate(
+                invoice: staleInvoice,
+                payment: payment,
+                disposition: currentCandidate.disposition,
+                resolverVersion: currentCandidate.resolverVersion,
+                signals: currentCandidate.signals
+            ),
+            InvoicePaymentCandidate(
+                invoice: invoice,
+                payment: wrongPaymentType,
+                disposition: currentCandidate.disposition,
+                resolverVersion: currentCandidate.resolverVersion,
+                signals: currentCandidate.signals
+            ),
+        ]
+        let decision = try PersonDossierFixture.relationshipDecision(for: currentCandidate)
+
+        for candidate in candidates {
+            let snapshot = try PersonDossierProjector().project(fixture.input(
+                documents: [invoice, payment],
+                personCandidates: [invoice],
+                relationshipCandidates: [candidate],
+                relationshipDecisionsByKey: [decision.0: decision.1]
+            ))
+
+            #expect(snapshot.costsAndPayments.map(\.id) == [invoice.document.id])
+        }
+    }
+
+    @Test func relationshipSignalFindingsMustExistInCurrentEndpointSnapshots() throws {
+        let fixture = try PersonProjectorFixture.make()
+        let invoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident)
+        let payment = try fixture.relationshipDocument(idSuffix: 3, type: .paymentConfirmation)
+        let currentCandidate = try PersonDossierFixture.invoicePaymentCandidate(
+            invoice: invoice,
+            payment: payment
+        )
+        let fabricatedInvoiceFinding = try PersonDossierFixture.finding(
+            kind: .referenceNumber,
+            qualifier: DocumentDNAReferenceNumberKind.invoiceNumber.rawValue,
+            displayValue: "FABRICATED-42",
+            normalizedValue: "INV42"
+        )
+        let fabricatedPaymentFinding = try PersonDossierFixture.finding(
+            kind: .referenceNumber,
+            qualifier: DocumentDNAReferenceNumberKind.paymentReference.rawValue,
+            displayValue: "FABRICATED-42",
+            normalizedValue: "INV42"
+        )
+        let candidates = [
+            InvoicePaymentCandidate(
+                invoice: invoice,
+                payment: payment,
+                disposition: currentCandidate.disposition,
+                resolverVersion: currentCandidate.resolverVersion,
+                signals: [InvoicePaymentCandidateSignal(
+                    kind: .referenceNumber,
+                    invoiceFinding: fabricatedInvoiceFinding,
+                    paymentFinding: currentCandidate.signals[0].paymentFinding
+                )]
+            ),
+            InvoicePaymentCandidate(
+                invoice: invoice,
+                payment: payment,
+                disposition: currentCandidate.disposition,
+                resolverVersion: currentCandidate.resolverVersion,
+                signals: [InvoicePaymentCandidateSignal(
+                    kind: .referenceNumber,
+                    invoiceFinding: currentCandidate.signals[0].invoiceFinding,
+                    paymentFinding: fabricatedPaymentFinding
+                )]
+            ),
+        ]
+        let decision = try PersonDossierFixture.relationshipDecision(for: currentCandidate)
+
+        for candidate in candidates {
+            let snapshot = try PersonDossierProjector().project(fixture.input(
+                documents: [invoice, payment],
+                personCandidates: [invoice],
+                relationshipCandidates: [candidate],
+                relationshipDecisionsByKey: [decision.0: decision.1]
+            ))
+
+            #expect(snapshot.costsAndPayments.map(\.id) == [invoice.document.id])
+        }
+    }
+
     @Test func undecidedExcludedAndContentStaleRelationshipsAddNothing() throws {
         let fixture = try PersonProjectorFixture.make()
         let invoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident)
@@ -602,8 +716,18 @@ struct PersonDossierProjectorTests {
     @Test func stopsAfterPaymentAndNeverAddsSecondInvoice() throws {
         let fixture = try PersonProjectorFixture.make()
         let invoice = try fixture.relationshipDocument(idSuffix: 2, type: .invoice, role: .resident)
-        let paymentShapedAsInvoice = try fixture.relationshipDocument(idSuffix: 3, type: .invoice)
+        let resolverInvoice = try fixture.relationshipDocument(idSuffix: 3, type: .invoice)
         let resolverPayment = try fixture.relationshipDocument(idSuffix: 3, type: .paymentConfirmation)
+        let paymentShapedAsInvoice = try PersonDossierFixture.currentDocument(
+            id: resolverPayment.document.id,
+            sourceRootID: resolverPayment.document.sourceRootID,
+            path: resolverPayment.document.relativePath,
+            documentType: .invoice,
+            contentHash: resolverPayment.document.contentHash,
+            analyzedAt: resolverPayment.snapshot.analyzedAt,
+            personFindings: Array(resolverPayment.snapshot.findings.dropFirst())
+                + Array(resolverInvoice.snapshot.findings.dropFirst())
+        )
         let secondPayment = try fixture.relationshipDocument(idSuffix: 4, type: .paymentConfirmation)
         let resolvedFirst = try PersonDossierFixture.invoicePaymentCandidate(
             invoice: invoice,
@@ -756,15 +880,6 @@ struct PersonDossierProjectorTests {
             analyzedAt: invoice.snapshot.analyzedAt,
             personFindings: []
         )
-        let alternatePaymentType = try PersonDossierFixture.currentDocument(
-            id: payment.document.id,
-            sourceRootID: payment.document.sourceRootID,
-            path: payment.document.relativePath,
-            documentType: .correspondence,
-            contentHash: payment.document.contentHash,
-            analyzedAt: payment.snapshot.analyzedAt,
-            personFindings: []
-        )
         let alternateReference = InvoicePaymentCandidateSignal(
             kind: .referenceNumber,
             invoiceFinding: try PersonDossierFixture.finding(
@@ -775,14 +890,23 @@ struct PersonDossierProjectorTests {
             ),
             paymentFinding: base.signals[0].paymentFinding
         )
-        let preferredByType = InvoicePaymentCandidate(
+        let wrongType = InvoicePaymentCandidate(
             invoice: alternateInvoiceType,
-            payment: alternatePaymentType,
+            payment: payment,
+            disposition: .automatic,
+            resolverVersion: "a",
+            signals: base.signals
+        )
+        let fabricated = InvoicePaymentCandidate(
+            invoice: invoice,
+            payment: payment,
             disposition: .automatic,
             resolverVersion: "a",
             signals: [base.signals[2], base.signals[1], alternateReference]
         )
-        let candidates = [weak, strongLater, strongPreferred, laterAnalysis, preferredByType]
+        let candidates = [
+            weak, strongLater, strongPreferred, laterAnalysis, wrongType, fabricated,
+        ]
         let decision = try PersonDossierFixture.relationshipDecision(for: base)
         let input = fixture.input(
             documents: [invoice, payment], personCandidates: [invoice],
@@ -794,10 +918,16 @@ struct PersonDossierProjectorTests {
             relationshipCandidates: Array(candidates.reversed()), relationshipDecisionsByKey: [decision.0: decision.1]
         ))
         let preferred = forward.costsAndPayments.first { $0.id == payment.document.id }?.preferredPaymentSupport
+        let projectedSupports = forward.costsAndPayments
+            .first { $0.id == payment.document.id }?.supports.compactMap(\.confirmedPaymentValue)
 
         #expect(preferred?.relationship.resolverVersion == "a")
         #expect(preferred?.signals.map(\.kind) == [.referenceNumber, .monetaryAmount, .organization])
-        #expect(preferred?.signals[0].invoiceFinding.displayValue == "ALT-42")
+        #expect(preferred?.signals[0].invoiceFinding.displayValue == "INV-42")
+        #expect(projectedSupports?.count == 3)
+        #expect(projectedSupports?.contains { support in
+            support.signals.contains { $0.invoiceFinding.displayValue == "ALT-42" }
+        } == false)
         #expect(reverse == forward)
     }
 

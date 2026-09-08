@@ -299,7 +299,15 @@ struct PersonDossierProjector: Sendable {
             let invoiceID = candidate.invoice.document.id
             let paymentID = candidate.payment.document.id
             guard let invoiceMember = frozenMembersByID[invoiceID],
-                  input.currentDocumentsByID[invoiceID]?.documentType == .invoice,
+                  let currentInvoiceDNA = input.currentDocumentsByID[invoiceID],
+                  currentInvoiceDNA == candidate.invoice,
+                  currentInvoiceDNA.documentType == .invoice,
+                  let currentPaymentDNA = input.currentDocumentsByID[paymentID],
+                  currentPaymentDNA == candidate.payment,
+                  candidate.signals.allSatisfy({ signal in
+                      candidate.invoice.snapshot.findings.contains(signal.invoiceFinding)
+                          && candidate.payment.snapshot.findings.contains(signal.paymentFinding)
+                  }),
                   let currentInvoice = input.documentsByID[invoiceID],
                   let currentPayment = input.documentsByID[paymentID],
                   !excludedIDs.contains(paymentID),
