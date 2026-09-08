@@ -36,6 +36,8 @@ struct PersonDossierFixture: Sendable {
         id: UUID = UUID(),
         path: String,
         findings: [DocumentDNAFinding],
+        documentType: DocumentType = .invoice,
+        extractedText: String = "x",
         schemaVersion: Int? = nil,
         analyzerIdentifier: String? = nil,
         analyzerVersion: String? = nil
@@ -60,7 +62,7 @@ struct PersonDossierFixture: Sendable {
             analysisVersion: "text-v1",
             extraction: ExtractedDocument(
                 method: .embeddedPDFText,
-                pages: [ExtractedPage(pageIndex: 0, text: "x", regions: [])]
+                pages: [ExtractedPage(pageIndex: 0, text: extractedText, regions: [])]
             ),
             at: Self.date
         )
@@ -71,7 +73,7 @@ struct PersonDossierFixture: Sendable {
             analyzerVersion: analyzerVersion ?? target.analyzerVersion,
             inputContentHash: document.contentHash,
             inputExtractionVersion: "text-v1",
-            findings: [try documentTypeFinding()] + findings,
+            findings: [try documentTypeFinding(documentType)] + findings,
             analyzedAt: Self.date
         )
         try await repository.replace(snapshot)
@@ -82,11 +84,23 @@ struct PersonDossierFixture: Sendable {
         normalizedName: String = "elise muster",
         qualifier: String?
     ) throws -> DocumentDNAFinding {
-        try finding(
+        return try finding(
             kind: .person,
             qualifier: qualifier,
             displayValue: "Elise Muster",
             normalizedValue: normalizedName
+        )
+    }
+
+    func birthDateFinding(
+        displayValue: String = "01.02.1940",
+        normalizedValue: String
+    ) throws -> DocumentDNAFinding {
+        try finding(
+            kind: .date,
+            qualifier: DocumentDNADateRole.birthDate.rawValue,
+            displayValue: displayValue,
+            normalizedValue: normalizedValue
         )
     }
 
@@ -148,12 +162,23 @@ struct PersonDossierFixture: Sendable {
         }
     }
 
-    private func documentTypeFinding() throws -> DocumentDNAFinding {
-        try finding(
+    private func documentTypeFinding(_ type: DocumentType) throws -> DocumentDNAFinding {
+        if type == .unknown {
+            return try DocumentDNAFinding(
+                kind: .documentType,
+                qualifier: nil,
+                displayValue: "",
+                normalizedValue: type.rawValue,
+                secondaryNormalizedValue: nil,
+                confidence: 0,
+                evidence: []
+            )
+        }
+        return try finding(
             kind: .documentType,
             qualifier: nil,
-            displayValue: "Invoice",
-            normalizedValue: DocumentType.invoice.rawValue
+            displayValue: type.rawValue,
+            normalizedValue: type.rawValue
         )
     }
 }
