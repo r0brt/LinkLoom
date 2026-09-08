@@ -388,7 +388,27 @@ enum PersonDossierGoldenFixture {
             let pages = Dictionary(uniqueKeysWithValues: document.pages.map {
                 ($0.pageIndex, $0)
             })
-            for finding in document.dna?.findings ?? [] {
+            let findings = document.dna?.findings ?? []
+            let personEvidence = findings
+                .filter { $0.kind == .person }
+                .flatMap(\.evidence)
+            let personEvidenceRanges = personEvidence.map {
+                PersonDossierGoldenEvidenceRange(
+                    pageIndex: $0.pageIndex,
+                    startUTF16: $0.startUTF16,
+                    lengthUTF16: $0.lengthUTF16
+                )
+            }
+            guard document.expectedEvidence == personEvidenceRanges else {
+                throw PersonDossierGoldenFixtureError.invalidManifest
+            }
+            try verify(
+                evidence: personEvidence,
+                pages: pages,
+                isOCR: document.extractionMethod != .embeddedPDFText,
+                label: "\(document.label) declared person evidence"
+            )
+            for finding in findings where finding.kind != .person {
                 try verify(
                     evidence: finding.evidence,
                     pages: pages,
@@ -397,6 +417,9 @@ enum PersonDossierGoldenFixture {
                 )
             }
         }
+        guard case let .person(copiedAnchor) = manifest.dossier.anchor,
+              copiedAnchor == manifest.anchor
+        else { throw PersonDossierGoldenFixtureError.invalidManifest }
         guard let origin = documentsByID[manifest.anchor.originDocumentID] else {
             throw PersonDossierGoldenFixtureError.invalidManifest
         }

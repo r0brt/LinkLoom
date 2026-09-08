@@ -93,6 +93,40 @@ struct PersonDossierGoldenTests {
         )
     }
 
+    @Test func declaredEvidenceRangesCannotDriftFromPersonFindings() throws {
+        let manifest = try mutatedManifest { root in
+            var documents = try #require(root["documents"] as? [[String: Any]])
+            var document = documents[0]
+            var expectedEvidence = try #require(
+                document["expectedEvidence"] as? [[String: Any]]
+            )
+            expectedEvidence[0]["lengthUTF16"] = 11
+            document["expectedEvidence"] = expectedEvidence
+            documents[0] = document
+            root["documents"] = documents
+        }
+
+        #expect(throws: PersonDossierGoldenFixtureError.invalidManifest) {
+            try PersonDossierGoldenFixture.verifyEvidence(in: manifest)
+        }
+    }
+
+    @Test func copiedDossierAnchorCannotDriftFromTopLevelAnchor() throws {
+        let manifest = try mutatedManifest { root in
+            var dossier = try #require(root["dossier"] as? [String: Any])
+            var anchor = try #require(dossier["anchor"] as? [String: Any])
+            var person = try #require(anchor["person"] as? [String: Any])
+            person["displayName"] = "Lina Fontana Copy"
+            anchor["person"] = person
+            dossier["anchor"] = anchor
+            root["dossier"] = dossier
+        }
+
+        #expect(throws: PersonDossierGoldenFixtureError.invalidManifest) {
+            try PersonDossierGoldenFixture.verifyEvidence(in: manifest)
+        }
+    }
+
     @Test func snapshotResourcesEncodeEveryPublicField() throws {
         let manifest = try PersonDossierGoldenFixture.loadManifest()
         let resources = Set(
@@ -159,14 +193,6 @@ struct PersonDossierGoldenTests {
         let manifest = try PersonDossierGoldenFixture.loadManifest()
         #expect(Set(manifest.metricLabels.relevantDocumentIDs) == Set((1...8).map(Self.id)))
 
-        for scenario in ["relationship-undecided", "relationship-excluded"] {
-            let snapshot = try project(scenario, manifest)
-            #expect(!(snapshot.directMembers + snapshot.costsAndPayments).contains {
-                $0.id == Self.id(7)
-            })
-            #expect(!snapshot.suggestions.contains { $0.id == Self.id(7) })
-        }
-
         let accepted = try project("accepted-secondary", manifest)
         let acceptedMember = try #require(accepted.directMembers.first { $0.id == Self.id(8) })
         #expect(acceptedMember.isConfirmationAuthoritative)
@@ -208,6 +234,53 @@ struct PersonDossierGoldenTests {
         })
         #expect(!reanalysis.directMembers.contains { $0.id == Self.id(2) })
         #expect(Set(reanalysis.corrections.map(\.id)) == Set([Self.id(2), Self.id(8)]))
+    }
+
+    @Test func relationshipAbsenceSnapshotRequiresExactDistinctDecisionStates() throws {
+        let manifest = try PersonDossierGoldenFixture.loadManifest()
+        let expectedKeys: Set<InvoicePaymentDecisionKey> = try Set([
+            InvoicePaymentDecisionKey(
+                relationshipType: .paymentSettlesInvoice,
+                invoiceDocumentID: Self.id(4),
+                paymentDocumentID: Self.id(7),
+                invoiceContentHash: "synthetic-hash-d04",
+                paymentContentHash: "synthetic-hash-d07"
+            ),
+            InvoicePaymentDecisionKey(
+                relationshipType: .paymentSettlesInvoice,
+                invoiceDocumentID: Self.id(6),
+                paymentDocumentID: Self.id(7),
+                invoiceContentHash: "synthetic-hash-d06",
+                paymentContentHash: "synthetic-hash-d07"
+            ),
+            InvoicePaymentDecisionKey(
+                relationshipType: .paymentSettlesInvoice,
+                invoiceDocumentID: Self.id(15),
+                paymentDocumentID: Self.id(7),
+                invoiceContentHash: "synthetic-hash-d15",
+                paymentContentHash: "synthetic-hash-d07"
+            ),
+        ])
+        let undecided = try PersonDossierGoldenFixture.input(
+            manifest: manifest,
+            scenario: "relationship-undecided"
+        )
+        let excluded = try PersonDossierGoldenFixture.input(
+            manifest: manifest,
+            scenario: "relationship-excluded"
+        )
+
+        #expect(undecided.relationshipDecisionsByKey.isEmpty)
+        #expect(Set(excluded.relationshipDecisionsByKey.keys) == expectedKeys)
+        #expect(excluded.relationshipDecisionsByKey.allSatisfy { key, value in
+            value.key == key && value.decision == .excluded
+        })
+
+        let expected = try PersonDossierGoldenFixture.loadExpectedSnapshot(
+            named: "relationship-absent-snapshot"
+        )
+        #expect(try PersonDossierProjector().project(undecided) == expected)
+        #expect(try PersonDossierProjector().project(excluded) == expected)
     }
 
     @Test func originAndAvailabilityOverlaysPreserveTheDossier() throws {
@@ -269,6 +342,28 @@ struct PersonDossierGoldenTests {
         for child in object.values {
             assertCompleteOptionalFields(in: child, resource: resource)
         }
+    }
+
+    private func mutatedManifest(
+        _ mutate: (inout [String: Any]) throws -> Void
+    ) throws -> PersonDossierGoldenManifest {
+        let url = Bundle.module.url(
+            forResource: "manifest",
+            withExtension: "json",
+            subdirectory: "PersonDossier/v1"
+        ) ?? Bundle.module.url(forResource: "manifest", withExtension: "json")
+        let resource = try #require(url)
+        var root = try #require(
+            JSONSerialization.jsonObject(with: Data(contentsOf: resource))
+                as? [String: Any]
+        )
+        try mutate(&root)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try decoder.decode(
+            PersonDossierGoldenManifest.self,
+            from: JSONSerialization.data(withJSONObject: root)
+        )
     }
 
     private static func id(_ suffix: Int) -> UUID {
