@@ -1930,6 +1930,21 @@ struct PersonDossierRepositoryTests {
             findings: values.direct.snapshot.findings,
             analyzedAt: PersonDossierFixture.repositoryDate(4_002)
         )
+        let exactContentReturn = try await values.repository.personDossierSnapshot(
+            id: values.dossier.id
+        )
+        let reactivatedDirect = try #require(exactContentReturn.directMembers.first {
+            $0.document.id == values.direct.document.id
+        })
+        #expect(!reactivatedDirect.isConfirmationAuthoritative)
+        #expect(reactivatedDirect.supports.contains { support in
+            guard case let .exactPrimary(person) = support else { return false }
+            return person.documentID == values.direct.document.id
+                && person.contentHash == values.direct.document.contentHash
+        })
+        #expect(exactContentReturn.token != changed.token)
+        #expect(try await correctionRows(values.fixture.database, values.dossier.id) == rows)
+
         let matchingExcludedFindings = try values.excludedInvoice.snapshot.findings.map { finding in
             guard finding.kind == .person else { return finding }
             return try values.fixture.personFinding(
@@ -1942,18 +1957,22 @@ struct PersonDossierRepositoryTests {
             findings: matchingExcludedFindings,
             analyzedAt: PersonDossierFixture.repositoryDate(4_003)
         )
-        let restored = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+        let exclusionStillWins = try await values.repository.personDossierSnapshot(
+            id: values.dossier.id
+        )
 
-        #expect(restored.directMembers.contains { $0.document.id == values.direct.document.id })
-        #expect(!(restored.directMembers + restored.costsAndPayments).contains {
+        #expect(exclusionStillWins.directMembers.contains {
+            $0.document.id == values.direct.document.id
+        })
+        #expect(!(exclusionStillWins.directMembers + exclusionStillWins.costsAndPayments).contains {
             $0.document.id == values.excludedInvoice.document.id
         })
-        #expect(restored.corrections.contains {
+        #expect(exclusionStillWins.corrections.contains {
             $0.document.id == values.excludedInvoice.document.id
                 && $0.decision == .exclusion(values.exclusion)
         })
         #expect(try await correctionRows(values.fixture.database, values.dossier.id) == rows)
-        #expect(restored.token != changed.token)
+        #expect(exclusionStillWins.token != exactContentReturn.token)
     }
 
     @Test func relationshipDecisionRequiresCurrentInvoiceAndPaymentContent() async throws {
@@ -2184,34 +2203,35 @@ struct PersonDossierRepositoryTests {
         let staleOrigin = try await values.repository.personDossierSnapshot(id: values.dossier.id)
         #expect(staleOrigin.origin.validity == .stale)
         #expect(staleOrigin.origin.document?.availability == .missing)
-        let directBeforeRemoval = try #require(staleOrigin.directMembers.first {
-            $0.document.id == values.direct.document.id
-        })
-        let withOriginSourceCorrection = try await values.repository.removePersonMember(
-            dossierID: values.dossier.id,
-            documentID: values.direct.document.id,
-            expectedSupport: try directBeforeRemoval.commandSupport,
-            expectedToken: staleOrigin.token
-        )
-        let originSourceCorrection = try #require(withOriginSourceCorrection.corrections.first {
-            $0.document.id == values.direct.document.id
-        })
-        guard case let .exclusion(originSourceExclusion) = originSourceCorrection.decision else {
-            Issue.record("Expected an exclusion on the moved origin source")
-            return
-        }
 
         try await SourceRootRepository(dbWriter: values.fixture.database).remove(id: southSource.id)
         let withoutNonOriginSource = try await values.repository.personDossierSnapshot(
             id: values.dossier.id
         )
-        #expect((withoutNonOriginSource.directMembers + withoutNonOriginSource.costsAndPayments)
-            .allSatisfy { $0.document.sourceRootID != southSource.id })
-        #expect(!withoutNonOriginSource.corrections.contains {
-            $0.document.sourceRootID == southSource.id
-        })
+        let removedSouthDocumentIDs: Set<UUID> = [
+            values.suggestion.document.id,
+            values.invoice.document.id,
+            values.manualDocument.id,
+            values.excludedInvoice.document.id,
+            values.unrelatedInvoice.document.id,
+        ]
+        let remainingRemovedSouthIDs = try await values.fixture.database.read { db in
+            try Set(removedSouthDocumentIDs.compactMap { documentID in
+                try DocumentRecord.fetchOne(db, key: documentID)?.id
+            })
+        }
+        #expect(remainingRemovedSouthIDs.isEmpty)
+        let nonOriginMemberIDs = Set(
+            (withoutNonOriginSource.directMembers + withoutNonOriginSource.costsAndPayments)
+                .map(\.document.id)
+        )
+        #expect(nonOriginMemberIDs.contains(values.direct.document.id))
+        #expect(!nonOriginMemberIDs.contains(values.payment.document.id))
+        #expect(try await values.fixture.database.read { db in
+            try DocumentRecord.fetchOne(db, key: values.payment.document.id)
+        } != nil)
         #expect(try await correctionRows(values.fixture.database, values.dossier.id)
-            == PersonCorrectionRows(confirmations: [], exclusions: [originSourceExclusion]))
+            == PersonCorrectionRows(confirmations: [], exclusions: []))
         await #expect(throws: DossierRepositoryError.dossierNotFound) {
             try await values.repository.snapshot(id: values.costsDossier.id)
         }
@@ -2220,10 +2240,24 @@ struct PersonDossierRepositoryTests {
         let withoutOriginSource = try await values.repository.personDossierSnapshot(
             id: values.dossier.id
         )
+        let removedOriginDocumentIDs: Set<UUID> = [
+            values.origin.document.id,
+            values.direct.document.id,
+        ]
+        let remainingRemovedOriginIDs = try await values.fixture.database.read { db in
+            try Set(removedOriginDocumentIDs.compactMap { documentID in
+                try DocumentRecord.fetchOne(db, key: documentID)?.id
+            })
+        }
+        #expect(remainingRemovedOriginIDs.isEmpty)
         #expect(withoutOriginSource.origin.validity == .unavailable)
         #expect(withoutOriginSource.origin.document == nil)
-        #expect((withoutOriginSource.directMembers + withoutOriginSource.costsAndPayments)
-            .allSatisfy { $0.document.sourceRootID != movedSource.id })
+        let finalMemberIDs = Set(
+            (withoutOriginSource.directMembers + withoutOriginSource.costsAndPayments)
+                .map(\.document.id)
+        )
+        #expect(finalMemberIDs.isDisjoint(with: removedOriginDocumentIDs))
+        #expect(!finalMemberIDs.contains(values.payment.document.id))
         #expect(try await correctionRows(values.fixture.database, values.dossier.id)
             == PersonCorrectionRows(confirmations: [], exclusions: []))
         #expect(try await values.fixture.personPersistenceCounts() == (1, 1))
