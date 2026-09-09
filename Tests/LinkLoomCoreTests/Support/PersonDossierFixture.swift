@@ -92,6 +92,66 @@ struct PersonDossierFixture: Sendable {
         }
     }
 
+    func reanalyze(
+        _ current: CurrentDocumentDNA,
+        contentHash: String,
+        findings: [DocumentDNAFinding]? = nil,
+        analyzedAt: Date
+    ) async throws -> CurrentDocumentDNA {
+        try await database.write { db in
+            try db.execute(
+                sql: "UPDATE document SET contentHash = ? WHERE id = ?",
+                arguments: [contentHash, current.document.id]
+            )
+        }
+        let snapshot = try DocumentDNA(
+            documentID: current.document.id,
+            schemaVersion: current.snapshot.schemaVersion,
+            analyzerIdentifier: current.snapshot.analyzerIdentifier,
+            analyzerVersion: current.snapshot.analyzerVersion,
+            inputContentHash: contentHash,
+            inputExtractionVersion: current.snapshot.inputExtractionVersion,
+            findings: findings ?? current.snapshot.findings,
+            analyzedAt: analyzedAt
+        )
+        try await repository.replace(snapshot)
+        guard let reanalyzed = try await repository.currentDocumentSnapshot(
+            documentID: current.document.id,
+            target: target
+        ) else {
+            throw PersonDossierFixtureError.missingCurrentSnapshot
+        }
+        return reanalyzed
+    }
+
+    func moveDocument(
+        _ documentID: UUID,
+        to source: SourceRootRecord,
+        path: String
+    ) async throws {
+        try await database.write { db in
+            try db.execute(
+                sql: "UPDATE document SET sourceRootID = ?, relativePath = ? WHERE id = ?",
+                arguments: [source.id, path, documentID]
+            )
+        }
+    }
+
+    func databaseSnapshot(
+        tables: [String] = PersonDossierDatabaseSnapshot.allTables
+    ) async throws -> PersonDossierDatabaseSnapshot {
+        try await database.read { db in
+            var rowsByTable: [String: [[DatabaseValue]]] = [:]
+            for table in tables {
+                rowsByTable[table] = try Row.fetchAll(
+                    db,
+                    sql: "SELECT * FROM \(table) ORDER BY rowid"
+                ).map { Array($0.databaseValues) }
+            }
+            return PersonDossierDatabaseSnapshot(rowsByTable: rowsByTable)
+        }
+    }
+
     func insertSource(
         sequence: Int,
         displayName: String
@@ -795,8 +855,35 @@ struct PersonDossierAcceptanceCorpus: Sendable {
 
 private enum PersonDossierFixtureError: Error {
     case missingRelationshipCandidate
+    case missingCurrentSnapshot
     case invalidAcceptanceDocumentCount
     case invalidPersonRole
+}
+
+struct PersonDossierDatabaseSnapshot: Sendable, Equatable {
+    static let protectedTables = [
+        "documentDNA",
+        "documentDNAFinding",
+        "documentDNAEvidence",
+        "invoicePaymentUserDecision",
+    ]
+
+    static let allTables = [
+        "sourceRoot",
+        "document",
+        "documentExtraction",
+        "documentDNA",
+        "documentDNAFinding",
+        "documentDNAEvidence",
+        "invoicePaymentUserDecision",
+        "personDossierAnchor",
+        "personDossierAnchorEvidence",
+        "dossier",
+        "dossierMembershipConfirmation",
+        "dossierMembershipExclusion",
+    ]
+
+    let rowsByTable: [String: [[DatabaseValue]]]
 }
 
 private final class PersonDossierProposedIDs: @unchecked Sendable {

@@ -649,6 +649,7 @@ struct PersonDossierRepositoryTests {
                 END
                 """)
         }
+        let beforeFailure = try await fixture.databaseSnapshot()
         do {
             _ = try await repository.createOrOpenPersonDossier(from: selection)
             Issue.record("Expected SQLite trigger failure")
@@ -658,6 +659,7 @@ struct PersonDossierRepositoryTests {
             Issue.record("Expected DatabaseError, got \(error)")
         }
         #expect(try await fixture.personPersistenceCounts() == (0, 0))
+        #expect(try await fixture.databaseSnapshot() == beforeFailure)
     }
 
     @Test func acceptsCurrentSecondaryAndBirthConflictSuggestionsExactly() async throws {
@@ -1483,6 +1485,7 @@ struct PersonDossierRepositoryTests {
                 END
                 """)
         }
+        let beforeFailure = try await values.fixture.databaseSnapshot()
 
         await #expect(throws: DossierRepositoryError.invalidStoredState) {
             try await repository.removePersonMember(
@@ -1496,6 +1499,7 @@ struct PersonDossierRepositoryTests {
         #expect(try await values.confirmations() == [confirmation])
         #expect(try await values.exclusions().isEmpty)
         #expect(try await repository.personDossierSnapshot(id: values.dossier.id) == accepted)
+        #expect(try await values.fixture.databaseSnapshot() == beforeFailure)
     }
 
     @Test func resettingConfirmationReturnsOnlyCurrentEvidenceToSuggestion() async throws {
@@ -1887,6 +1891,536 @@ struct PersonDossierRepositoryTests {
         #expect(try await correctionRows(values.fixture.database, foreignDossier.id)
             == PersonCorrectionRows(confirmations: [], exclusions: [foreignExclusion]))
     }
+
+    @Test func reanalysisReevaluatesAutomaticSupportButPreservesManualDecisions() async throws {
+        let values = try await PersistedPersonDossierScenario.make()
+        let initial = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+        let rows = try await correctionRows(values.fixture.database, values.dossier.id)
+        #expect(initial.directMembers.contains { $0.document.id == values.direct.document.id })
+        #expect(initial.directMembers.contains { $0.document.id == values.manualDocument.id })
+
+        let otherPerson = try values.fixture.personFinding(
+            normalizedName: "other person",
+            qualifier: PersonDossierRole.insuredPerson.rawValue
+        )
+        let changedDirect = try await values.fixture.reanalyze(
+            values.direct,
+            contentHash: "changed-direct-content",
+            findings: values.direct.snapshot.findings.filter { $0.kind != .person } + [otherPerson],
+            analyzedAt: PersonDossierFixture.repositoryDate(4_001)
+        )
+        let changed = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+
+        #expect(!changed.directMembers.contains { $0.document.id == values.direct.document.id })
+        let manual = try #require(changed.directMembers.first {
+            $0.document.id == values.manualDocument.id
+        })
+        #expect(manual.supports == [.manualConfirmation(
+            confirmation: values.confirmation,
+            currentCandidate: nil
+        )])
+        #expect(!(changed.directMembers + changed.costsAndPayments).contains {
+            $0.document.id == values.excludedInvoice.document.id
+        })
+        #expect(try await correctionRows(values.fixture.database, values.dossier.id) == rows)
+
+        _ = try await values.fixture.reanalyze(
+            changedDirect,
+            contentHash: values.direct.document.contentHash,
+            findings: values.direct.snapshot.findings,
+            analyzedAt: PersonDossierFixture.repositoryDate(4_002)
+        )
+        let matchingExcludedFindings = try values.excludedInvoice.snapshot.findings.map { finding in
+            guard finding.kind == .person else { return finding }
+            return try values.fixture.personFinding(
+                qualifier: PersonDossierRole.accountHolder.rawValue
+            )
+        }
+        _ = try await values.fixture.reanalyze(
+            values.excludedInvoice,
+            contentHash: "matching-excluded-content",
+            findings: matchingExcludedFindings,
+            analyzedAt: PersonDossierFixture.repositoryDate(4_003)
+        )
+        let restored = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+
+        #expect(restored.directMembers.contains { $0.document.id == values.direct.document.id })
+        #expect(!(restored.directMembers + restored.costsAndPayments).contains {
+            $0.document.id == values.excludedInvoice.document.id
+        })
+        #expect(restored.corrections.contains {
+            $0.document.id == values.excludedInvoice.document.id
+                && $0.decision == .exclusion(values.exclusion)
+        })
+        #expect(try await correctionRows(values.fixture.database, values.dossier.id) == rows)
+        #expect(restored.token != changed.token)
+    }
+
+    @Test func relationshipDecisionRequiresCurrentInvoiceAndPaymentContent() async throws {
+        for changeInvoice in [true, false] {
+            let values = try await PersistedPersonDossierScenario.make()
+            let initial = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+            #expect(initial.costsAndPayments.contains {
+                $0.document.id == values.payment.document.id
+            })
+            let decisionRows = try await values.fixture.databaseSnapshot(
+                tables: ["invoicePaymentUserDecision"]
+            )
+            let changedEndpoint = try await values.fixture.reanalyze(
+                changeInvoice ? values.invoice : values.payment,
+                contentHash: changeInvoice ? "changed-invoice-content" : "changed-payment-content",
+                analyzedAt: PersonDossierFixture.repositoryDate(changeInvoice ? 4_101 : 4_102)
+            )
+            let stale = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+            #expect(!stale.costsAndPayments.contains {
+                $0.document.id == values.payment.document.id
+            })
+            #expect(try await values.fixture.databaseSnapshot(
+                tables: ["invoicePaymentUserDecision"]
+            ) == decisionRows)
+
+            let currentInvoice = changeInvoice ? changedEndpoint : values.invoice
+            let currentPayment = changeInvoice ? values.payment : changedEndpoint
+            let candidate = try #require(InvoicePaymentCandidateProjector().candidates(
+                from: InvoicePaymentCandidateProjectionInput(
+                    selected: currentInvoice,
+                    matchesByNormalizedReference: [
+                        values.includedReference: [
+                            currentInvoice, currentPayment, values.rejectedPayment,
+                        ],
+                    ]
+                )
+            ).first { $0.payment.document.id == currentPayment.document.id })
+            let (_, currentDecision) = try PersonDossierFixture.relationshipDecision(
+                for: candidate,
+                updatedAt: PersonDossierFixture.repositoryDate(changeInvoice ? 4_111 : 4_112)
+            )
+            try await values.fixture.insertDecision(currentDecision)
+
+            let restored = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+            #expect(restored.costsAndPayments.contains {
+                $0.document.id == values.payment.document.id
+            })
+            #expect(restored.token != stale.token)
+        }
+    }
+
+    @Test func acceptedStaleCandidateStaysManualAndOldProjectionInputsWriteNothing() async throws {
+        let values = try await PersonSuggestionCommandScenario.make(
+            variant: .secondaryRole,
+            sequence: 4_200
+        )
+        let repository = values.fixture.makeDossierRepository(sequence: 4_210)
+        let initial = try await repository.personDossierSnapshot(id: values.dossier.id)
+        let suggestion = try #require(initial.suggestions.first)
+        let accepted = try await repository.acceptPersonSuggestion(
+            dossierID: values.dossier.id,
+            documentID: values.candidate.document.id,
+            expectedSupport: suggestion.commandSupport,
+            expectedToken: initial.token
+        )
+        let oldMember = try #require(accepted.directMembers.first {
+            $0.document.id == values.candidate.document.id
+        })
+        let oldCorrection = try #require(accepted.corrections.first)
+        _ = try await values.fixture.reanalyze(
+            values.candidate,
+            contentHash: "changed-accepted-candidate",
+            findings: values.candidate.snapshot.findings.filter { $0.kind != .person } + [
+                try values.fixture.personFinding(
+                    normalizedName: "another person",
+                    qualifier: PersonDossierRole.authorizedPerson.rawValue
+                ),
+            ],
+            analyzedAt: PersonDossierFixture.repositoryDate(4_220)
+        )
+        let current = try await repository.personDossierSnapshot(id: values.dossier.id)
+        let currentMember = try #require(current.directMembers.first {
+            $0.document.id == values.candidate.document.id
+        })
+        let confirmation = try #require(try await values.confirmations().first)
+        #expect(currentMember.supports == [.manualConfirmation(
+            confirmation: confirmation,
+            currentCandidate: nil
+        )])
+        #expect(current.suggestions.isEmpty)
+
+        let beforeInvalidCommands = try await values.fixture.databaseSnapshot()
+        await #expect(throws: DossierRepositoryError.staleInput) {
+            try await repository.acceptPersonSuggestion(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: initial.token
+            )
+        }
+        await #expect(throws: DossierRepositoryError.staleInput) {
+            try await repository.rejectPersonSuggestion(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: initial.token
+            )
+        }
+        await #expect(throws: DossierRepositoryError.staleInput) {
+            try await repository.removePersonMember(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: try oldMember.commandSupport,
+                expectedToken: accepted.token
+            )
+        }
+        await #expect(throws: DossierRepositoryError.staleInput) {
+            try await repository.acceptPersonSuggestion(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: current.token
+            )
+        }
+        await #expect(throws: DossierRepositoryError.staleInput) {
+            try await repository.rejectPersonSuggestion(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: current.token
+            )
+        }
+        await #expect(throws: DossierRepositoryError.staleInput) {
+            try await repository.removePersonMember(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: try oldMember.commandSupport,
+                expectedToken: current.token
+            )
+        }
+        await #expect(throws: DossierRepositoryError.staleInput) {
+            try await repository.resetPersonCorrection(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedDecision: oldCorrection.decision,
+                expectedToken: accepted.token
+            )
+        }
+        #expect(try await values.fixture.databaseSnapshot() == beforeInvalidCommands)
+    }
+
+    @Test func stableDocumentMovesAvailabilityAndSourceRemovalPreservePersonLifecycle() async throws {
+        let values = try await PersistedPersonDossierScenario.make()
+        let movedSource = try await values.fixture.insertSource(
+            sequence: 4_300,
+            displayName: "Moved Archive"
+        )
+        let initial = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+        let rows = try await correctionRows(values.fixture.database, values.dossier.id)
+
+        try await values.fixture.moveDocument(
+            values.origin.document.id,
+            to: movedSource,
+            path: "moved/origin-renamed.pdf"
+        )
+        try await values.fixture.moveDocument(
+            values.direct.document.id,
+            to: movedSource,
+            path: "moved/direct-renamed.pdf"
+        )
+        let south = try #require(values.sourceDisplayNames.first {
+            $0.value == "South Archive"
+        })
+        let southSource = try await values.fixture.database.read { db in
+            let source = try SourceRootRecord.fetchOne(db, key: south.key)
+            return try #require(source)
+        }
+        try await values.fixture.moveDocument(
+            values.manualDocument.id,
+            to: southSource,
+            path: "moved/manual-renamed.pdf"
+        )
+
+        let moved = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+        #expect(moved.origin.document?.relativePath == "moved/origin-renamed.pdf")
+        #expect(moved.origin.sourceDisplayName == movedSource.displayName)
+        let movedDirect = try #require(moved.directMembers.first {
+            $0.document.id == values.direct.document.id
+        })
+        #expect(movedDirect.document.relativePath == "moved/direct-renamed.pdf")
+        #expect(movedDirect.sourceDisplayName == movedSource.displayName)
+        let movedManual = try #require(moved.directMembers.first {
+            $0.document.id == values.manualDocument.id
+        })
+        #expect(movedManual.document.relativePath == "moved/manual-renamed.pdf")
+        #expect(movedManual.sourceDisplayName == southSource.displayName)
+        #expect(moved.token != initial.token)
+        #expect(try await correctionRows(values.fixture.database, values.dossier.id) == rows)
+        #expect(try await values.repository.personDossierSummaries() == [
+            PersonDossierSummary(dossier: values.dossier, anchor: values.anchor),
+        ])
+
+        for availability in [DocumentAvailability.unavailable, .missing] {
+            try await values.fixture.setAvailability(
+                availability,
+                for: values.direct.document.id
+            )
+            try await values.fixture.setAvailability(
+                availability,
+                for: values.origin.document.id
+            )
+            let unavailable = try await values.repository.personDossierSnapshot(
+                id: values.dossier.id
+            )
+            #expect(unavailable.origin.validity == .current)
+            #expect(unavailable.origin.document?.availability == availability)
+            #expect(unavailable.directMembers.first {
+                $0.document.id == values.direct.document.id
+            }?.document.availability == availability)
+        }
+
+        try await values.fixture.database.write { db in
+            try db.execute(
+                sql: "UPDATE document SET contentHash = 'stale-origin-content' WHERE id = ?",
+                arguments: [values.origin.document.id]
+            )
+        }
+        let staleOrigin = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+        #expect(staleOrigin.origin.validity == .stale)
+        #expect(staleOrigin.origin.document?.availability == .missing)
+        let directBeforeRemoval = try #require(staleOrigin.directMembers.first {
+            $0.document.id == values.direct.document.id
+        })
+        let withOriginSourceCorrection = try await values.repository.removePersonMember(
+            dossierID: values.dossier.id,
+            documentID: values.direct.document.id,
+            expectedSupport: try directBeforeRemoval.commandSupport,
+            expectedToken: staleOrigin.token
+        )
+        let originSourceCorrection = try #require(withOriginSourceCorrection.corrections.first {
+            $0.document.id == values.direct.document.id
+        })
+        guard case let .exclusion(originSourceExclusion) = originSourceCorrection.decision else {
+            Issue.record("Expected an exclusion on the moved origin source")
+            return
+        }
+
+        try await SourceRootRepository(dbWriter: values.fixture.database).remove(id: southSource.id)
+        let withoutNonOriginSource = try await values.repository.personDossierSnapshot(
+            id: values.dossier.id
+        )
+        #expect((withoutNonOriginSource.directMembers + withoutNonOriginSource.costsAndPayments)
+            .allSatisfy { $0.document.sourceRootID != southSource.id })
+        #expect(!withoutNonOriginSource.corrections.contains {
+            $0.document.sourceRootID == southSource.id
+        })
+        #expect(try await correctionRows(values.fixture.database, values.dossier.id)
+            == PersonCorrectionRows(confirmations: [], exclusions: [originSourceExclusion]))
+        await #expect(throws: DossierRepositoryError.dossierNotFound) {
+            try await values.repository.snapshot(id: values.costsDossier.id)
+        }
+
+        try await SourceRootRepository(dbWriter: values.fixture.database).remove(id: movedSource.id)
+        let withoutOriginSource = try await values.repository.personDossierSnapshot(
+            id: values.dossier.id
+        )
+        #expect(withoutOriginSource.origin.validity == .unavailable)
+        #expect(withoutOriginSource.origin.document == nil)
+        #expect((withoutOriginSource.directMembers + withoutOriginSource.costsAndPayments)
+            .allSatisfy { $0.document.sourceRootID != movedSource.id })
+        #expect(try await correctionRows(values.fixture.database, values.dossier.id)
+            == PersonCorrectionRows(confirmations: [], exclusions: []))
+        #expect(try await values.fixture.personPersistenceCounts() == (1, 1))
+        #expect(try await values.repository.personDossierSummaries() == [
+            PersonDossierSummary(dossier: values.dossier, anchor: values.anchor),
+        ])
+    }
+
+    @Test func preCancelledPersonCommandsPreserveCancellationAndEveryPersistedTable() async throws {
+        do {
+            let fixture = try await PersonDossierFixture.make()
+            let finding = try fixture.personFinding(
+                qualifier: PersonDossierRole.resident.rawValue
+            )
+            let current = try await fixture.insertSnapshot(
+                id: PersonDossierFixture.repositoryUUID(4_400),
+                path: "cancel/create.pdf",
+                findings: [finding],
+                documentType: .correspondence
+            )
+            let repository = fixture.makeDossierRepository(sequence: 4_401)
+            let selection = try fixture.selection(current: current, finding: finding)
+            let before = try await fixture.databaseSnapshot()
+            await expectPreCancelled {
+                try await repository.createOrOpenPersonDossier(from: selection)
+            }
+            #expect(try await fixture.databaseSnapshot() == before)
+        }
+
+        do {
+            let values = try await PersonSuggestionCommandScenario.make(
+                variant: .secondaryRole,
+                sequence: 4_500
+            )
+            let repository = values.fixture.makeDossierRepository(sequence: 4_510)
+            let snapshot = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let suggestion = try #require(snapshot.suggestions.first)
+            var before = try await values.fixture.databaseSnapshot()
+            await expectPreCancelled {
+                try await repository.acceptPersonSuggestion(
+                    dossierID: values.dossier.id,
+                    documentID: values.candidate.document.id,
+                    expectedSupport: suggestion.commandSupport,
+                    expectedToken: snapshot.token
+                )
+            }
+            #expect(try await values.fixture.databaseSnapshot() == before)
+            before = try await values.fixture.databaseSnapshot()
+            await expectPreCancelled {
+                try await repository.rejectPersonSuggestion(
+                    dossierID: values.dossier.id,
+                    documentID: values.candidate.document.id,
+                    expectedSupport: suggestion.commandSupport,
+                    expectedToken: snapshot.token
+                )
+            }
+            #expect(try await values.fixture.databaseSnapshot() == before)
+        }
+
+        do {
+            let values = try await PersistedPersonDossierScenario.make()
+            let snapshot = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+            let member = try #require(snapshot.directMembers.first {
+                $0.document.id == values.direct.document.id
+            })
+            let correction = try #require(snapshot.corrections.first {
+                $0.document.id == values.excludedInvoice.document.id
+            })
+            var before = try await values.fixture.databaseSnapshot()
+            await expectPreCancelled {
+                try await values.repository.removePersonMember(
+                    dossierID: values.dossier.id,
+                    documentID: values.direct.document.id,
+                    expectedSupport: try member.commandSupport,
+                    expectedToken: snapshot.token
+                )
+            }
+            #expect(try await values.fixture.databaseSnapshot() == before)
+            before = try await values.fixture.databaseSnapshot()
+            await expectPreCancelled {
+                try await values.repository.resetPersonCorrection(
+                    dossierID: values.dossier.id,
+                    documentID: values.excludedInvoice.document.id,
+                    expectedDecision: correction.decision,
+                    expectedToken: snapshot.token
+                )
+            }
+            #expect(try await values.fixture.databaseSnapshot() == before)
+        }
+    }
+
+    @Test func successfulPersonCommandsNeverMutateAnalysisOrRelationshipTables() async throws {
+        let fixture = try await PersonDossierFixture.make()
+        let originFinding = try fixture.personFinding(
+            qualifier: PersonDossierRole.resident.rawValue
+        )
+        let origin = try await fixture.insertSnapshot(
+            id: PersonDossierFixture.repositoryUUID(4_600),
+            path: "protected/origin.pdf",
+            findings: [originFinding],
+            documentType: .correspondence
+        )
+        _ = try await fixture.insertSnapshot(
+            id: PersonDossierFixture.repositoryUUID(4_601),
+            path: "protected/suggestion.pdf",
+            findings: [try fixture.personFinding(
+                qualifier: PersonDossierRole.authorizedPerson.rawValue
+            )],
+            documentType: .powerOfAttorney
+        )
+        let repository = fixture.makeDossierRepository(sequence: 4_610)
+        let selection = try fixture.selection(current: origin, finding: originFinding)
+
+        var protectedBefore = try await fixture.databaseSnapshot(
+            tables: PersonDossierDatabaseSnapshot.protectedTables
+        )
+        let createdResult = try await repository.createOrOpenPersonDossier(from: selection)
+        guard case let .opened(created) = createdResult else {
+            Issue.record("Expected a newly opened person dossier")
+            return
+        }
+        #expect(try await fixture.databaseSnapshot(
+            tables: PersonDossierDatabaseSnapshot.protectedTables
+        ) == protectedBefore)
+
+        let suggestion = try #require(created.suggestions.first)
+        protectedBefore = try await fixture.databaseSnapshot(
+            tables: PersonDossierDatabaseSnapshot.protectedTables
+        )
+        let accepted = try await repository.acceptPersonSuggestion(
+            dossierID: created.dossier.id,
+            documentID: suggestion.document.id,
+            expectedSupport: suggestion.commandSupport,
+            expectedToken: created.token
+        )
+        #expect(try await fixture.databaseSnapshot(
+            tables: PersonDossierDatabaseSnapshot.protectedTables
+        ) == protectedBefore)
+
+        let member = try #require(accepted.directMembers.first {
+            $0.document.id == suggestion.document.id
+        })
+        protectedBefore = try await fixture.databaseSnapshot(
+            tables: PersonDossierDatabaseSnapshot.protectedTables
+        )
+        let removed = try await repository.removePersonMember(
+            dossierID: created.dossier.id,
+            documentID: suggestion.document.id,
+            expectedSupport: try member.commandSupport,
+            expectedToken: accepted.token
+        )
+        #expect(try await fixture.databaseSnapshot(
+            tables: PersonDossierDatabaseSnapshot.protectedTables
+        ) == protectedBefore)
+
+        let removalCorrection = try #require(removed.corrections.first)
+        protectedBefore = try await fixture.databaseSnapshot(
+            tables: PersonDossierDatabaseSnapshot.protectedTables
+        )
+        let reset = try await repository.resetPersonCorrection(
+            dossierID: created.dossier.id,
+            documentID: suggestion.document.id,
+            expectedDecision: removalCorrection.decision,
+            expectedToken: removed.token
+        )
+        #expect(try await fixture.databaseSnapshot(
+            tables: PersonDossierDatabaseSnapshot.protectedTables
+        ) == protectedBefore)
+
+        let currentSuggestion = try #require(reset.suggestions.first)
+        protectedBefore = try await fixture.databaseSnapshot(
+            tables: PersonDossierDatabaseSnapshot.protectedTables
+        )
+        let rejected = try await repository.rejectPersonSuggestion(
+            dossierID: created.dossier.id,
+            documentID: currentSuggestion.document.id,
+            expectedSupport: currentSuggestion.commandSupport,
+            expectedToken: reset.token
+        )
+        #expect(try await fixture.databaseSnapshot(
+            tables: PersonDossierDatabaseSnapshot.protectedTables
+        ) == protectedBefore)
+
+        let rejectionCorrection = try #require(rejected.corrections.first)
+        protectedBefore = try await fixture.databaseSnapshot(
+            tables: PersonDossierDatabaseSnapshot.protectedTables
+        )
+        _ = try await repository.resetPersonCorrection(
+            dossierID: created.dossier.id,
+            documentID: currentSuggestion.document.id,
+            expectedDecision: rejectionCorrection.decision,
+            expectedToken: rejected.token
+        )
+        #expect(try await fixture.databaseSnapshot(
+            tables: PersonDossierDatabaseSnapshot.protectedTables
+        ) == protectedBefore)
+    }
 }
 
 private struct PersonCorrectionRows: Equatable {
@@ -1903,6 +2437,23 @@ private func correctionRows(
             confirmations: DossierStore.confirmations(in: db, dossierID: dossierID),
             exclusions: DossierStore.exclusions(in: db, dossierID: dossierID)
         )
+    }
+}
+
+private func expectPreCancelled<T: Sendable>(
+    _ operation: @escaping @Sendable () async throws -> T
+) async {
+    let task = Task<T, any Error> {
+        withUnsafeCurrentTask { task in task?.cancel() }
+        return try await operation()
+    }
+    do {
+        _ = try await task.value
+        Issue.record("Expected CancellationError")
+    } catch is CancellationError {
+        // Cancellation must cross the repository boundary unchanged.
+    } catch {
+        Issue.record("Expected CancellationError, got \(error)")
     }
 }
 
