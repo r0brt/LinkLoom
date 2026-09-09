@@ -63,6 +63,24 @@ struct DossierStoreTests {
         }
     }
 
+    @Test func personDossierReadsTheTypedDossierForPersonAnchor() throws {
+        let fixture = try DossierStoreFixture.make()
+        let person = try fixture.personDossier(
+            id: fixture.firstDossierID,
+            anchor: fixture.persistedPersonAnchor
+        )
+
+        try fixture.db.write { db in
+            _ = try DossierStore.insertOrFetchAnchored(in: db, proposed: person)
+
+            #expect(try DossierStore.personDossier(
+                in: db,
+                personAnchorID: fixture.persistedPersonAnchor.id
+            ) == person)
+            #expect(try DossierStore.personDossier(in: db, personAnchorID: UUID()) == nil)
+        }
+    }
+
     @Test func personDossierRequiresPreviouslyStoredPersonAnchor() throws {
         let fixture = try DossierStoreFixture.make()
         let person = try fixture.personDossier(
@@ -118,6 +136,12 @@ struct DossierStoreTests {
                 #expect(throws: DossierStoreError.invalidStoredState) {
                     try DossierStore.record(in: db, id: id)
                 }
+            }
+            #expect(throws: DossierStoreError.invalidStoredState) {
+                try DossierStore.personDossier(
+                    in: db,
+                    personAnchorID: fixture.persistedPersonAnchor.id
+                )
             }
 
             try db.execute(sql: "DELETE FROM dossier")

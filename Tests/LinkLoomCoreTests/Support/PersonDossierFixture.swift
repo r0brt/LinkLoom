@@ -5,6 +5,17 @@ import GRDB
 struct PersonDossierFixture: Sendable {
     static let date = Date(timeIntervalSince1970: 1_800_000_000)
 
+    static func repositoryUUID(_ sequence: Int) -> UUID {
+        UUID(uuidString: String(
+            format: "77000000-0000-0000-0000-%012d",
+            sequence
+        ))!
+    }
+
+    static func repositoryDate(_ offset: TimeInterval) -> Date {
+        date.addingTimeInterval(offset)
+    }
+
     let database: DatabaseQueue
     let source: SourceRootRecord
     let repository: DocumentDNARepository
@@ -30,6 +41,228 @@ struct PersonDossierFixture: Sendable {
                 analyzerVersion: "1"
             )
         )
+    }
+
+    func makeDossierRepository(
+        sequence: Int = 900,
+        timestamp: Date? = nil
+    ) -> DossierRepository {
+        let proposedIDs = PersonDossierProposedIDs(startingAt: sequence)
+        return DossierRepository(
+            dbWriter: database,
+            target: target,
+            now: { timestamp ?? Self.repositoryDate(TimeInterval(sequence)) },
+            makeUUID: { proposedIDs.next() }
+        )
+    }
+
+    func selection(
+        current: CurrentDocumentDNA,
+        finding: DocumentDNAFinding
+    ) throws -> PersonDossierAnchorSelection {
+        try PersonDossierAnchorSelection(
+            document: current.document,
+            snapshot: current.snapshot,
+            finding: finding
+        )
+    }
+
+    func personPersistenceCounts() async throws -> (anchors: Int, dossiers: Int) {
+        try await database.read { db in
+            (
+                try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM personDossierAnchor") ?? 0,
+                try Int.fetchOne(
+                    db,
+                    sql: "SELECT COUNT(*) FROM dossier WHERE kind = ?",
+                    arguments: [DossierKind.personMatter.rawValue]
+                ) ?? 0
+            )
+        }
+    }
+
+    func setAvailability(
+        _ availability: DocumentAvailability,
+        for documentID: UUID
+    ) async throws {
+        try await database.write { db in
+            try db.execute(
+                sql: "UPDATE document SET availability = ? WHERE id = ?",
+                arguments: [availability.rawValue, documentID]
+            )
+        }
+    }
+
+    func reanalyze(
+        _ current: CurrentDocumentDNA,
+        contentHash: String,
+        findings: [DocumentDNAFinding]? = nil,
+        analyzedAt: Date
+    ) async throws -> CurrentDocumentDNA {
+        try await database.write { db in
+            try db.execute(
+                sql: "UPDATE document SET contentHash = ? WHERE id = ?",
+                arguments: [contentHash, current.document.id]
+            )
+        }
+        let snapshot = try DocumentDNA(
+            documentID: current.document.id,
+            schemaVersion: current.snapshot.schemaVersion,
+            analyzerIdentifier: current.snapshot.analyzerIdentifier,
+            analyzerVersion: current.snapshot.analyzerVersion,
+            inputContentHash: contentHash,
+            inputExtractionVersion: current.snapshot.inputExtractionVersion,
+            findings: findings ?? current.snapshot.findings,
+            analyzedAt: analyzedAt
+        )
+        try await repository.replace(snapshot)
+        guard let reanalyzed = try await repository.currentDocumentSnapshot(
+            documentID: current.document.id,
+            target: target
+        ) else {
+            throw PersonDossierFixtureError.missingCurrentSnapshot
+        }
+        return reanalyzed
+    }
+
+    func moveDocument(
+        _ documentID: UUID,
+        to source: SourceRootRecord,
+        path: String
+    ) async throws {
+        try await database.write { db in
+            try db.execute(
+                sql: "UPDATE document SET sourceRootID = ?, relativePath = ? WHERE id = ?",
+                arguments: [source.id, path, documentID]
+            )
+        }
+    }
+
+    func databaseSnapshot(
+        tables: [String] = PersonDossierDatabaseSnapshot.allTables
+    ) async throws -> PersonDossierDatabaseSnapshot {
+        try await database.read { db in
+            var rowsByTable: [String: [[DatabaseValue]]] = [:]
+            for table in tables {
+                rowsByTable[table] = try Row.fetchAll(
+                    db,
+                    sql: "SELECT * FROM \(table) ORDER BY rowid"
+                ).map { Array($0.databaseValues) }
+            }
+            return PersonDossierDatabaseSnapshot(rowsByTable: rowsByTable)
+        }
+    }
+
+    func insertSource(
+        sequence: Int,
+        displayName: String
+    ) async throws -> SourceRootRecord {
+        let source = SourceRootRecord(
+            id: Self.repositoryUUID(sequence),
+            displayName: displayName,
+            pathHint: "/synthetic/\(sequence)",
+            bookmarkData: Data("bookmark-\(sequence)".utf8),
+            createdAt: Self.repositoryDate(TimeInterval(sequence))
+        )
+        try await database.write { db in try source.insert(db) }
+        return source
+    }
+
+    func insertPersonDossier(
+        sequence: Int,
+        origin: CurrentDocumentDNA,
+        finding: DocumentDNAFinding,
+        displayName: String = "Elise Muster"
+    ) async throws -> (PersonDossierAnchor, DossierRecord) {
+        guard let role = finding.qualifier.flatMap(PersonDossierRole.init(rawValue:)) else {
+            throw PersonDossierFixtureError.invalidPersonRole
+        }
+        let anchor = try PersonDossierAnchor(
+            id: Self.repositoryUUID(sequence),
+            displayName: displayName,
+            normalizedName: finding.normalizedValue,
+            primaryRole: role,
+            originDocumentID: origin.document.id,
+            originContentHash: origin.snapshot.inputContentHash,
+            originExtractionVersion: origin.snapshot.inputExtractionVersion,
+            originDNASchemaVersion: origin.snapshot.schemaVersion,
+            originDNAAnalyzerIdentifier: origin.snapshot.analyzerIdentifier,
+            originDNAAnalyzerVersion: origin.snapshot.analyzerVersion,
+            originDNAAnalyzedAt: origin.snapshot.analyzedAt,
+            personEvidence: finding.evidence,
+            birthDate: nil,
+            createdAt: Self.repositoryDate(TimeInterval(sequence)),
+            updatedAt: Self.repositoryDate(TimeInterval(sequence))
+        )
+        let dossier = try DossierRecord(
+            id: Self.repositoryUUID(sequence + 1),
+            kind: .personMatter,
+            displayName: "Meine Mutter im Pflegeheim",
+            anchor: .person(anchor),
+            createdAt: Self.repositoryDate(TimeInterval(sequence + 1)),
+            updatedAt: Self.repositoryDate(TimeInterval(sequence + 1))
+        )
+        try await database.write { db in
+            let storedAnchor = try PersonDossierAnchorStore.insertOrFetch(
+                in: db,
+                proposed: anchor
+            )
+            _ = try DossierStore.insertOrFetchAnchored(
+                in: db,
+                proposed: try DossierRecord(
+                    id: dossier.id,
+                    kind: dossier.kind,
+                    displayName: dossier.displayName,
+                    anchor: .person(storedAnchor),
+                    createdAt: dossier.createdAt,
+                    updatedAt: dossier.updatedAt
+                )
+            )
+        }
+        return (anchor, dossier)
+    }
+
+    func makePersonAnchor(
+        sequence: Int,
+        origin: CurrentDocumentDNA,
+        finding: DocumentDNAFinding,
+        birthDate: PersonDossierBirthDate? = nil
+    ) throws -> PersonDossierAnchor {
+        guard let role = finding.qualifier.flatMap(PersonDossierRole.init(rawValue:)) else {
+            throw PersonDossierFixtureError.invalidPersonRole
+        }
+        return try PersonDossierAnchor(
+            id: Self.repositoryUUID(sequence),
+            displayName: finding.displayValue,
+            normalizedName: finding.normalizedValue,
+            primaryRole: role,
+            originDocumentID: origin.document.id,
+            originContentHash: origin.snapshot.inputContentHash,
+            originExtractionVersion: origin.snapshot.inputExtractionVersion,
+            originDNASchemaVersion: origin.snapshot.schemaVersion,
+            originDNAAnalyzerIdentifier: origin.snapshot.analyzerIdentifier,
+            originDNAAnalyzerVersion: origin.snapshot.analyzerVersion,
+            originDNAAnalyzedAt: origin.snapshot.analyzedAt,
+            personEvidence: finding.evidence,
+            birthDate: birthDate,
+            createdAt: Self.repositoryDate(TimeInterval(sequence)),
+            updatedAt: Self.repositoryDate(TimeInterval(sequence))
+        )
+    }
+
+    func insertConfirmation(_ confirmation: DossierMembershipConfirmation) async throws {
+        try await database.write { db in
+            try DossierStore.insertConfirmation(in: db, confirmation: confirmation)
+        }
+    }
+
+    func insertExclusion(_ exclusion: DossierMembershipExclusion) async throws {
+        try await database.write { db in
+            try DossierStore.insertExclusion(in: db, exclusion: exclusion)
+        }
+    }
+
+    func insertDecision(_ decision: InvoicePaymentDecisionRecord) async throws {
+        try await InvoicePaymentDecisionRepository(dbWriter: database).save(decision)
     }
 
     func makeAcceptanceCorpus(
@@ -451,16 +684,20 @@ struct PersonDossierFixture: Sendable {
         path: String,
         findings: [DocumentDNAFinding],
         documentType: DocumentType = .invoice,
+        sourceRoot: SourceRootRecord? = nil,
+        contentHash: String? = nil,
         extractedText: String = "x",
         schemaVersion: Int? = nil,
         analyzerIdentifier: String? = nil,
-        analyzerVersion: String? = nil
+        analyzerVersion: String? = nil,
+        analyzedAt: Date? = nil
     ) async throws -> CurrentDocumentDNA {
+        let resolvedSource = sourceRoot ?? source
         let document = DocumentRecord(
             id: id,
-            sourceRootID: source.id,
+            sourceRootID: resolvedSource.id,
             relativePath: path,
-            contentHash: "hash-\(path)",
+            contentHash: contentHash ?? "hash-\(path)",
             byteCount: 1,
             modifiedAt: Self.date,
             mediaType: .pdf,
@@ -488,7 +725,7 @@ struct PersonDossierFixture: Sendable {
             inputContentHash: document.contentHash,
             inputExtractionVersion: "text-v1",
             findings: [try documentTypeFinding(documentType)] + findings,
-            analyzedAt: Self.date
+            analyzedAt: analyzedAt ?? Self.date
         )
         try await repository.replace(snapshot)
         return try CurrentDocumentDNA(document: document, snapshot: snapshot)
@@ -618,5 +855,52 @@ struct PersonDossierAcceptanceCorpus: Sendable {
 
 private enum PersonDossierFixtureError: Error {
     case missingRelationshipCandidate
+    case missingCurrentSnapshot
     case invalidAcceptanceDocumentCount
+    case invalidPersonRole
+}
+
+struct PersonDossierDatabaseSnapshot: Sendable, Equatable {
+    static let protectedTables = [
+        "documentDNA",
+        "documentDNAFinding",
+        "documentDNAEvidence",
+        "invoicePaymentUserDecision",
+    ]
+
+    static let allTables = [
+        "sourceRoot",
+        "document",
+        "documentExtraction",
+        "extractedPage",
+        "extractionFTS",
+        "documentDNA",
+        "documentDNAFinding",
+        "documentDNAEvidence",
+        "documentDNAAnalysisState",
+        "invoicePaymentUserDecision",
+        "personDossierAnchor",
+        "personDossierAnchorEvidence",
+        "dossier",
+        "dossierMembershipConfirmation",
+        "dossierMembershipExclusion",
+    ]
+
+    let rowsByTable: [String: [[DatabaseValue]]]
+}
+
+private final class PersonDossierProposedIDs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var nextSequence: Int
+
+    init(startingAt sequence: Int) {
+        nextSequence = sequence
+    }
+
+    func next() -> UUID {
+        lock.withLock {
+            defer { nextSequence += 1 }
+            return PersonDossierFixture.repositoryUUID(nextSequence)
+        }
+    }
 }

@@ -614,7 +614,10 @@ struct PersonDossierProjector: Sendable {
                 && finding.qualifier == anchor.primaryRole.rawValue
                 && binaryEqual(finding.displayValue, anchor.displayName)
                 && binaryEqual(finding.normalizedValue, anchor.normalizedName)
-                && finding.evidence == anchor.personEvidence
+                && finding.evidence.count == anchor.personEvidence.count
+                && zip(finding.evidence, anchor.personEvidence).allSatisfy { current, copied in
+                    current.isByteIdentical(to: copied)
+                }
         }
     }
 

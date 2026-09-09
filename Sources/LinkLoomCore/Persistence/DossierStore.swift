@@ -6,6 +6,30 @@ enum DossierStoreError: Error, Equatable {
 }
 
 enum DossierStore {
+    static func personDossier(
+        in db: Database,
+        personAnchorID: UUID
+    ) throws -> DossierRecord? {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT id, kind, displayName, anchorDocumentID, personAnchorID,
+                       createdAt, updatedAt
+                FROM dossier
+                WHERE personAnchorID = ?
+                """,
+            arguments: [personAnchorID]
+        )
+        switch rows.count {
+        case 0:
+            return nil
+        case 1:
+            return try decodeDossier(in: db, row: rows[0])
+        default:
+            throw DossierStoreError.invalidStoredState
+        }
+    }
+
     static func all(in db: Database) throws -> [DossierRecord] {
         try Row.fetchAll(
             db,

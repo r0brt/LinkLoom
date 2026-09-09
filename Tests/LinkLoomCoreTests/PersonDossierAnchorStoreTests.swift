@@ -76,6 +76,149 @@ struct PersonDossierAnchorStoreTests {
         }
     }
 
+    @Test func recordMatchesExactStableOriginAndRole() throws {
+        let fixture = try PersonDossierAnchorStoreFixture.make()
+        let resident = try fixture.anchor(id: fixture.firstAnchorID)
+        let insuredPerson = try fixture.anchor(
+            id: fixture.secondAnchorID,
+            primaryRole: .insuredPerson
+        )
+
+        try fixture.db.write { db in
+            _ = try PersonDossierAnchorStore.insertOrFetch(in: db, proposed: resident)
+            _ = try PersonDossierAnchorStore.insertOrFetch(in: db, proposed: insuredPerson)
+
+            #expect(try PersonDossierAnchorStore.record(
+                in: db,
+                originDocumentID: fixture.firstOriginDocumentID,
+                primaryRole: .resident,
+                normalizedName: "elise muster"
+            ) == resident)
+            #expect(try PersonDossierAnchorStore.record(
+                in: db,
+                originDocumentID: fixture.firstOriginDocumentID,
+                primaryRole: .insuredPerson,
+                normalizedName: "elise muster"
+            ) == insuredPerson)
+            #expect(try PersonDossierAnchorStore.record(
+                in: db,
+                originDocumentID: fixture.firstOriginDocumentID,
+                primaryRole: .resident,
+                normalizedName: "Elise Muster"
+            ) == nil)
+        }
+    }
+
+    @Test func normalizedNameReadsKeepCanonicallyEquivalentUnicodeStringsDistinct() throws {
+        let fixture = try PersonDossierAnchorStoreFixture.make()
+        let precomposedName = "\u{00E9}lise muster"
+        let decomposedName = "e\u{301}lise muster"
+        let precomposed = try fixture.anchor(
+            id: fixture.firstAnchorID,
+            normalizedName: precomposedName
+        )
+        let decomposed = try fixture.anchor(
+            id: fixture.secondAnchorID,
+            originDocumentID: fixture.secondOriginDocumentID,
+            normalizedName: decomposedName
+        )
+
+        try fixture.db.write { db in
+            _ = try PersonDossierAnchorStore.insertOrFetch(in: db, proposed: precomposed)
+            _ = try PersonDossierAnchorStore.insertOrFetch(in: db, proposed: decomposed)
+
+            #expect(try PersonDossierAnchorStore.record(
+                in: db,
+                originDocumentID: fixture.firstOriginDocumentID,
+                primaryRole: .resident,
+                normalizedName: precomposedName
+            ) == precomposed)
+            #expect(try PersonDossierAnchorStore.record(
+                in: db,
+                originDocumentID: fixture.secondOriginDocumentID,
+                primaryRole: .resident,
+                normalizedName: decomposedName
+            ) == decomposed)
+
+            let precomposedRecords = try PersonDossierAnchorStore.records(
+                in: db,
+                normalizedName: precomposedName
+            )
+            let decomposedRecords = try PersonDossierAnchorStore.records(
+                in: db,
+                normalizedName: decomposedName
+            )
+            #expect(precomposedRecords == [precomposed])
+            #expect(decomposedRecords == [decomposed])
+        }
+    }
+
+    @Test func recordsUseExactNormalizedNameIndexAndCreatedAtIDOrder() throws {
+        let fixture = try PersonDossierAnchorStoreFixture.make()
+        let later = try fixture.anchor(
+            id: fixture.firstAnchorID,
+            createdAt: fixture.date.addingTimeInterval(1)
+        )
+        let firstAtSameTime = try fixture.anchor(
+            id: fixture.secondAnchorID,
+            originDocumentID: fixture.secondOriginDocumentID
+        )
+        let secondAtSameTime = try fixture.anchor(
+            id: fixture.thirdAnchorID,
+            originDocumentID: fixture.thirdOriginDocumentID
+        )
+        let differentBytes = try fixture.anchor(
+            id: fixture.fourthAnchorID,
+            originDocumentID: fixture.fourthOriginDocumentID,
+            normalizedName: "Elise Muster"
+        )
+        let trace = PersonDossierAnchorStoreSQLTrace()
+
+        try fixture.db.write { db in
+            for anchor in [later, secondAtSameTime, differentBytes, firstAtSameTime] {
+                _ = try PersonDossierAnchorStore.insertOrFetch(in: db, proposed: anchor)
+            }
+            db.trace(options: .statement) { event in trace.record(event) }
+        }
+        trace.reset()
+
+        try fixture.db.read { db in
+            let records = try PersonDossierAnchorStore.records(
+                in: db,
+                normalizedName: "elise muster"
+            )
+            let absentRecords = try PersonDossierAnchorStore.records(
+                in: db,
+                normalizedName: "missing person"
+            )
+            #expect(records == [firstAtSameTime, secondAtSameTime, later])
+            #expect(absentRecords.isEmpty)
+        }
+        try fixture.db.write { db in db.trace(options: []) }
+
+        #expect(trace.indexedNormalizedNameReadCount == 2)
+    }
+
+    @Test func recordsMapsMalformedAnchorToInvalidStoredState() throws {
+        let fixture = try PersonDossierAnchorStoreFixture.make()
+        try fixture.db.write { db in
+            try fixture.insertRawAnchor(
+                in: db,
+                id: fixture.firstAnchorID,
+                originDocumentID: fixture.firstOriginDocumentID
+            )
+            try fixture.insertRawEvidence(in: db, personAnchorID: fixture.firstAnchorID)
+            try db.execute(
+                sql: "UPDATE personDossierAnchorEvidence SET ocrRegionIndexesJSON = ?",
+                arguments: [Data("not-json".utf8)]
+            )
+
+            #expect(throws: PersonDossierAnchorStoreError.invalidStoredState) {
+                try PersonDossierAnchorStore.records(in: db, normalizedName: "elise muster")
+            }
+        }
+    }
+
     @Test func insertOrFetchRollsBackAnchorWhenEvidenceInsertFails() throws {
         let fixture = try PersonDossierAnchorStoreFixture.make()
         let anchor = try fixture.anchor(id: fixture.firstAnchorID)
@@ -232,6 +375,8 @@ private struct PersonDossierAnchorStoreFixture {
     let fourthAnchorID = UUID(uuidString: "a0000000-0000-0000-0000-000000000004")!
     let firstOriginDocumentID = UUID(uuidString: "b0000000-0000-0000-0000-000000000001")!
     let secondOriginDocumentID = UUID(uuidString: "b0000000-0000-0000-0000-000000000002")!
+    let thirdOriginDocumentID = UUID(uuidString: "b0000000-0000-0000-0000-000000000003")!
+    let fourthOriginDocumentID = UUID(uuidString: "b0000000-0000-0000-0000-000000000004")!
     let date = Date(timeIntervalSince1970: 1_800_000_000)
 
     static func make() throws -> Self {
@@ -242,14 +387,17 @@ private struct PersonDossierAnchorStoreFixture {
         id: UUID,
         displayName: String = "Elise Muster",
         originDocumentID: UUID? = nil,
+        normalizedName: String = "elise muster",
+        primaryRole: PersonDossierRole = .resident,
         personEvidence: [DocumentDNAEvidence]? = nil,
-        birthDate: PersonDossierBirthDate? = nil
+        birthDate: PersonDossierBirthDate? = nil,
+        createdAt: Date? = nil
     ) throws -> PersonDossierAnchor {
         try PersonDossierAnchor(
             id: id,
             displayName: displayName,
-            normalizedName: "elise muster",
-            primaryRole: .resident,
+            normalizedName: normalizedName,
+            primaryRole: primaryRole,
             originDocumentID: originDocumentID ?? firstOriginDocumentID,
             originContentHash: "origin-hash",
             originExtractionVersion: "text-v1",
@@ -259,8 +407,8 @@ private struct PersonDossierAnchorStoreFixture {
             originDNAAnalyzedAt: date,
             personEvidence: personEvidence ?? [evidence(pageIndex: 0, exactText: "Elise Muster")],
             birthDate: birthDate,
-            createdAt: date,
-            updatedAt: date
+            createdAt: createdAt ?? date,
+            updatedAt: createdAt ?? date
         )
     }
 
@@ -314,5 +462,23 @@ private struct PersonDossierAnchorStoreFixture {
                 """,
             arguments: [personAnchorID, subject, evidenceOrder, Data("[1,3]".utf8)]
         )
+    }
+}
+
+private final class PersonDossierAnchorStoreSQLTrace: @unchecked Sendable {
+    private let lock = NSLock()
+    private var indexedNormalizedNameReads = 0
+
+    var indexedNormalizedNameReadCount: Int { lock.withLock { indexedNormalizedNameReads } }
+
+    func reset() {
+        lock.withLock { indexedNormalizedNameReads = 0 }
+    }
+
+    func record(_ event: Database.TraceEvent) {
+        guard case let .statement(statement) = event,
+              statement.sql.contains("INDEXED BY person_dossier_anchor_normalized_name")
+        else { return }
+        lock.withLock { indexedNormalizedNameReads += 1 }
     }
 }
