@@ -719,6 +719,9 @@ public actor DossierRepository {
         {
             return DossierRepositoryError.invalidStoredState
         }
+        if error is RowDecodingError {
+            return DossierRepositoryError.invalidStoredState
+        }
         return error
     }
 }

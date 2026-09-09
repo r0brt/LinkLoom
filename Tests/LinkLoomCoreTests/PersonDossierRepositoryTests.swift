@@ -171,6 +171,23 @@ struct PersonDossierRepositoryTests {
         }
     }
 
+    @Test func personSnapshotMapsMalformedDocumentEnumWithoutWrites() async throws {
+        let values = try await PersistedPersonDossierScenario.make()
+        try await values.fixture.database.write { db in
+            try db.execute(
+                sql: "UPDATE document SET availability = 'malformed' WHERE id = ?",
+                arguments: [values.direct.document.id]
+            )
+        }
+        let beforeRead = try await values.fixture.databaseSnapshot()
+
+        await #expect(throws: DossierRepositoryError.invalidStoredState) {
+            try await values.repository.personDossierSnapshot(id: values.dossier.id)
+        }
+
+        #expect(try await values.fixture.databaseSnapshot() == beforeRead)
+    }
+
     @Test func currentSelectionValidationRejectsMissingAndChangedSupportWithoutWrites() async throws {
         let fixture = try await PersonDossierFixture.make()
         let repository = fixture.makeDossierRepository()
