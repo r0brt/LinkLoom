@@ -2236,6 +2236,31 @@ struct PersonDossierRepositoryTests {
             try await values.repository.snapshot(id: values.costsDossier.id)
         }
 
+        let directBeforeOriginRemoval = try #require(
+            withoutNonOriginSource.directMembers.first {
+                $0.document.id == values.direct.document.id
+            }
+        )
+        let correctionRepository = values.fixture.makeDossierRepository(
+            sequence: 4_350,
+            timestamp: PersonDossierFixture.repositoryDate(4_350)
+        )
+        let correctedBeforeOriginRemoval = try await correctionRepository.removePersonMember(
+            dossierID: values.dossier.id,
+            documentID: values.direct.document.id,
+            expectedSupport: try directBeforeOriginRemoval.commandSupport,
+            expectedToken: withoutNonOriginSource.token
+        )
+        let directCorrection = try #require(correctedBeforeOriginRemoval.corrections.first {
+            $0.document.id == values.direct.document.id
+        })
+        guard case let .exclusion(directExclusion) = directCorrection.decision else {
+            Issue.record("Expected a document-bound exclusion before origin removal")
+            return
+        }
+        #expect(try await correctionRows(values.fixture.database, values.dossier.id)
+            == PersonCorrectionRows(confirmations: [], exclusions: [directExclusion]))
+
         try await SourceRootRepository(dbWriter: values.fixture.database).remove(id: movedSource.id)
         let withoutOriginSource = try await values.repository.personDossierSnapshot(
             id: values.dossier.id
@@ -2258,6 +2283,9 @@ struct PersonDossierRepositoryTests {
         )
         #expect(finalMemberIDs.isDisjoint(with: removedOriginDocumentIDs))
         #expect(!finalMemberIDs.contains(values.payment.document.id))
+        #expect(!withoutOriginSource.corrections.contains {
+            $0.document.id == directExclusion.documentID
+        })
         #expect(try await correctionRows(values.fixture.database, values.dossier.id)
             == PersonCorrectionRows(confirmations: [], exclusions: []))
         #expect(try await values.fixture.personPersistenceCounts() == (1, 1))
