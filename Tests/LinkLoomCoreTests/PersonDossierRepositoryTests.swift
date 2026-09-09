@@ -303,6 +303,43 @@ struct PersonDossierRepositoryTests {
         #expect(try await fixture.personPersistenceCounts() == (0, 0))
     }
 
+    @Test func currentSelectionRejectsCanonicallyEquivalentButByteDifferentReanalysis() async throws {
+        let fixture = try await PersonDossierFixture.make()
+        let repository = fixture.makeDossierRepository()
+        let storedFinding = try fixture.personFinding(
+            normalizedName: "\u{00E9}lise muster",
+            qualifier: PersonDossierRole.resident.rawValue
+        )
+        let current = try await fixture.insertSnapshot(
+            id: PersonDossierFixture.repositoryUUID(220),
+            path: "unicode-selection.pdf",
+            findings: [storedFinding],
+            documentType: .correspondence
+        )
+        let selection = try fixture.selection(current: current, finding: storedFinding)
+        let byteDifferentFinding = try fixture.personFinding(
+            normalizedName: "e\u{301}lise muster",
+            qualifier: PersonDossierRole.resident.rawValue
+        )
+        try await fixture.repository.replace(try DocumentDNA(
+            documentID: current.document.id,
+            schemaVersion: current.snapshot.schemaVersion,
+            analyzerIdentifier: current.snapshot.analyzerIdentifier,
+            analyzerVersion: current.snapshot.analyzerVersion,
+            inputContentHash: current.snapshot.inputContentHash,
+            inputExtractionVersion: current.snapshot.inputExtractionVersion,
+            findings: current.snapshot.findings.map {
+                $0.kind == .person ? byteDifferentFinding : $0
+            },
+            analyzedAt: current.snapshot.analyzedAt
+        ))
+
+        await #expect(throws: DossierRepositoryError.staleInput) {
+            try await repository.personDossierEntryDisposition(for: selection)
+        }
+        #expect(try await fixture.personPersistenceCounts() == (0, 0))
+    }
+
     @Test func createsCompletePersonDossierWithExactSupportAndConservativeBirthDate() async throws {
         let fixture = try await PersonDossierFixture.make()
         let repository = fixture.makeDossierRepository(sequence: 300)
@@ -952,6 +989,54 @@ struct PersonDossierRepositoryTests {
         }.isEmpty)
     }
 
+    @Test func acceptanceRejectsCanonicallyEquivalentButByteDifferentCurrentSupport() async throws {
+        let values = try await PersonSuggestionCommandScenario.make(
+            variant: .secondaryRole,
+            sequence: 1_350
+        )
+        let precomposedHash = "h\u{00E1}sh"
+        let decomposedHash = "ha\u{301}sh"
+        try await values.fixture.database.write { db in
+            try db.execute(
+                sql: "UPDATE document SET contentHash = ? WHERE id = ?",
+                arguments: [precomposedHash, values.candidate.document.id]
+            )
+            try db.execute(
+                sql: "UPDATE documentDNA SET inputContentHash = ? WHERE documentID = ?",
+                arguments: [precomposedHash, values.candidate.document.id]
+            )
+        }
+        let repository = values.fixture.makeDossierRepository(sequence: 1_360)
+        let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+        let suggestion = try #require(before.suggestions.first)
+
+        try await values.fixture.database.write { db in
+            try db.execute(
+                sql: "UPDATE document SET contentHash = ? WHERE id = ?",
+                arguments: [decomposedHash, values.candidate.document.id]
+            )
+            try db.execute(
+                sql: "UPDATE documentDNA SET inputContentHash = ? WHERE documentID = ?",
+                arguments: [decomposedHash, values.candidate.document.id]
+            )
+        }
+        let current = try await repository.personDossierSnapshot(id: values.dossier.id)
+        let currentSuggestion = try #require(current.suggestions.first)
+        #expect(precomposedHash.utf8.elementsEqual(decomposedHash.utf8) == false)
+        #expect(current.token == before.token)
+        #expect(currentSuggestion.commandSupport == suggestion.commandSupport)
+
+        await #expect(throws: DossierRepositoryError.staleInput) {
+            try await repository.acceptPersonSuggestion(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: current.token
+            )
+        }
+        #expect(try await values.confirmations().isEmpty)
+    }
+
     @Test func rejectsCurrentSecondaryAndBirthConflictSuggestionsExactly() async throws {
         for (index, variant) in PersonSuggestionCommandScenario.Variant.allCases.enumerated() {
             let values = try await PersonSuggestionCommandScenario.make(
@@ -1292,6 +1377,93 @@ struct PersonDossierRepositoryTests {
         #expect(!removed.costsAndPayments.contains {
             $0.document.id == values.payment.document.id
         })
+    }
+
+    @Test func removalRejectsCanonicallyEquivalentButByteDifferentCurrentSupport() async throws {
+        let values = try await PersistedPersonDossierScenario.make()
+        let precomposedHash = "h\u{00E1}sh"
+        let decomposedHash = "ha\u{301}sh"
+        try await values.fixture.database.write { db in
+            try db.execute(
+                sql: "UPDATE document SET contentHash = ? WHERE id = ?",
+                arguments: [precomposedHash, values.direct.document.id]
+            )
+            try db.execute(
+                sql: "UPDATE documentDNA SET inputContentHash = ? WHERE documentID = ?",
+                arguments: [precomposedHash, values.direct.document.id]
+            )
+        }
+        let before = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+        let member = try #require(before.directMembers.first {
+            $0.document.id == values.direct.document.id
+        })
+
+        try await values.fixture.database.write { db in
+            try db.execute(
+                sql: "UPDATE document SET contentHash = ? WHERE id = ?",
+                arguments: [decomposedHash, values.direct.document.id]
+            )
+            try db.execute(
+                sql: "UPDATE documentDNA SET inputContentHash = ? WHERE documentID = ?",
+                arguments: [decomposedHash, values.direct.document.id]
+            )
+        }
+        let current = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+        #expect(current.token == before.token)
+
+        await #expect(throws: DossierRepositoryError.staleInput) {
+            try await values.repository.removePersonMember(
+                dossierID: values.dossier.id,
+                documentID: values.direct.document.id,
+                expectedSupport: try member.commandSupport,
+                expectedToken: current.token
+            )
+        }
+        #expect(try await correctionRows(values.fixture.database, values.dossier.id)
+            == PersonCorrectionRows(
+                confirmations: [values.confirmation],
+                exclusions: [values.exclusion]
+            ))
+    }
+
+    @Test func removalRejectsCanonicallyEquivalentButByteDifferentProjectionToken() async throws {
+        let values = try await PersistedPersonDossierScenario.make()
+        let precomposedPath = "people/\u{00E9}lise.pdf"
+        let decomposedPath = "people/e\u{301}lise.pdf"
+        try await values.fixture.database.write { db in
+            try db.execute(
+                sql: "UPDATE document SET relativePath = ? WHERE id = ?",
+                arguments: [precomposedPath, values.direct.document.id]
+            )
+        }
+        let before = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+        let member = try #require(before.directMembers.first {
+            $0.document.id == values.direct.document.id
+        })
+
+        try await values.fixture.database.write { db in
+            try db.execute(
+                sql: "UPDATE document SET relativePath = ? WHERE id = ?",
+                arguments: [decomposedPath, values.direct.document.id]
+            )
+        }
+        let current = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+        #expect(precomposedPath.utf8.elementsEqual(decomposedPath.utf8) == false)
+        #expect(current.token == before.token)
+
+        await #expect(throws: DossierRepositoryError.staleInput) {
+            try await values.repository.removePersonMember(
+                dossierID: values.dossier.id,
+                documentID: values.direct.document.id,
+                expectedSupport: try member.commandSupport,
+                expectedToken: before.token
+            )
+        }
+        #expect(try await correctionRows(values.fixture.database, values.dossier.id)
+            == PersonCorrectionRows(
+                confirmations: [values.confirmation],
+                exclusions: [values.exclusion]
+            ))
     }
 
     @Test func removalRejectsStaleForeignWrongAlreadyRemovedMissingCostsAndAnchorInputsWithoutWrites() async throws {
@@ -1890,6 +2062,42 @@ struct PersonDossierRepositoryTests {
         #expect(try await repository.personDossierSnapshot(id: foreignDossier.id) == foreignBefore)
         #expect(try await correctionRows(values.fixture.database, foreignDossier.id)
             == PersonCorrectionRows(confirmations: [], exclusions: [foreignExclusion]))
+    }
+
+    @Test func resetRejectsCanonicallyEquivalentButByteDifferentDecision() async throws {
+        let values = try await PersistedPersonDossierScenario.make()
+        let precomposedHash = "h\u{00E1}sh"
+        let decomposedHash = "ha\u{301}sh"
+        try await values.fixture.database.write { db in
+            try db.execute(
+                sql: "UPDATE dossierMembershipConfirmation SET acceptedContentHash = ? WHERE dossierID = ?",
+                arguments: [precomposedHash, values.dossier.id]
+            )
+        }
+        let before = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+        let correction = try #require(before.corrections.first {
+            $0.document.id == values.manualDocument.id
+        })
+
+        try await values.fixture.database.write { db in
+            try db.execute(
+                sql: "UPDATE dossierMembershipConfirmation SET acceptedContentHash = ? WHERE dossierID = ?",
+                arguments: [decomposedHash, values.dossier.id]
+            )
+        }
+        let current = try await values.repository.personDossierSnapshot(id: values.dossier.id)
+        #expect(current.token == before.token)
+
+        await #expect(throws: DossierRepositoryError.staleInput) {
+            try await values.repository.resetPersonCorrection(
+                dossierID: values.dossier.id,
+                documentID: values.manualDocument.id,
+                expectedDecision: correction.decision,
+                expectedToken: current.token
+            )
+        }
+        #expect(try await correctionRows(values.fixture.database, values.dossier.id)
+            .confirmations.count == 1)
     }
 
     @Test func reanalysisReevaluatesAutomaticSupportButPreservesManualDecisions() async throws {

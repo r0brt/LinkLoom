@@ -69,6 +69,47 @@ struct PersonDossierRepositoryDomainTests {
         }
     }
 
+    @Test func selectionRejectsCanonicallyEquivalentButByteDifferentFinding() throws {
+        let stored = try PersonDossierFixture.personFinding(
+            normalizedName: "\u{00E9}lise muster",
+            role: .resident
+        )
+        let current = try current(id: documentID, findings: [stored])
+        let byteDifferent = try PersonDossierFixture.personFinding(
+            normalizedName: "e\u{301}lise muster",
+            role: .resident
+        )
+
+        #expect(stored.normalizedValue.utf8.elementsEqual(byteDifferent.normalizedValue.utf8) == false)
+        #expect(throws: DossierValidationError.invalidRecord) {
+            try PersonDossierAnchorSelection(
+                document: current.document,
+                snapshot: current.snapshot,
+                finding: byteDifferent
+            )
+        }
+    }
+
+    @Test func findingSupportRejectsCanonicallyEquivalentButByteDifferentFinding() throws {
+        let stored = try PersonDossierFixture.personFinding(
+            normalizedName: "\u{00E9}lise muster",
+            role: .resident
+        )
+        let current = try current(id: documentID, findings: [stored])
+        let byteDifferent = try PersonDossierFixture.personFinding(
+            normalizedName: "e\u{301}lise muster",
+            role: .resident
+        )
+
+        #expect(throws: DossierValidationError.invalidRecord) {
+            try PersonDossierFindingSupportIdentity(
+                current: current,
+                role: .resident,
+                finding: byteDifferent
+            )
+        }
+    }
+
     @Test func summaryIdentityAndRepositoryChoicesCompareByValue() throws {
         let anchor = try anchor()
         let dossier = try DossierRecord(

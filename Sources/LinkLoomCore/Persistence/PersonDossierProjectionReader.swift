@@ -45,7 +45,8 @@ struct PersonDossierProjectionReader: Sendable {
         ) else {
             throw DossierRepositoryError.invalidAnchor
         }
-        for finding in current.snapshot.findings where finding == selection.support.finding {
+        for finding in current.snapshot.findings
+            where finding.isByteIdentical(to: selection.support.finding) {
             guard finding.kind == .person,
                   let role = finding.qualifier.flatMap(PersonDossierRole.init(rawValue:)),
                   role.isPrimary
@@ -57,7 +58,7 @@ struct PersonDossierProjectionReader: Sendable {
                 role: role,
                 finding: finding
             )
-            if support == selection.support {
+            if support.isByteIdentical(to: selection.support) {
                 return (current, support)
             }
         }

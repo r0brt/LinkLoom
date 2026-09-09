@@ -58,7 +58,7 @@ public struct PersonDossierFindingSupportIdentity: Sendable, Equatable {
               finding.qualifier == role.rawValue,
               !finding.normalizedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !finding.evidence.isEmpty,
-              snapshot.findings.contains(finding)
+              snapshot.findings.contains(where: { $0.isByteIdentical(to: finding) })
         else {
             throw DossierValidationError.invalidRecord
         }

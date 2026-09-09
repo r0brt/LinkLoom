@@ -315,11 +315,11 @@ public actor DossierRepository {
                     in: db,
                     dossier: dossier
                 )
-                guard snapshot.token == expectedToken,
+                guard snapshot.token.isByteIdentical(to: expectedToken),
                       let suggestion = snapshot.suggestions.first(where: {
                           $0.document.id == documentID
                       }),
-                      suggestion.commandSupport == expectedSupport
+                      suggestion.commandSupport.isByteIdentical(to: expectedSupport)
                 else {
                     throw DossierRepositoryError.staleInput
                 }
@@ -373,11 +373,11 @@ public actor DossierRepository {
                     in: db,
                     dossier: dossier
                 )
-                guard snapshot.token == expectedToken,
+                guard snapshot.token.isByteIdentical(to: expectedToken),
                       let suggestion = snapshot.suggestions.first(where: {
                           $0.document.id == documentID
                       }),
-                      suggestion.commandSupport == expectedSupport
+                      suggestion.commandSupport.isByteIdentical(to: expectedSupport)
                 else {
                     throw DossierRepositoryError.staleInput
                 }
@@ -422,10 +422,10 @@ public actor DossierRepository {
                     dossier: dossier
                 )
                 let members = snapshot.directMembers + snapshot.costsAndPayments
-                guard snapshot.token == expectedToken,
+                guard snapshot.token.isByteIdentical(to: expectedToken),
                       documentID != snapshot.anchor.originDocumentID,
                       let member = members.first(where: { $0.document.id == documentID }),
-                      try member.commandSupport == expectedSupport
+                      try member.commandSupport.isByteIdentical(to: expectedSupport)
                 else {
                     throw DossierRepositoryError.staleInput
                 }
@@ -479,10 +479,10 @@ public actor DossierRepository {
                     in: db,
                     dossier: dossier
                 )
-                guard snapshot.token == expectedToken,
+                guard snapshot.token.isByteIdentical(to: expectedToken),
                       snapshot.corrections.contains(where: {
                           $0.document.id == documentID
-                              && $0.decision == expectedDecision
+                              && $0.decision.isByteIdentical(to: expectedDecision)
                       })
                 else {
                     throw DossierRepositoryError.staleInput
