@@ -14,6 +14,47 @@ struct PersonDossierProjectorTests {
         #expect(snapshot.origin.sourceDisplayName == "Archive")
     }
 
+    @Test func byteDifferentOriginEvidenceMarksLifecycleStaleAndChangesToken() throws {
+        let copiedExactText = "e\u{301}\u{323}"
+        let currentExactText = "e\u{323}\u{301}"
+        let fixture = try PersonProjectorFixture.make(personEvidenceText: copiedExactText)
+        let baseline = try PersonDossierProjector().project(fixture.input())
+        let changedFinding = try PersonDossierFixture.personFinding(
+            role: .resident,
+            evidence: [try PersonDossierFixture.evidence(displayText: currentExactText)]
+        )
+        let changedOrigin = try PersonDossierFixture.currentDocument(
+            id: fixture.origin.document.id,
+            sourceRootID: fixture.origin.document.sourceRootID,
+            path: fixture.origin.document.relativePath,
+            documentType: .correspondence,
+            availability: fixture.origin.document.availability,
+            contentHash: fixture.origin.document.contentHash,
+            extractionVersion: fixture.origin.snapshot.inputExtractionVersion,
+            schemaVersion: fixture.origin.snapshot.schemaVersion,
+            analyzerIdentifier: fixture.origin.snapshot.analyzerIdentifier,
+            analyzerVersion: fixture.origin.snapshot.analyzerVersion,
+            analyzedAt: fixture.origin.snapshot.analyzedAt,
+            personFindings: [changedFinding]
+        )
+
+        #expect(copiedExactText == currentExactText)
+        #expect(copiedExactText.utf16.count == currentExactText.utf16.count)
+        #expect(copiedExactText.utf8.elementsEqual(currentExactText.utf8) == false)
+        #expect(changedFinding.evidence == fixture.anchor.personEvidence)
+
+        let changed = try PersonDossierProjector().project(fixture.input(
+            originDocument: changedOrigin.document,
+            currentOrigin: changedOrigin,
+            documentsByID: [changedOrigin.document.id: changedOrigin.document],
+            currentDocumentsByID: [changedOrigin.document.id: changedOrigin]
+        ))
+
+        #expect(baseline.origin.validity == .current)
+        #expect(changed.origin.validity == .stale)
+        #expect(changed.token != baseline.token)
+    }
+
     @Test func projectsStaleOriginSeparatelyFromDocumentAvailability() throws {
         let base = try PersonProjectorFixture.make()
         let mutations: [(String, String, Int, String, String, Date, PersonDossierRole, String, String, [DocumentDNAEvidence])] = [
@@ -1341,9 +1382,15 @@ private struct PersonProjectorFixture {
     let anchor: PersonDossierAnchor
     let dossier: DossierRecord
 
-    static func make(birthDate: PersonDossierBirthDate? = nil) throws -> Self {
+    static func make(
+        birthDate: PersonDossierBirthDate? = nil,
+        personEvidenceText: String = "Elise Muster"
+    ) throws -> Self {
         let sourceID = UUID(uuidString: "74000000-0000-0000-0000-000000000010")!
-        let finding = try PersonDossierFixture.personFinding(role: .resident)
+        let finding = try PersonDossierFixture.personFinding(
+            role: .resident,
+            evidence: [try PersonDossierFixture.evidence(displayText: personEvidenceText)]
+        )
         let origin = try PersonDossierFixture.currentDocument(
             id: UUID(uuidString: "74000000-0000-0000-0000-000000000001")!,
             sourceRootID: sourceID,

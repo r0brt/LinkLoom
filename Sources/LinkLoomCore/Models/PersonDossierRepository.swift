@@ -9,6 +9,9 @@ public struct PersonDossierAnchorSelection: Sendable, Equatable {
         finding: DocumentDNAFinding
     ) throws {
         do {
+            guard document.contentHash.utf8.elementsEqual(snapshot.inputContentHash.utf8) else {
+                throw DossierValidationError.invalidRecord
+            }
             let current = try CurrentDocumentDNA(document: document, snapshot: snapshot)
             guard let role = finding.qualifier.flatMap(PersonDossierRole.init(rawValue:)),
                   role.isPrimary
@@ -239,7 +242,7 @@ private extension InvoicePaymentDecisionKey {
     }
 }
 
-private extension DocumentDNAEvidence {
+extension DocumentDNAEvidence {
     func isByteIdentical(to other: DocumentDNAEvidence) -> Bool {
         pageIndex == other.pageIndex
             && startUTF16 == other.startUTF16

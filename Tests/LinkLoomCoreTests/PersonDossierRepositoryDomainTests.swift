@@ -90,6 +90,32 @@ struct PersonDossierRepositoryDomainTests {
         }
     }
 
+    @Test func selectionRejectsCanonicallyEquivalentButByteDifferentDocumentHash() throws {
+        let documentHash = "e\u{301}\u{323}"
+        let snapshotHash = "e\u{323}\u{301}"
+        let finding = try PersonDossierFixture.personFinding(role: .resident)
+        let current = try current(
+            id: documentID,
+            contentHash: documentHash,
+            findings: [finding]
+        )
+        let byteDifferentSnapshot = try snapshot(
+            from: current.snapshot,
+            contentHash: snapshotHash
+        )
+
+        #expect(documentHash == snapshotHash)
+        #expect(documentHash.utf16.count == snapshotHash.utf16.count)
+        #expect(documentHash.utf8.elementsEqual(snapshotHash.utf8) == false)
+        #expect(throws: DossierValidationError.invalidRecord) {
+            try PersonDossierAnchorSelection(
+                document: current.document,
+                snapshot: byteDifferentSnapshot,
+                finding: finding
+            )
+        }
+    }
+
     @Test func findingSupportRejectsCanonicallyEquivalentButByteDifferentFinding() throws {
         let stored = try PersonDossierFixture.personFinding(
             normalizedName: "\u{00E9}lise muster",
@@ -203,6 +229,7 @@ struct PersonDossierRepositoryDomainTests {
 
     private func current(
         id: UUID,
+        contentHash: String? = nil,
         findings: [DocumentDNAFinding]
     ) throws -> CurrentDocumentDNA {
         try PersonDossierFixture.currentDocument(
@@ -210,7 +237,7 @@ struct PersonDossierRepositoryDomainTests {
             sourceRootID: sourceRootID,
             path: "document-\(id.uuidString).pdf",
             documentType: .paymentConfirmation,
-            contentHash: "hash-\(id.uuidString)",
+            contentHash: contentHash ?? "hash-\(id.uuidString)",
             extractionVersion: "text-v7",
             schemaVersion: 7,
             analyzerIdentifier: "local-rules",
