@@ -1038,19 +1038,20 @@ public final class AppModel: ObservableObject {
         else {
             return
         }
-        let expectedDossierToken: DossierProjectionToken?
+        let expectedDossierIdentity: DossierWorkspaceProjectionIdentity?
         switch workspace {
         case .source:
-            expectedDossierToken = nil
+            expectedDossierIdentity = nil
         case .dossier(let dossierID):
-            guard let snapshot = dossierDetailState.snapshot,
+            guard let snapshot = dossierDetailState.workspaceSnapshot,
                   snapshot.dossier.id == dossierID
             else {
                 return
             }
-            expectedDossierToken = snapshot.token
+            expectedDossierIdentity = snapshot.projectionIdentity
         }
         invalidateDossierLoad()
+        let workspaceGeneration = workspaceSelectionGeneration
         invoicePaymentCounterpartNavigationGeneration &+= 1
         let navigationGeneration = invoicePaymentCounterpartNavigationGeneration
         let selectionGeneration = documentDNADetailGeneration
@@ -1086,7 +1087,8 @@ public final class AppModel: ObservableObject {
                   workspaceSelection == workspace,
                   matchesDossierContext(
                     workspace,
-                    expectedToken: expectedDossierToken
+                    expectedIdentity: expectedDossierIdentity,
+                    expectedWorkspaceGeneration: workspaceGeneration
                   )
             else {
                 return
@@ -1118,7 +1120,8 @@ public final class AppModel: ObservableObject {
                   workspaceSelection == workspace,
                   matchesDossierContext(
                     workspace,
-                    expectedToken: expectedDossierToken
+                    expectedIdentity: expectedDossierIdentity,
+                    expectedWorkspaceGeneration: workspaceGeneration
                   )
             else {
                 return
@@ -1142,21 +1145,53 @@ public final class AppModel: ObservableObject {
         else {
             return
         }
+        await selectDossierDocument(
+            member.document,
+            dossierID: dossierID,
+            expectedIdentity: .costsAndPayments(dossierSnapshot.token)
+        )
+    }
+
+    public func selectPersonDossierDocument(documentID: UUID) async {
+        guard !isExclusiveSourceOperationActive,
+              case .dossier(let dossierID) = workspaceSelection,
+              case .personMatter(let snapshot)? = dossierDetailState.workspaceSnapshot,
+              snapshot.dossier.id == dossierID,
+              let document = personDossierDocument(
+                  documentID: documentID,
+                  snapshot: snapshot
+              )
+        else {
+            return
+        }
+        await selectDossierDocument(
+            document,
+            dossierID: dossierID,
+            expectedIdentity: .personMatter(snapshot.token)
+        )
+    }
+
+    private func selectDossierDocument(
+        _ document: DocumentRecord,
+        dossierID: UUID,
+        expectedIdentity: DossierWorkspaceProjectionIdentity
+    ) async {
         invalidateDossierLoad()
         documentDNADetailGeneration &+= 1
         invalidateInvoicePaymentDecisionUpdate()
         invalidateInvoicePaymentCounterpartNavigation()
-        let generation = documentDNADetailGeneration
-        let expectedToken = dossierSnapshot.token
-        dossierEntryState = .none
+        let dnaGeneration = documentDNADetailGeneration
+        let workspaceGeneration = workspaceSelectionGeneration
 
         do {
-            let loaded = try await loadDocumentSelection(expected: member.document)
+            let loaded = try await loadDocumentSelection(expected: document)
             guard !Task.isCancelled,
-                  generation == documentDNADetailGeneration,
-                  workspaceSelection == .dossier(dossierID),
-                  dossierDetailState.snapshot?.dossier.id == dossierID,
-                  dossierDetailState.snapshot?.token == expectedToken
+                  dnaGeneration == documentDNADetailGeneration,
+                  matchesDossierContext(
+                      .dossier(dossierID),
+                      expectedIdentity: expectedIdentity,
+                      expectedWorkspaceGeneration: workspaceGeneration
+                  )
             else {
                 return
             }
@@ -1173,10 +1208,12 @@ public final class AppModel: ObservableObject {
             return
         } catch {
             guard !Task.isCancelled,
-                  generation == documentDNADetailGeneration,
-                  workspaceSelection == .dossier(dossierID),
-                  dossierDetailState.snapshot?.dossier.id == dossierID,
-                  dossierDetailState.snapshot?.token == expectedToken
+                  dnaGeneration == documentDNADetailGeneration,
+                  matchesDossierContext(
+                      .dossier(dossierID),
+                      expectedIdentity: expectedIdentity,
+                      expectedWorkspaceGeneration: workspaceGeneration
+                  )
             else {
                 return
             }
@@ -1324,15 +1361,20 @@ public final class AppModel: ObservableObject {
 
     private func matchesDossierContext(
         _ workspace: AppWorkspaceSelection,
-        expectedToken: DossierProjectionToken?
+        expectedIdentity: DossierWorkspaceProjectionIdentity?,
+        expectedWorkspaceGeneration: Int
     ) -> Bool {
+        guard workspaceSelectionGeneration == expectedWorkspaceGeneration else {
+            return false
+        }
         switch workspace {
         case .source:
-            return expectedToken == nil
+            return expectedIdentity == nil
         case .dossier(let dossierID):
-            guard let expectedToken else { return false }
-            return dossierDetailState.snapshot?.dossier.id == dossierID
-                && dossierDetailState.snapshot?.token == expectedToken
+            guard let expectedIdentity else { return false }
+            return dossierDetailState.workspaceSnapshot?.dossier.id == dossierID
+                && dossierDetailState.workspaceSnapshot?.projectionIdentity
+                    == expectedIdentity
         }
     }
 
@@ -1650,6 +1692,28 @@ public final class AppModel: ObservableObject {
         }
         if candidate.payment.document.id == selectedDocumentID {
             return candidate.invoice.document
+        }
+        return nil
+    }
+
+    private func personDossierDocument(
+        documentID: UUID,
+        snapshot: PersonDossierSnapshot
+    ) -> DocumentRecord? {
+        var documents: [DocumentRecord] = []
+        if let origin = snapshot.origin.document {
+            documents.append(origin)
+        }
+        documents.append(contentsOf: snapshot.directMembers.map(\.document))
+        documents.append(contentsOf: snapshot.costsAndPayments.map(\.document))
+        documents.append(contentsOf: snapshot.suggestions.map(\.document))
+        documents.append(contentsOf: snapshot.corrections.map(\.document))
+
+        var seen = Set<UUID>()
+        for document in documents where seen.insert(document.id).inserted {
+            if document.id == documentID {
+                return document
+            }
         }
         return nil
     }

@@ -642,6 +642,9 @@ struct AppModelTests {
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
         #expect(context.model.selectedDocumentID == context.invoice.id)
+        #expect(context.model.dossierDetailState == .available(
+            .costsAndPayments(context.snapshot)
+        ))
     }
 
     @Test @MainActor func excludeForwardsExactSupportAndReplacesCompleteSnapshot() async throws {
@@ -1605,6 +1608,7 @@ struct AppModelTests {
 
         #expect(model.selectedSourceID == paymentSource.id)
         #expect(model.workspaceSelection == .source(paymentSource.id))
+        #expect(model.dossierDetailState == .none)
         #expect(model.documents == [payment])
         #expect(model.selectedDocumentID == payment.id)
         #expect(model.documentDNADetailState == .available(paymentSnapshot))

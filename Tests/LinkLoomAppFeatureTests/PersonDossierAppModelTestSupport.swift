@@ -332,6 +332,87 @@ actor ScriptedPersonDossierDNALoader: DocumentDNASnapshotLoading {
     }
 }
 
+actor ScriptedPersonDossierDocumentLoader {
+    enum Step: Sendable {
+        case result([DocumentRecord])
+        case failure
+        case cancellation
+        case blocked(Result<[DocumentRecord], PersonDossierAppModelTestError>)
+    }
+
+    private var documentsBySource: [UUID: [DocumentRecord]]
+    private var stepsBySource: [UUID: [Step]] = [:]
+    private var blockedLoadCount = 0
+    private var startWaiters: [(
+        targetCount: Int,
+        continuation: CheckedContinuation<Void, Never>
+    )] = []
+    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var sourceIDs: [UUID] = []
+
+    init(documentsBySource: [UUID: [DocumentRecord]]) {
+        self.documentsBySource = documentsBySource
+    }
+
+    func setDocuments(_ documents: [DocumentRecord], sourceID: UUID) {
+        documentsBySource[sourceID] = documents
+    }
+
+    func setSteps(_ steps: [Step], sourceID: UUID) {
+        stepsBySource[sourceID] = steps
+    }
+
+    func load(sourceID: UUID) async throws -> [DocumentRecord] {
+        sourceIDs.append(sourceID)
+        guard var steps = stepsBySource[sourceID], !steps.isEmpty else {
+            return documentsBySource[sourceID] ?? []
+        }
+        let step = steps.removeFirst()
+        stepsBySource[sourceID] = steps
+        switch step {
+        case .result(let documents):
+            return documents
+        case .failure:
+            throw PersonDossierAppModelTestError.loadFailed
+        case .cancellation:
+            throw CancellationError()
+        case .blocked(let result):
+            blockedLoadCount += 1
+            let ready = startWaiters.filter { $0.targetCount <= blockedLoadCount }
+            startWaiters.removeAll { $0.targetCount <= blockedLoadCount }
+            ready.forEach { $0.continuation.resume() }
+            await withCheckedContinuation { releaseWaiters.append($0) }
+            return try result.get()
+        }
+    }
+
+    func waitUntilBlockedLoadStarts(count: Int = 1) async {
+        guard blockedLoadCount >= count else {
+            await withCheckedContinuation { startWaiters.append((count, $0)) }
+            return
+        }
+    }
+
+    func releaseBlockedLoads() {
+        releaseWaiters.forEach { $0.resume() }
+        releaseWaiters.removeAll()
+    }
+}
+
+actor PersonDossierCandidateLoader: InvoicePaymentCandidateLoading {
+    private let candidatesByDocument: [UUID: [InvoicePaymentCandidateWithDecision]]
+
+    init(candidatesByDocument: [UUID: [InvoicePaymentCandidateWithDecision]]) {
+        self.candidatesByDocument = candidatesByDocument
+    }
+
+    func candidates(involving documentID: UUID) async throws
+        -> [InvoicePaymentCandidateWithDecision]
+    {
+        candidatesByDocument[documentID] ?? []
+    }
+}
+
 actor ScriptedPersonDossierCostsLoader: DossierLoading, DossierMutating {
     enum OpenStep: Sendable {
         case result(DossierOpenResult)
@@ -593,6 +674,308 @@ struct PersonDossierAppModelValues {
                 exclusionRevisionIDs: []
             )
             )
+        )
+    }
+}
+
+struct PersonDossierNavigationValues {
+    static let directID = UUID(
+        uuidString: "73000000-0000-0000-0000-000000000001"
+    )!
+    static let paymentID = UUID(
+        uuidString: "73000000-0000-0000-0000-000000000004"
+    )!
+
+    let origin: DocumentRecord
+    let direct: DocumentRecord
+    let crossSourceDirect: DocumentRecord
+    let invoice: DocumentRecord
+    let payment: DocumentRecord
+    let suggestion: DocumentRecord
+    let correction: DocumentRecord
+    let dnaByDocument: [UUID: DocumentDNA]
+    let snapshot: PersonDossierSnapshot
+    let candidate: InvoicePaymentCandidateWithDecision
+
+    static func make(originSourceID: UUID, otherSourceID: UUID) throws -> Self {
+        let base = try PersonDossierAppModelValues.make(sourceID: originSourceID)
+        let origin = base.document
+        let direct = document(
+            id: directID,
+            sourceID: originSourceID,
+            path: "direct.pdf",
+            hash: "direct-hash"
+        )
+        let crossSourceDirect = document(
+            id: UUID(uuidString: "73000000-0000-0000-0000-000000000002")!,
+            sourceID: otherSourceID,
+            path: "cross-source-direct.pdf",
+            hash: "cross-source-direct-hash"
+        )
+        let invoice = document(
+            id: UUID(uuidString: "73000000-0000-0000-0000-000000000003")!,
+            sourceID: originSourceID,
+            path: "invoice.pdf",
+            hash: "invoice-hash"
+        )
+        let payment = document(
+            id: paymentID,
+            sourceID: otherSourceID,
+            path: "payment.pdf",
+            hash: "payment-hash"
+        )
+        let suggestion = document(
+            id: UUID(uuidString: "73000000-0000-0000-0000-000000000005")!,
+            sourceID: otherSourceID,
+            path: "suggestion.pdf",
+            hash: "suggestion-hash"
+        )
+        let correction = document(
+            id: UUID(uuidString: "73000000-0000-0000-0000-000000000006")!,
+            sourceID: originSourceID,
+            path: "correction.pdf",
+            hash: "correction-hash"
+        )
+        let documents = [origin, direct, crossSourceDirect, invoice, payment, suggestion, correction]
+        var dnaByDocument: [UUID: DocumentDNA] = [origin.id: base.dna]
+        for document in documents.dropFirst() {
+            dnaByDocument[document.id] = try dna(document: document)
+        }
+        let directMembers = try [direct, crossSourceDirect].map {
+            try member(document: $0, dna: dnaByDocument[$0.id]!, section: .directDocuments)
+        }
+        let costMembers = try [invoice, payment].map {
+            try member(document: $0, dna: dnaByDocument[$0.id]!, section: .costsAndPayments)
+        }
+        let suggestionDNA = dnaByDocument[suggestion.id]!
+        let suggestionFinding = suggestionDNA.findings.first { $0.kind == .person }!
+        let suggestionPerson = try PersonDossierFindingSupportIdentity(
+            current: CurrentDocumentDNA(document: suggestion, snapshot: suggestionDNA),
+            role: .authorizedPerson,
+            finding: suggestionFinding
+        )
+        let suggestionSupport = try PersonDossierCandidateSupportIdentity(
+            kind: .secondaryRole,
+            person: suggestionPerson,
+            conflict: .none
+        )
+        let suggestionRow = try PersonDossierSuggestion(
+            document: suggestion,
+            sourceDisplayName: "Other archive",
+            documentType: .unknown,
+            section: .directDocuments,
+            kind: .secondaryRole,
+            conflict: .none,
+            currentSupports: [suggestionSupport],
+            commandSupport: suggestionSupport
+        )
+        let exclusion = DossierMembershipExclusion(
+            dossierID: base.snapshot.dossier.id,
+            documentID: correction.id,
+            revisionID: UUID(uuidString: "73000000-0000-0000-0000-000000000007")!,
+            excludedAt: Date(timeIntervalSince1970: 300)
+        )
+        let correctionRow = try PersonDossierCorrection(
+            document: correction,
+            sourceDisplayName: "Archive",
+            documentType: .unknown,
+            decision: .exclusion(exclusion)
+        )
+        let projectionDocuments = documents.map {
+            PersonDossierDocumentProjectionIdentity(
+                document: $0,
+                dnaAnalyzedAt: dnaByDocument[$0.id]?.analyzedAt
+            )
+        }
+        let token = PersonDossierProjectionToken(
+            dossierUpdatedAt: base.snapshot.token.dossierUpdatedAt,
+            anchorUpdatedAt: base.snapshot.token.anchorUpdatedAt,
+            originValidity: .current,
+            documents: projectionDocuments,
+            memberSupports: (directMembers + costMembers).map(\.supports),
+            suggestionSupports: [suggestionSupport],
+            confirmationRevisionIDs: [],
+            exclusionRevisionIDs: [exclusion.revisionID]
+        )
+        let snapshot = PersonDossierSnapshot(
+            dossier: base.snapshot.dossier,
+            anchor: base.snapshot.anchor,
+            origin: base.snapshot.origin,
+            directMembers: directMembers,
+            costsAndPayments: costMembers,
+            suggestions: [suggestionRow],
+            corrections: [correctionRow],
+            token: token
+        )
+        let invoiceDNA = dnaByDocument[invoice.id]!
+        let paymentDNA = dnaByDocument[payment.id]!
+        let candidate = try InvoicePaymentCandidate(
+            invoice: CurrentDocumentDNA(document: invoice, snapshot: invoiceDNA),
+            payment: CurrentDocumentDNA(document: payment, snapshot: paymentDNA),
+            disposition: .automatic,
+            resolverVersion: "invoice-payment-v1",
+            signals: []
+        )
+        return Self(
+            origin: origin,
+            direct: direct,
+            crossSourceDirect: crossSourceDirect,
+            invoice: invoice,
+            payment: payment,
+            suggestion: suggestion,
+            correction: correction,
+            dnaByDocument: dnaByDocument,
+            snapshot: snapshot,
+            candidate: InvoicePaymentCandidateWithDecision(
+                candidate: candidate,
+                decision: .confirmed
+            )
+        )
+    }
+
+    func replacingSnapshot(
+        dossier: DossierRecord? = nil,
+        origin: PersonDossierOriginState? = nil,
+        directMembers: [PersonDossierMember]? = nil,
+        costsAndPayments: [PersonDossierMember]? = nil,
+        token: PersonDossierProjectionToken? = nil
+    ) -> PersonDossierSnapshot {
+        PersonDossierSnapshot(
+            dossier: dossier ?? snapshot.dossier,
+            anchor: snapshot.anchor,
+            origin: origin ?? snapshot.origin,
+            directMembers: directMembers ?? snapshot.directMembers,
+            costsAndPayments: costsAndPayments ?? snapshot.costsAndPayments,
+            suggestions: snapshot.suggestions,
+            corrections: snapshot.corrections,
+            token: token ?? snapshot.token
+        )
+    }
+
+    func duplicateFirstWinsSnapshot(
+        laterSourceID: UUID
+    ) throws -> (snapshot: PersonDossierSnapshot, laterDocument: DocumentRecord) {
+        let earlier = snapshot.directMembers.first { $0.id == direct.id }!
+        var laterDocument = direct
+        laterDocument.sourceRootID = laterSourceID
+        laterDocument.relativePath = "later-duplicate.pdf"
+        laterDocument.contentHash = "later-duplicate-hash"
+        laterDocument.byteCount = 999
+        let later = try PersonDossierMember(
+            document: laterDocument,
+            sourceDisplayName: "Other archive",
+            documentType: .paymentConfirmation,
+            section: .costsAndPayments,
+            supports: earlier.supports,
+            isConfirmationAuthoritative: earlier.isConfirmationAuthoritative,
+            preferredPaymentSupport: earlier.preferredPaymentSupport
+        )
+        return (
+            replacingSnapshot(
+                costsAndPayments: [later] + snapshot.costsAndPayments
+            ),
+            laterDocument
+        )
+    }
+
+    private static func document(
+        id: UUID,
+        sourceID: UUID,
+        path: String,
+        hash: String
+    ) -> DocumentRecord {
+        DocumentRecord(
+            id: id,
+            sourceRootID: sourceID,
+            relativePath: path,
+            contentHash: hash,
+            byteCount: 30,
+            modifiedAt: Date(timeIntervalSince1970: 200),
+            mediaType: .pdf,
+            status: .ready,
+            pageCount: 1,
+            lastSeenAt: Date(timeIntervalSince1970: 200)
+        )
+    }
+
+    private static func dna(document: DocumentRecord) throws -> DocumentDNA {
+        let name = "Elise Muster"
+        let evidence = try DocumentDNAEvidence(
+            pageIndex: 0,
+            startUTF16: 0,
+            lengthUTF16: name.utf16.count,
+            exactText: name,
+            ocrRegionIndexes: []
+        )
+        let role: PersonDossierRole = document.relativePath == "suggestion.pdf"
+            ? .authorizedPerson
+            : .resident
+        let finding = try DocumentDNAFinding(
+            kind: .person,
+            qualifier: role.rawValue,
+            displayValue: name,
+            normalizedValue: name.lowercased(),
+            secondaryNormalizedValue: nil,
+            confidence: 0.9,
+            evidence: [evidence]
+        )
+        let documentType: DocumentType = switch document.relativePath {
+        case "invoice.pdf": .invoice
+        case "payment.pdf": .paymentConfirmation
+        default: .unknown
+        }
+        let classificationDisplayValue = documentType == .unknown
+            ? ""
+            : documentType.rawValue
+        let classificationEvidence = documentType == .unknown
+            ? []
+            : [try DocumentDNAEvidence(
+                pageIndex: 0,
+                startUTF16: 0,
+                lengthUTF16: classificationDisplayValue.utf16.count,
+                exactText: classificationDisplayValue,
+                ocrRegionIndexes: []
+            )]
+        let classification = try DocumentDNAFinding(
+            kind: .documentType,
+            qualifier: nil,
+            displayValue: classificationDisplayValue,
+            normalizedValue: documentType.rawValue,
+            secondaryNormalizedValue: nil,
+            confidence: documentType == .unknown ? 0 : 0.9,
+            evidence: classificationEvidence
+        )
+        return try DocumentDNA(
+            documentID: document.id,
+            schemaVersion: 1,
+            analyzerIdentifier: "local-rules",
+            analyzerVersion: "1",
+            inputContentHash: document.contentHash,
+            inputExtractionVersion: "text-v1",
+            findings: [classification, finding],
+            analyzedAt: Date(timeIntervalSince1970: 200)
+        )
+    }
+
+    private static func member(
+        document: DocumentRecord,
+        dna: DocumentDNA,
+        section: PersonDossierSection
+    ) throws -> PersonDossierMember {
+        let finding = dna.findings.first { $0.kind == .person }!
+        let support = try PersonDossierFindingSupportIdentity(
+            current: CurrentDocumentDNA(document: document, snapshot: dna),
+            role: .resident,
+            finding: finding
+        )
+        return try PersonDossierMember(
+            document: document,
+            sourceDisplayName: "Archive",
+            documentType: .unknown,
+            section: section,
+            supports: [.exactPrimary(support)],
+            isConfirmationAuthoritative: false,
+            preferredPaymentSupport: nil
         )
     }
 }

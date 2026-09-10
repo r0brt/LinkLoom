@@ -971,6 +971,299 @@ struct PersonDossierAppModelTests {
         #expect(await people.snapshotIDs.isEmpty)
         #expect(model.dossierDetailState == .available(.costsAndPayments(costs)))
     }
+
+    @Test @MainActor func sameSourceDirectPersonMemberNavigationKeepsExactWorkspace() async throws {
+        let context = try await makeNavigationContext()
+
+        await context.model.selectPersonDossierDocument(documentID: context.values.direct.id)
+
+        #expect(context.model.workspaceSelection == .dossier(context.values.snapshot.dossier.id))
+        #expect(context.model.selectedSourceID == context.values.direct.sourceRootID)
+        #expect(context.model.selectedDocumentID == context.values.direct.id)
+        #expect(context.model.documentDNADetailState == .available(
+            context.values.dnaByDocument[context.values.direct.id]!
+        ))
+        #expect(context.model.dossierDetailState.personSnapshot == context.values.snapshot)
+    }
+
+    @Test @MainActor func crossSourceDirectPersonMemberNavigationKeepsExactWorkspace() async throws {
+        let context = try await makeNavigationContext()
+
+        await context.model.selectPersonDossierDocument(
+            documentID: context.values.crossSourceDirect.id
+        )
+
+        #expect(context.model.workspaceSelection == .dossier(context.values.snapshot.dossier.id))
+        #expect(context.model.selectedSourceID == context.values.crossSourceDirect.sourceRootID)
+        #expect(context.model.selectedDocumentID == context.values.crossSourceDirect.id)
+        #expect(context.model.dossierDetailState.personSnapshot == context.values.snapshot)
+    }
+
+    @Test @MainActor func personCostsPaymentNavigationUsesStoredCompleteDocument() async throws {
+        let context = try await makeNavigationContext()
+
+        await context.model.selectPersonDossierDocument(documentID: context.values.payment.id)
+
+        #expect(context.model.workspaceSelection == .dossier(context.values.snapshot.dossier.id))
+        #expect(context.model.selectedSourceID == context.values.payment.sourceRootID)
+        #expect(context.model.selectedDocumentID == context.values.payment.id)
+        #expect(context.model.documentDNADetailState == .available(
+            context.values.dnaByDocument[context.values.payment.id]!
+        ))
+        #expect(context.model.dossierDetailState.personSnapshot == context.values.snapshot)
+    }
+
+    @Test(arguments: [PersonDossierNavigationRow.suggestion, .correction])
+    @MainActor func suggestionAndCorrectionRowsAreNavigable(
+        row: PersonDossierNavigationRow
+    ) async throws {
+        let context = try await makeNavigationContext()
+        let document = switch row {
+        case .suggestion: context.values.suggestion
+        case .correction: context.values.correction
+        }
+
+        await context.model.selectPersonDossierDocument(documentID: document.id)
+
+        #expect(context.model.selectedSourceID == document.sourceRootID)
+        #expect(context.model.selectedDocumentID == document.id)
+        #expect(context.model.documentDNADetailState == .available(
+            context.values.dnaByDocument[document.id]!
+        ))
+        #expect(context.model.dossierDetailState.personSnapshot == context.values.snapshot)
+    }
+
+    @Test @MainActor func currentPersonOriginDocumentIsNavigable() async throws {
+        let context = try await makeNavigationContext()
+
+        await context.model.selectPersonDossierDocument(documentID: context.values.origin.id)
+
+        #expect(context.model.selectedSourceID == context.values.origin.sourceRootID)
+        #expect(context.model.selectedDocumentID == context.values.origin.id)
+        #expect(context.model.documentDNADetailState == .available(
+            context.values.dnaByDocument[context.values.origin.id]!
+        ))
+        #expect(context.model.dossierDetailState.personSnapshot == context.values.snapshot)
+    }
+
+    @Test @MainActor func duplicatePersonDocumentIDUsesEarlierCompleteSnapshotRecord() async throws {
+        let context = try await makeNavigationContext(duplicateFirstWins: true)
+
+        await context.model.selectPersonDossierDocument(documentID: context.values.direct.id)
+
+        #expect(context.model.selectedSourceID == context.values.direct.sourceRootID)
+        #expect(context.model.selectedDocumentID == context.values.direct.id)
+        #expect(context.model.documents == context.originSourceDocuments)
+        #expect(context.model.documentDNADetailState == .available(
+            context.values.dnaByDocument[context.values.direct.id]!
+        ))
+        #expect(await context.documents.sourceIDs.last == context.originSource.id)
+        #expect(context.model.dossierDetailState.personSnapshot == context.openedSnapshot)
+    }
+
+    @Test @MainActor func unavailablePersonOriginPerformsNoDocumentLoad() async throws {
+        let context = try await makeNavigationContext(originUnavailable: true)
+        let loadsBefore = await context.documents.sourceIDs
+
+        await context.model.selectPersonDossierDocument(documentID: context.values.origin.id)
+
+        #expect(await context.documents.sourceIDs == loadsBefore)
+        #expect(context.model.selectedDocumentID == nil)
+        #expect(context.model.dossierDetailState.personSnapshot == context.openedSnapshot)
+    }
+
+    @Test @MainActor func unknownPersonDocumentIDPerformsNoDocumentLoad() async throws {
+        let context = try await makeNavigationContext()
+        let loadsBefore = await context.documents.sourceIDs
+
+        await context.model.selectPersonDossierDocument(documentID: UUID())
+
+        #expect(await context.documents.sourceIDs == loadsBefore)
+        #expect(context.model.selectedDocumentID == nil)
+        #expect(context.model.dossierDetailState.personSnapshot == context.values.snapshot)
+    }
+
+    @Test @MainActor func changedSourceRejectsPersonNavigationAndPreservesSnapshot() async throws {
+        let context = try await makeNavigationContext(includeCandidates: true)
+        let previous = await preselectPersonInvoice(in: context)
+        var moved = context.values.direct
+        moved.sourceRootID = context.otherSource.id
+        await context.documents.setDocuments(
+            context.otherSourceDocuments + [moved],
+            sourceID: context.otherSource.id
+        )
+        await context.documents.setDocuments(
+            context.originSourceDocuments.filter { $0.id != moved.id },
+            sourceID: context.originSource.id
+        )
+
+        await context.model.selectPersonDossierDocument(documentID: moved.id)
+
+        assertFailedNavigationPreserved(context, previous: previous)
+    }
+
+    @Test @MainActor func changedContentHashRejectsPersonNavigationAndPreservesSnapshot() async throws {
+        let context = try await makeNavigationContext(includeCandidates: true)
+        let previous = await preselectPersonInvoice(in: context)
+        var changed = context.values.direct
+        changed.contentHash = "changed-direct-hash"
+        await context.documents.setDocuments(
+            context.originSourceDocuments.map { $0.id == changed.id ? changed : $0 },
+            sourceID: context.originSource.id
+        )
+
+        await context.model.selectPersonDossierDocument(documentID: changed.id)
+
+        assertFailedNavigationPreserved(context, previous: previous)
+    }
+
+    @Test @MainActor func nonReadyDNARejectsPersonNavigationAndPreservesSnapshot() async throws {
+        let context = try await makeNavigationContext(
+            nonReadyDocumentID: PersonDossierNavigationValues.paymentID,
+            includeCandidates: true
+        )
+        let previous = await preselectPersonInvoice(in: context)
+
+        await context.model.selectPersonDossierDocument(documentID: context.values.payment.id)
+
+        assertFailedNavigationPreserved(context, previous: previous)
+    }
+
+    @Test @MainActor func documentLoaderFailurePreservesPersonWorkspaceAndLastSnapshot() async throws {
+        let context = try await makeNavigationContext(includeCandidates: true)
+        let previous = await preselectPersonInvoice(in: context)
+        await context.documents.setSteps([.failure], sourceID: context.otherSource.id)
+
+        await context.model.selectPersonDossierDocument(documentID: context.values.payment.id)
+
+        assertFailedNavigationPreserved(context, previous: previous)
+    }
+
+    @Test @MainActor func cancelledDocumentLoadSilentlyPreservesPersonWorkspaceAndLastSnapshot() async throws {
+        let context = try await makeNavigationContext(includeCandidates: true)
+        let previous = await preselectPersonInvoice(in: context)
+        await context.documents.setSteps([
+            .blocked(.success(context.otherSourceDocuments)),
+        ], sourceID: context.otherSource.id)
+        let navigation = Task {
+            await context.model.selectPersonDossierDocument(
+                documentID: context.values.payment.id
+            )
+        }
+        await context.documents.waitUntilBlockedLoadStarts()
+
+        navigation.cancel()
+        await context.documents.releaseBlockedLoads()
+        await navigation.value
+
+        #expect(personDocumentPresentation(of: context.model) == previous)
+        #expect(context.model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func secondPersonNavigationInvalidatesEarlierInFlightNavigation() async throws {
+        let context = try await makeNavigationContext()
+        await context.documents.setSteps([
+            .blocked(.success(context.originSourceDocuments)),
+        ], sourceID: context.originSource.id)
+        let stale = Task {
+            await context.model.selectPersonDossierDocument(documentID: context.values.direct.id)
+        }
+        await context.documents.waitUntilBlockedLoadStarts()
+
+        await context.model.selectPersonDossierDocument(
+            documentID: context.values.crossSourceDirect.id
+        )
+        await context.documents.releaseBlockedLoads()
+        await stale.value
+
+        #expect(context.model.selectedDocumentID == context.values.crossSourceDirect.id)
+        #expect(context.model.dossierDetailState.personSnapshot == context.values.snapshot)
+    }
+
+    @Test @MainActor func personDocumentABARaceRejectsStaleNavigationCompletion() async throws {
+        let context = try await makeNavigationContext()
+        await context.documents.setSteps([
+            .blocked(.success(context.originSourceDocuments)),
+        ], sourceID: context.originSource.id)
+        let stale = Task {
+            await context.model.selectPersonDossierDocument(documentID: context.values.direct.id)
+        }
+        await context.documents.waitUntilBlockedLoadStarts()
+
+        await context.model.selectPersonDossierDocument(
+            documentID: context.values.crossSourceDirect.id
+        )
+        await context.model.selectPersonDossierDocument(documentID: context.values.direct.id)
+        await context.documents.releaseBlockedLoads()
+        await stale.value
+
+        #expect(context.model.selectedDocumentID == context.values.direct.id)
+        #expect(context.model.documentDNADetailState == .available(
+            context.values.dnaByDocument[context.values.direct.id]!
+        ))
+    }
+
+    @Test @MainActor func personDossierABARaceRejectsStaleNavigationCompletion() async throws {
+        let other = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
+        let context = try await makeNavigationContext(dossierABASnapshot: other)
+        await context.documents.setSteps([
+            .blocked(.success(context.originSourceDocuments)),
+        ], sourceID: context.originSource.id)
+        let stale = Task {
+            await context.model.selectPersonDossierDocument(documentID: context.values.direct.id)
+        }
+        await context.documents.waitUntilBlockedLoadStarts()
+
+        await context.model.selectDossier(id: other.dossier.id)
+        await context.model.selectDossier(id: context.values.snapshot.dossier.id)
+        await context.documents.releaseBlockedLoads()
+        await stale.value
+
+        #expect(context.model.workspaceSelection == .dossier(context.values.snapshot.dossier.id))
+        #expect(context.model.selectedDocumentID == nil)
+        #expect(context.model.dossierDetailState.personSnapshot == context.values.snapshot)
+    }
+
+    @Test @MainActor func personMutationCompletionRejectsStaleNavigation() async throws {
+        let context = try await makeNavigationContext(includeOpenMutation: true)
+        await context.model.selectPersonDossierDocument(documentID: context.values.invoice.id)
+        await context.documents.setSteps([
+            .blocked(.success(context.otherSourceDocuments)),
+        ], sourceID: context.otherSource.id)
+        let stale = Task {
+            await context.model.selectPersonDossierDocument(documentID: context.values.payment.id)
+        }
+        await context.documents.waitUntilBlockedLoadStarts()
+        let invoiceDNA = context.values.dnaByDocument[context.values.invoice.id]!
+        let selection = try PersonDossierAnchorSelection(
+            document: context.values.invoice,
+            snapshot: invoiceDNA,
+            finding: try #require(invoiceDNA.findings.first { $0.kind == .person })
+        )
+
+        await context.model.openOrCreatePersonDossier(from: selection)
+        await context.documents.releaseBlockedLoads()
+        await stale.value
+
+        #expect(context.model.selectedDocumentID == context.values.invoice.id)
+        #expect(context.model.dossierDetailState.personSnapshot == context.mutatedSnapshot)
+    }
+
+    @Test @MainActor func confirmedCounterpartFromPersonPaymentKeepsExactPersonIdentity() async throws {
+        let context = try await makeNavigationContext(includeCandidates: true)
+        await context.model.selectPersonDossierDocument(documentID: context.values.payment.id)
+
+        await context.model.showInvoicePaymentCounterpart(
+            candidate: context.values.candidate.candidate
+        )
+
+        #expect(context.model.workspaceSelection == .dossier(context.values.snapshot.dossier.id))
+        #expect(context.model.selectedSourceID == context.values.invoice.sourceRootID)
+        #expect(context.model.selectedDocumentID == context.values.invoice.id)
+        #expect(context.model.dossierDetailState == .available(
+            .personMatter(context.values.snapshot)
+        ))
+    }
 }
 
 private extension PersonDossierAppModelTests {
@@ -983,6 +1276,7 @@ private extension PersonDossierAppModelTests {
         peopleMutator: (any PersonDossierMutating)? = nil,
         dnaStatuses: (any DocumentDNAStatusLoading)? = nil,
         dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil,
+        invoicePaymentCandidates: (any InvoicePaymentCandidateLoading)? = nil,
         documentLoader: (@Sendable (UUID) async throws -> [DocumentRecord])? = nil
     ) -> AppModel {
         if let documentLoader {
@@ -994,6 +1288,7 @@ private extension PersonDossierAppModelTests {
                 ingestion: PersonDossierNoopIngester(),
                 dnaStatuses: dnaStatuses,
                 dnaSnapshots: dnaSnapshots,
+                invoicePaymentCandidates: invoicePaymentCandidates,
                 dossierLoader: costsLoader,
                 dossierMutator: costsMutator,
                 personDossierLoader: people,
@@ -1009,10 +1304,182 @@ private extension PersonDossierAppModelTests {
             ingestion: PersonDossierNoopIngester(),
             dnaStatuses: dnaStatuses,
             dnaSnapshots: dnaSnapshots,
+            invoicePaymentCandidates: invoicePaymentCandidates,
             dossierLoader: costsLoader,
             dossierMutator: costsMutator,
             personDossierLoader: people,
             personDossierMutator: peopleMutator
+        )
+    }
+
+    @MainActor
+    func makeNavigationContext(
+        originUnavailable: Bool = false,
+        nonReadyDocumentID: UUID? = nil,
+        dossierABASnapshot: PersonDossierSnapshot? = nil,
+        includeOpenMutation: Bool = false,
+        includeCandidates: Bool = false,
+        duplicateFirstWins: Bool = false
+    ) async throws -> PersonDossierNavigationContext {
+        let fixture = try PersonDossierAppModelFixture()
+        let originSource = try await fixture.addSource(named: "Archive")
+        let otherSource = try await fixture.addSource(named: "Other archive")
+        let values = try PersonDossierNavigationValues.make(
+            originSourceID: originSource.id,
+            otherSourceID: otherSource.id
+        )
+        var openedSnapshot: PersonDossierSnapshot
+        if originUnavailable {
+            let token = PersonDossierProjectionToken(
+                dossierUpdatedAt: values.snapshot.token.dossierUpdatedAt,
+                anchorUpdatedAt: values.snapshot.token.anchorUpdatedAt,
+                originValidity: .unavailable,
+                documents: values.snapshot.token.documents.filter {
+                    $0.documentID != values.origin.id
+                },
+                memberSupports: values.snapshot.token.memberSupports,
+                suggestionSupports: values.snapshot.token.suggestionSupports,
+                confirmationRevisionIDs: values.snapshot.token.confirmationRevisionIDs,
+                exclusionRevisionIDs: values.snapshot.token.exclusionRevisionIDs
+            )
+            openedSnapshot = values.replacingSnapshot(
+                origin: try PersonDossierOriginState(
+                    validity: .unavailable,
+                    document: nil,
+                    sourceDisplayName: nil
+                ),
+                token: token
+            )
+        } else {
+            openedSnapshot = values.snapshot
+        }
+        let mutatedSnapshot = try PersonDossierAppModelValues.make(
+            dossierID: values.snapshot.dossier.id,
+            sourceID: originSource.id,
+            documentID: values.invoice.id
+        ).snapshot
+        let originSourceDocuments = [
+            values.origin,
+            values.direct,
+            values.invoice,
+            values.correction,
+        ]
+        var otherSourceDocuments = [
+            values.crossSourceDirect,
+            values.payment,
+            values.suggestion,
+        ]
+        if duplicateFirstWins {
+            let duplicate = try values.duplicateFirstWinsSnapshot(
+                laterSourceID: otherSource.id
+            )
+            openedSnapshot = duplicate.snapshot
+            otherSourceDocuments.append(duplicate.laterDocument)
+        }
+        let documents = ScriptedPersonDossierDocumentLoader(documentsBySource: [
+            originSource.id: originSourceDocuments,
+            otherSource.id: otherSourceDocuments,
+        ])
+        let allDocuments = originSourceDocuments + otherSourceDocuments
+        let statusesBySource = Dictionary(grouping: allDocuments, by: \.sourceRootID)
+            .mapValues { records in
+                records.map {
+                    DocumentDNAAnalysisStatus(
+                        documentID: $0.id,
+                        phase: $0.id == nonReadyDocumentID ? .pending : .ready
+                    )
+                }
+            }
+        let dnaSnapshots = ScriptedPersonDossierDNALoader(
+            snapshotsByDocument: values.dnaByDocument.mapValues {
+                Array(repeating: $0, count: 8)
+            }
+        )
+        let candidateLoader: PersonDossierCandidateLoader? = includeCandidates
+            ? PersonDossierCandidateLoader(candidatesByDocument: [
+                values.invoice.id: [values.candidate],
+                values.payment.id: [values.candidate],
+            ])
+            : nil
+        var snapshotSteps: [ScriptedPersonDossierLoader.SnapshotStep] = [
+            .result(openedSnapshot),
+        ]
+        if let dossierABASnapshot {
+            snapshotSteps += [.result(dossierABASnapshot), .result(openedSnapshot)]
+        }
+        let summaries = [personSummary(openedSnapshot)]
+            + (dossierABASnapshot.map { [personSummary($0)] } ?? [])
+        let people = ScriptedPersonDossierLoader(
+            summarySteps: includeOpenMutation
+                ? [.result(summaries), .result([personSummary(mutatedSnapshot)])]
+                : [.result(summaries)],
+            snapshotSteps: snapshotSteps,
+            openSteps: includeOpenMutation ? [.result(.opened(mutatedSnapshot))] : []
+        )
+        let dossierLoader = ScriptedPersonDossierCostsLoader()
+        let model = makeModel(
+            fixture,
+            costsLoader: dossierLoader,
+            people: people,
+            peopleMutator: people,
+            dnaStatuses: PersonDossierDNAStatusLoader(statusesBySource: statusesBySource),
+            dnaSnapshots: dnaSnapshots,
+            invoicePaymentCandidates: candidateLoader,
+            documentLoader: { sourceID in
+                try await documents.load(sourceID: sourceID)
+            }
+        )
+        try await model.reload()
+        await model.selectDossier(id: openedSnapshot.dossier.id)
+        return PersonDossierNavigationContext(
+            fixture: fixture,
+            originSource: originSource,
+            otherSource: otherSource,
+            originSourceDocuments: originSourceDocuments,
+            otherSourceDocuments: otherSourceDocuments,
+            values: values,
+            openedSnapshot: openedSnapshot,
+            mutatedSnapshot: mutatedSnapshot,
+            documents: documents,
+            model: model
+        )
+    }
+
+    @MainActor
+    func assertFailedNavigationPreserved(
+        _ context: PersonDossierNavigationContext,
+        previous: PersonDossierDocumentPresentation
+    ) {
+        #expect(personDocumentPresentation(of: context.model) == previous)
+        #expect(context.model.lastErrorCode == "documentLoadFailure")
+    }
+
+    @MainActor
+    func preselectPersonInvoice(
+        in context: PersonDossierNavigationContext
+    ) async -> PersonDossierDocumentPresentation {
+        await context.model.selectPersonDossierDocument(documentID: context.values.invoice.id)
+        #expect(context.model.dossierEntryState == .available(
+            documentID: context.values.invoice.id,
+            disposition: .create
+        ))
+        return personDocumentPresentation(of: context.model)
+    }
+
+    @MainActor
+    func personDocumentPresentation(
+        of model: AppModel
+    ) -> PersonDossierDocumentPresentation {
+        PersonDossierDocumentPresentation(
+            selectedSourceID: model.selectedSourceID,
+            selectedDocumentID: model.selectedDocumentID,
+            documents: model.documents,
+            documentDNAAnalysisPhases: model.documentDNAAnalysisPhases,
+            documentDNADetailState: model.documentDNADetailState,
+            invoicePaymentCandidateState: model.invoicePaymentCandidateState,
+            dossierEntryState: model.dossierEntryState,
+            workspaceSelection: model.workspaceSelection,
+            dossierDetailState: model.dossierDetailState
         )
     }
 
@@ -1114,6 +1581,36 @@ private struct PersonDossierOpenContext {
     let otherValues: PersonDossierAppModelValues
     let service: ScriptedPersonDossierLoader
     let model: AppModel
+}
+
+private struct PersonDossierNavigationContext {
+    let fixture: PersonDossierAppModelFixture
+    let originSource: SourceRootRecord
+    let otherSource: SourceRootRecord
+    let originSourceDocuments: [DocumentRecord]
+    let otherSourceDocuments: [DocumentRecord]
+    let values: PersonDossierNavigationValues
+    let openedSnapshot: PersonDossierSnapshot
+    let mutatedSnapshot: PersonDossierSnapshot
+    let documents: ScriptedPersonDossierDocumentLoader
+    let model: AppModel
+}
+
+private struct PersonDossierDocumentPresentation: Equatable {
+    let selectedSourceID: UUID?
+    let selectedDocumentID: UUID?
+    let documents: [DocumentRecord]
+    let documentDNAAnalysisPhases: [UUID: DocumentDNAAnalysisPhase]
+    let documentDNADetailState: DocumentDNADetailState
+    let invoicePaymentCandidateState: InvoicePaymentCandidateDetailState
+    let dossierEntryState: DossierEntryState
+    let workspaceSelection: AppWorkspaceSelection?
+    let dossierDetailState: DossierDetailState
+}
+
+enum PersonDossierNavigationRow: Sendable {
+    case suggestion
+    case correction
 }
 
 enum PersonDossierRaceScenario: CaseIterable, Sendable {
