@@ -86,6 +86,7 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var unavailableSourceIDs = Set<UUID>()
     @Published public private(set) var workspaceSelection: AppWorkspaceSelection?
     @Published public private(set) var dossiers: [DossierSummary] = []
+    @Published public private(set) var personDossiers: [PersonDossierSummary] = []
     @Published public private(set) var dossierEntryState: DossierEntryState = .none
     @Published public private(set) var dossierDetailState: DossierDetailState = .none
     @Published public private(set) var dossierChoices: [DossierSummary] = []
@@ -296,7 +297,9 @@ public final class AppModel: ObservableObject {
                 ? selectedSourceID
                 : loadedSources.first?.id
             let loadedDossiers = try await dossierLoader?.summaries() ?? []
+            let loadedPersonDossiers = try await personDossierLoader?.personDossierSummaries() ?? []
             let presentation = try await loadDocumentPresentation(sourceID: targetSourceID)
+            try Task.checkCancellation()
             guard !Task.isCancelled,
                   generation == incrementalRefreshGeneration
             else {
@@ -305,6 +308,7 @@ public final class AppModel: ObservableObject {
             }
             sources = loadedSources
             dossiers = loadedDossiers
+            personDossiers = loadedPersonDossiers
             publishSelection(targetSourceID, presentation: presentation)
             await startWatchingSavedSources()
             await finishReload()
@@ -625,7 +629,67 @@ public final class AppModel: ObservableObject {
     }
 
     public func selectDossier(id: UUID) async {
+        if personDossiers.contains(where: { $0.id == id }) {
+            await loadPersonDossier(id: id)
+            return
+        }
         await loadDossier(id: id, selectedSummary: nil)
+    }
+
+    private func loadPersonDossier(id: UUID) async {
+        guard !isExclusiveSourceOperationActive,
+              let personDossierLoader
+        else {
+            return
+        }
+        invalidateIncrementalRefreshes()
+        invalidateDossierMutation()
+        invalidateDossierLoad()
+        let generation = dossierLoadGeneration
+        let previous = dossierDetailState.workspaceSnapshot
+        dossierDetailState = .loading(dossierID: id, previous: previous)
+        do {
+            let snapshot = try await personDossierLoader.personDossierSnapshot(id: id)
+            guard generation == dossierLoadGeneration,
+                  case .loading(let loadingID, _) = dossierDetailState,
+                  loadingID == id
+            else {
+                return
+            }
+            guard !Task.isCancelled else {
+                dossierDetailState = previous.map(DossierDetailState.available) ?? .none
+                return
+            }
+            guard snapshot.dossier.id == id else {
+                throw DossierRepositoryError.invalidStoredState
+            }
+            publishPersonDossier(snapshot)
+        } catch is CancellationError {
+            guard generation == dossierLoadGeneration,
+                  case .loading(let loadingID, _) = dossierDetailState,
+                  loadingID == id
+            else {
+                return
+            }
+            dossierDetailState = previous.map(DossierDetailState.available) ?? .none
+        } catch {
+            guard generation == dossierLoadGeneration,
+                  case .loading(let loadingID, _) = dossierDetailState,
+                  loadingID == id
+            else {
+                return
+            }
+            guard !Task.isCancelled else {
+                dossierDetailState = previous.map(DossierDetailState.available) ?? .none
+                return
+            }
+            dossierDetailState = .failed(dossierID: id, previous: previous)
+            publishRuntimeFailure(
+                code: "dossierLoadFailure",
+                category: .dossierLoad,
+                error: error
+            )
+        }
     }
 
     private func loadDossier(
@@ -1422,6 +1486,19 @@ public final class AppModel: ObservableObject {
             || (!preservingTransientState
                 && (lastErrorCode == "dossierOpenFailure"
                     || lastErrorCode == "dossierMutationFailure")) {
+            lastErrorCode = nil
+        }
+    }
+
+    private func publishPersonDossier(_ snapshot: PersonDossierSnapshot) {
+        workspaceSelectionGeneration &+= 1
+        workspaceSelection = .dossier(snapshot.dossier.id)
+        dossierDetailState = .available(.personMatter(snapshot))
+        dossierChoices = []
+        if lastErrorCode == "dossierLoadFailure"
+            || lastErrorCode == "dossierRemoved"
+            || lastErrorCode == "dossierOpenFailure"
+            || lastErrorCode == "dossierMutationFailure" {
             lastErrorCode = nil
         }
     }
