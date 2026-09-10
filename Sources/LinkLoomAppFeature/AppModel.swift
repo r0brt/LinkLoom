@@ -370,11 +370,26 @@ public final class AppModel: ObservableObject {
             failureCategory = .ingestion
             try await ingestion.processPending(source: source)
             failureCategory = .refresh
-            sources = try await sourceRepository.all()
-            _ = try await reloadDocuments()
+            let refreshedSources = try await sourceRepository.all()
+            let presentation = try await loadDocumentPresentation(sourceID: selectedSourceID)
+            guard !Task.isCancelled else { return }
             if case .dossier(let dossierID) = workspaceAtStart,
                workspaceSelection == .dossier(dossierID) {
-                await refreshDossier(id: dossierID)
+                await refreshDossier(
+                    id: dossierID,
+                    staging: DossierRefreshStaging(
+                        sources: refreshedSources,
+                        dossiers: nil,
+                        personDossiers: nil,
+                        documents: .replace(
+                            sourceID: selectedSourceID,
+                            presentation: presentation
+                        )
+                    )
+                )
+            } else {
+                sources = refreshedSources
+                publish(presentation)
             }
         } catch {
             publishRuntimeFailure(
@@ -399,38 +414,35 @@ public final class AppModel: ObservableObject {
             unavailableSourceIDs.remove(source.id)
             let refreshedSources = try await sourceRepository.all()
             let refreshedDossiers = try await dossierLoader?.summaries() ?? []
+            let refreshedPersonDossiers = try await personDossierLoader?
+                .personDossierSummaries() ?? []
             let removedSelection = selectedSourceID == source.id
             let targetSourceID = removedSelection
                 ? refreshedSources.first?.id
                 : selectedSourceID
+            let presentation = try await loadDocumentPresentation(
+                sourceID: targetSourceID
+            )
+            guard !Task.isCancelled else { return }
             if case .dossier(let dossierID) = workspaceAtStart,
                workspaceSelection == .dossier(dossierID) {
-                let presentation = try await loadDocumentPresentation(
-                    sourceID: targetSourceID
+                await refreshDossier(
+                    id: dossierID,
+                    staging: DossierRefreshStaging(
+                        sources: refreshedSources,
+                        dossiers: refreshedDossiers,
+                        personDossiers: refreshedPersonDossiers,
+                        documents: .replace(
+                            sourceID: targetSourceID,
+                            presentation: presentation
+                        )
+                    )
                 )
-                guard !Task.isCancelled,
-                      workspaceSelection == .dossier(dossierID)
-                else {
-                    return
-                }
-                sources = refreshedSources
-                dossiers = refreshedDossiers
-                selectedSourceID = targetSourceID
-                publish(presentation)
-                lastErrorCode = nil
-                await refreshDossier(id: dossierID)
                 return
             }
             sources = refreshedSources
             dossiers = refreshedDossiers
-            if removedSelection {
-                publishSelection(
-                    nil,
-                    presentation: DocumentPresentation(documents: [], dnaAnalysisPhases: [:])
-                )
-            }
-            let presentation = try await loadDocumentPresentation(sourceID: targetSourceID)
-            guard !Task.isCancelled else { return }
+            personDossiers = refreshedPersonDossiers
             publishSelection(targetSourceID, presentation: presentation)
             lastErrorCode = nil
         } catch {
@@ -869,47 +881,78 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    private func refreshDossier(id: UUID) async {
-        guard let dossierLoader,
-              workspaceSelection == .dossier(id)
+    private func refreshDossier(
+        id: UUID,
+        staging: DossierRefreshStaging = .unchanged
+    ) async {
+        guard workspaceSelection == .dossier(id),
+              let previous = dossierDetailState.workspaceSnapshot,
+              previous.dossier.id == id,
+              {
+                  switch previous {
+                  case .costsAndPayments: dossierLoader != nil
+                  case .personMatter: personDossierLoader != nil
+                  }
+              }()
         else {
             return
         }
         dossierLoadGeneration &+= 1
         let generation = dossierLoadGeneration
-        let previous = dossierDetailState.workspaceSnapshot
+        let workspaceGeneration = workspaceSelectionGeneration
+        let projectionIdentity = previous.projectionIdentity
         dossierDetailState = .loading(dossierID: id, previous: previous)
         do {
-            let snapshot = try await dossierLoader.snapshot(id: id)
-            guard generation == dossierLoadGeneration,
-                  workspaceSelection == .dossier(id),
-                  case .loading(let loadingID, _) = dossierDetailState,
-                  loadingID == id
-            else {
+            let refreshed: DossierWorkspaceSnapshot
+            switch previous {
+            case .costsAndPayments:
+                guard let dossierLoader else { return }
+                refreshed = .costsAndPayments(try await dossierLoader.snapshot(id: id))
+            case .personMatter:
+                guard let personDossierLoader else { return }
+                refreshed = .personMatter(
+                    try await personDossierLoader.personDossierSnapshot(id: id)
+                )
+            }
+            guard matchesDossierRefreshContext(
+                dossierID: id,
+                generation: generation,
+                workspaceGeneration: workspaceGeneration,
+                projectionIdentity: projectionIdentity,
+                previous: previous,
+                allowingCancelledTask: true
+            ) else {
                 return
             }
             guard !Task.isCancelled else {
-                dossierDetailState = previous.map(DossierDetailState.available) ?? .none
+                dossierDetailState = .available(previous)
                 return
             }
-            guard snapshot.dossier.id == id else {
+            guard refreshed.dossier.id == id else {
                 throw DossierRepositoryError.invalidStoredState
             }
-            publishDossier(snapshot, preservingTransientState: true)
-        } catch is CancellationError {
-            guard generation == dossierLoadGeneration,
-                  workspaceSelection == .dossier(id),
-                  case .loading(let loadingID, _) = dossierDetailState,
-                  loadingID == id
-            else {
-                return
+            publish(staging)
+            switch refreshed {
+            case .costsAndPayments(let snapshot):
+                publishDossier(snapshot, preservingTransientState: true)
+            case .personMatter(let snapshot):
+                publishPersonDossier(snapshot, preservingTransientState: true)
             }
-            dossierDetailState = previous.map(DossierDetailState.available) ?? .none
+        } catch is CancellationError {
+            restoreDossierDetailIfCurrent(
+                dossierID: id,
+                generation: generation,
+                workspaceGeneration: workspaceGeneration,
+                projectionIdentity: projectionIdentity,
+                previous: previous
+            )
         } catch DossierRepositoryError.dossierNotFound {
             guard !Task.isCancelled else {
                 restoreDossierDetailIfCurrent(
                     dossierID: id,
                     generation: generation,
+                    workspaceGeneration: workspaceGeneration,
+                    projectionIdentity: projectionIdentity,
                     previous: previous
                 )
                 return
@@ -918,26 +961,38 @@ public final class AppModel: ObservableObject {
                 try await publishRemovedDossierFallback(
                     dossierID: id,
                     generation: generation,
+                    workspaceGeneration: workspaceGeneration,
+                    projectionIdentity: projectionIdentity,
+                    staging: staging,
                     previous: previous
                 )
             } catch is CancellationError {
                 restoreDossierDetailIfCurrent(
                     dossierID: id,
                     generation: generation,
+                    workspaceGeneration: workspaceGeneration,
+                    projectionIdentity: projectionIdentity,
                     previous: previous
                 )
                 return
             } catch {
-                guard generation == dossierLoadGeneration,
-                      workspaceSelection == .dossier(id),
-                      case .loading(let loadingID, let loadingPrevious) = dossierDetailState,
-                      loadingID == id,
-                      loadingPrevious == previous
-                else {
+                guard !Task.isCancelled else {
+                    restoreDossierDetailIfCurrent(
+                        dossierID: id,
+                        generation: generation,
+                        workspaceGeneration: workspaceGeneration,
+                        projectionIdentity: projectionIdentity,
+                        previous: previous
+                    )
                     return
                 }
-                guard !Task.isCancelled else {
-                    dossierDetailState = previous.map(DossierDetailState.available) ?? .none
+                guard matchesDossierRefreshContext(
+                    dossierID: id,
+                    generation: generation,
+                    workspaceGeneration: workspaceGeneration,
+                    projectionIdentity: projectionIdentity,
+                    previous: previous
+                ) else {
                     return
                 }
                 dossierDetailState = .failed(dossierID: id, previous: previous)
@@ -948,15 +1003,23 @@ public final class AppModel: ObservableObject {
                 )
             }
         } catch {
-            guard generation == dossierLoadGeneration,
-                  workspaceSelection == .dossier(id),
-                  case .loading(let loadingID, _) = dossierDetailState,
-                  loadingID == id
-            else {
+            guard !Task.isCancelled else {
+                restoreDossierDetailIfCurrent(
+                    dossierID: id,
+                    generation: generation,
+                    workspaceGeneration: workspaceGeneration,
+                    projectionIdentity: projectionIdentity,
+                    previous: previous
+                )
                 return
             }
-            guard !Task.isCancelled else {
-                dossierDetailState = previous.map(DossierDetailState.available) ?? .none
+            guard matchesDossierRefreshContext(
+                dossierID: id,
+                generation: generation,
+                workspaceGeneration: workspaceGeneration,
+                projectionIdentity: projectionIdentity,
+                previous: previous
+            ) else {
                 return
             }
             dossierDetailState = .failed(dossierID: id, previous: previous)
@@ -971,29 +1034,47 @@ public final class AppModel: ObservableObject {
     private func publishRemovedDossierFallback(
         dossierID: UUID,
         generation: Int,
-        previous: DossierWorkspaceSnapshot?
+        workspaceGeneration: Int,
+        projectionIdentity: DossierWorkspaceProjectionIdentity,
+        staging: DossierRefreshStaging,
+        previous: DossierWorkspaceSnapshot
     ) async throws {
-        guard let dossierLoader else { return }
-        let refreshedSources = try await sourceLoader()
-        let refreshedDossiers = try await dossierLoader.summaries()
+        let refreshedSources: [SourceRootRecord]
+        if let stagedSources = staging.sources {
+            refreshedSources = stagedSources
+        } else {
+            refreshedSources = try await sourceLoader()
+        }
+        let refreshedDossiers: [DossierSummary]
+        if let stagedDossiers = staging.dossiers {
+            refreshedDossiers = stagedDossiers
+        } else {
+            refreshedDossiers = try await dossierLoader?.summaries() ?? []
+        }
+        let refreshedPersonDossiers: [PersonDossierSummary]
+        if let stagedPersonDossiers = staging.personDossiers {
+            refreshedPersonDossiers = stagedPersonDossiers
+        } else {
+            refreshedPersonDossiers = try await personDossierLoader?.personDossierSummaries() ?? []
+        }
         let targetSourceID = refreshedSources.first?.id
         let presentation = try await loadDocumentPresentation(sourceID: targetSourceID)
-        guard generation == dossierLoadGeneration,
-              workspaceSelection == .dossier(dossierID),
-              case .loading(let loadingID, let loadingPrevious) = dossierDetailState,
-              loadingID == dossierID,
-              loadingPrevious == previous
-        else {
-            return
-        }
-        guard !Task.isCancelled else {
-            dossierDetailState = previous.map(DossierDetailState.available) ?? .none
+        try Task.checkCancellation()
+        guard matchesDossierRefreshContext(
+            dossierID: dossierID,
+            generation: generation,
+            workspaceGeneration: workspaceGeneration,
+            projectionIdentity: projectionIdentity,
+            previous: previous
+        ) else {
             return
         }
         sources = refreshedSources
         dossiers = refreshedDossiers
+        personDossiers = refreshedPersonDossiers
         dossierDetailState = .none
         dossierChoices = []
+        clearPendingPersonDossierChoice()
         publishSelection(targetSourceID, presentation: presentation)
         publishRuntimeFailure(
             code: "dossierRemoved",
@@ -1005,17 +1086,40 @@ public final class AppModel: ObservableObject {
     private func restoreDossierDetailIfCurrent(
         dossierID: UUID,
         generation: Int,
-        previous: DossierWorkspaceSnapshot?
+        workspaceGeneration: Int,
+        projectionIdentity: DossierWorkspaceProjectionIdentity,
+        previous: DossierWorkspaceSnapshot
     ) {
-        guard generation == dossierLoadGeneration,
-              workspaceSelection == .dossier(dossierID),
-              case .loading(let loadingID, let loadingPrevious) = dossierDetailState,
-              loadingID == dossierID,
-              loadingPrevious == previous
-        else {
-            return
-        }
-        dossierDetailState = previous.map(DossierDetailState.available) ?? .none
+        guard matchesDossierRefreshContext(
+            dossierID: dossierID,
+            generation: generation,
+            workspaceGeneration: workspaceGeneration,
+            projectionIdentity: projectionIdentity,
+            previous: previous,
+            allowingCancelledTask: true
+        ) else { return }
+        dossierDetailState = .available(previous)
+    }
+
+    private func matchesDossierRefreshContext(
+        dossierID: UUID,
+        generation: Int,
+        workspaceGeneration: Int,
+        projectionIdentity: DossierWorkspaceProjectionIdentity,
+        previous: DossierWorkspaceSnapshot,
+        allowingCancelledTask: Bool = false
+    ) -> Bool {
+        (allowingCancelledTask || !Task.isCancelled)
+            && generation == dossierLoadGeneration
+            && workspaceGeneration == workspaceSelectionGeneration
+            && workspaceSelection == .dossier(dossierID)
+            && dossierDetailState.workspaceSnapshot?.projectionIdentity == projectionIdentity
+            && {
+                guard case .loading(let loadingID, let loadingPrevious) = dossierDetailState else {
+                    return false
+                }
+                return loadingID == dossierID && loadingPrevious == previous
+            }()
     }
 
     public func showInvoicePaymentCounterpart(
@@ -1858,32 +1962,6 @@ public final class AppModel: ObservableObject {
         await watchScheduler?.stopAll()
     }
 
-    private func reloadDocuments(
-        expectedIncrementalRefreshGeneration: Int? = nil
-    ) async throws -> Bool {
-        let sourceID = selectedSourceID
-        let generation = expectedIncrementalRefreshGeneration
-            ?? incrementalRefreshGeneration
-        do {
-            let presentation = try await loadDocumentPresentation(sourceID: sourceID)
-            guard !Task.isCancelled,
-                  selectedSourceID == sourceID,
-                  generation == incrementalRefreshGeneration
-            else {
-                return false
-            }
-            publish(presentation)
-            return true
-        } catch {
-            guard selectedSourceID == sourceID,
-                  generation == incrementalRefreshGeneration
-            else {
-                return false
-            }
-            throw error
-        }
-    }
-
     private func loadDocumentPresentation(
         sourceID: UUID?
     ) async throws -> DocumentPresentation {
@@ -1940,7 +2018,8 @@ public final class AppModel: ObservableObject {
 
     private func publishPersonDossier(
         _ snapshot: PersonDossierSnapshot,
-        summaries: [PersonDossierSummary]? = nil
+        summaries: [PersonDossierSummary]? = nil,
+        preservingTransientState: Bool = false
     ) {
         if let summaries {
             personDossiers = summaries
@@ -1948,13 +2027,32 @@ public final class AppModel: ObservableObject {
         workspaceSelectionGeneration &+= 1
         workspaceSelection = .dossier(snapshot.dossier.id)
         dossierDetailState = .available(.personMatter(snapshot))
-        dossierChoices = []
-        clearPendingPersonDossierChoice()
+        if !preservingTransientState {
+            dossierChoices = []
+            clearPendingPersonDossierChoice()
+        }
         if lastErrorCode == "dossierLoadFailure"
             || lastErrorCode == "dossierRemoved"
-            || lastErrorCode == "dossierOpenFailure"
-            || lastErrorCode == "dossierMutationFailure" {
+            || (!preservingTransientState
+                && (lastErrorCode == "dossierOpenFailure"
+                    || lastErrorCode == "dossierMutationFailure")) {
             lastErrorCode = nil
+        }
+    }
+
+    private func publish(_ staging: DossierRefreshStaging) {
+        if let refreshedSources = staging.sources {
+            sources = refreshedSources
+        }
+        if let refreshedDossiers = staging.dossiers {
+            dossiers = refreshedDossiers
+        }
+        if let refreshedPersonDossiers = staging.personDossiers {
+            personDossiers = refreshedPersonDossiers
+        }
+        if case .replace(let sourceID, let presentation) = staging.documents {
+            selectedSourceID = sourceID
+            publish(presentation)
         }
     }
 
@@ -2534,6 +2632,7 @@ public final class AppModel: ObservableObject {
             let selectionChanged = targetSourceID != selectedSourceID
             let selectedSourceCompleted = targetSourceID.map(sourceIDs.contains) ?? false
             if case .dossier(let dossierID) = workspaceAtStart {
+                let documents: DossierRefreshStaging.Documents
                 if selectionChanged || selectedSourceCompleted {
                     let presentation = try await loadDocumentPresentation(
                         sourceID: targetSourceID
@@ -2545,8 +2644,12 @@ public final class AppModel: ObservableObject {
                     else {
                         return
                     }
-                    selectedSourceID = targetSourceID
-                    publish(presentation)
+                    documents = .replace(
+                        sourceID: targetSourceID,
+                        presentation: presentation
+                    )
+                } else {
+                    documents = .unchanged
                 }
                 guard !Task.isCancelled,
                       generation == incrementalRefreshGeneration,
@@ -2555,8 +2658,15 @@ public final class AppModel: ObservableObject {
                 else {
                     return
                 }
-                sources = refreshedSources
-                await refreshDossier(id: dossierID)
+                await refreshDossier(
+                    id: dossierID,
+                    staging: DossierRefreshStaging(
+                        sources: refreshedSources,
+                        dossiers: nil,
+                        personDossiers: nil,
+                        documents: documents
+                    )
+                )
                 return
             }
             guard selectionChanged || selectedSourceCompleted else {
@@ -2629,6 +2739,25 @@ public final class AppModel: ObservableObject {
 private struct DocumentPresentation {
     let documents: [DocumentRecord]
     let dnaAnalysisPhases: [UUID: DocumentDNAAnalysisPhase]
+}
+
+private struct DossierRefreshStaging {
+    enum Documents {
+        case unchanged
+        case replace(sourceID: UUID?, presentation: DocumentPresentation)
+    }
+
+    let sources: [SourceRootRecord]?
+    let dossiers: [DossierSummary]?
+    let personDossiers: [PersonDossierSummary]?
+    let documents: Documents
+
+    static let unchanged = Self(
+        sources: nil,
+        dossiers: nil,
+        personDossiers: nil,
+        documents: .unchanged
+    )
 }
 
 private struct DocumentSelectionPresentation {

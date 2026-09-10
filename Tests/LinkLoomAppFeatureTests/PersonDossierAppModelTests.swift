@@ -972,6 +972,286 @@ struct PersonDossierAppModelTests {
         #expect(model.dossierDetailState == .available(.costsAndPayments(costs)))
     }
 
+    @Test @MainActor func manualScanRefreshesActivePersonDossierExactlyOnceWithCompleteSnapshot() async throws {
+        let context = try await makePersonLifecycleContext()
+        let refreshed = try refreshedPersonLifecycleSnapshot(in: context)
+        await context.people.setSnapshotSteps([.result(refreshed)])
+        let initialInvocationCount = await context.people.snapshotIDs.count
+
+        await context.model.scanSelectedSource()
+
+        #expect(await context.people.snapshotIDs.count == initialInvocationCount + 1)
+        #expect(await context.costs.snapshotIDs.isEmpty)
+        #expect(context.model.workspaceSelection == .dossier(context.values.snapshot.dossier.id))
+        #expect(context.model.dossierDetailState == .available(.personMatter(refreshed)))
+    }
+
+    @Test(arguments: [PersonDossierWatcherSource.selected, .other])
+    @MainActor func everyWatcherCompletionRefreshesActivePersonDossier(
+        completedSource: PersonDossierWatcherSource
+    ) async throws {
+        let context = try await makePersonLifecycleContext()
+        let refreshed = try refreshedPersonLifecycleSnapshot(in: context)
+        await context.people.setSnapshotSteps([.result(refreshed)])
+        let sourceID = completedSource == .selected
+            ? context.originSource.id
+            : context.otherSource.id
+
+        context.scheduler.completeRescan(sourceID: sourceID)
+
+        #expect(await waitUntilPersonDossierCondition {
+            await MainActor.run {
+                context.model.dossierDetailState == .available(.personMatter(refreshed))
+            }
+        })
+        #expect(await context.costs.snapshotIDs.isEmpty)
+        await context.model.stopWatching()
+    }
+
+    @Test @MainActor func failedPersonRefreshKeepsEveryLastGoodPresentationField() async throws {
+        let context = try await makePersonLifecycleContext()
+        let previous = personLifecyclePresentation(context.model)
+        await context.people.setSnapshotSteps([.failure])
+
+        await context.model.refreshSelectedDossier()
+
+        #expect(personLifecyclePresentation(context.model) == previous.replacing(
+            detail: .failed(
+                dossierID: context.values.snapshot.dossier.id,
+                previous: .personMatter(context.values.snapshot)
+            ),
+            errorCode: "dossierLoadFailure"
+        ))
+    }
+
+    @Test(arguments: PersonDossierLateRefreshOutcome.allCases)
+    @MainActor func cancelledCancellationInsensitivePersonRefreshCannotPublishSuccessOrFailure(
+        outcome: PersonDossierLateRefreshOutcome
+    ) async throws {
+        let recorder = PersonDossierDiagnosticRecorder()
+        let context = try await makePersonLifecycleContext(
+            reportRuntimeFailure: { recorder.record($0) }
+        )
+        let refreshed = try refreshedPersonLifecycleSnapshot(in: context)
+        let result: Result<PersonDossierSnapshot, PersonDossierAppModelTestError> = switch outcome {
+        case .success: .success(refreshed)
+        case .failure: .failure(.loadFailed)
+        }
+        await context.people.setSnapshotSteps([.blocked(result)])
+        let previous = personLifecyclePresentation(context.model)
+
+        let refresh = Task { await context.model.refreshSelectedDossier() }
+        await context.people.waitUntilBlockedSnapshotStarts()
+        refresh.cancel()
+        await context.people.releaseBlockedSnapshots()
+        await refresh.value
+
+        #expect(personLifecyclePresentation(context.model) == previous)
+        #expect(recorder.diagnostics.isEmpty)
+    }
+
+    @Test @MainActor func failedManualScanRefreshPublishesNoStagedPersonLifecycleValues() async throws {
+        let recorder = PersonDossierDiagnosticRecorder()
+        let context = try await makePersonLifecycleContext(
+            reportRuntimeFailure: { recorder.record($0) }
+        )
+        let previous = personLifecyclePresentation(context.model)
+        var stagedDocuments = context.originDocuments
+        stagedDocuments[0].relativePath = "refreshed-manual/person.pdf"
+        await context.documents.setDocuments(stagedDocuments, sourceID: context.originSource.id)
+        try await context.fixture.sources.updateLastScan(
+            id: context.originSource.id,
+            at: Date(timeIntervalSince1970: 700)
+        )
+        await context.people.setSnapshotSteps([.failure])
+
+        await context.model.scanSelectedSource()
+
+        #expect(personLifecyclePresentation(context.model) == previous.replacing(
+            detail: .failed(
+                dossierID: context.values.snapshot.dossier.id,
+                previous: .personMatter(context.values.snapshot)
+            ),
+            errorCode: "dossierLoadFailure"
+        ))
+        #expect(recorder.diagnostics.map(\.category) == [.dossierLoad])
+    }
+
+    @Test @MainActor func failedWatcherRefreshPublishesNoStagedPersonLifecycleValues() async throws {
+        let recorder = PersonDossierDiagnosticRecorder()
+        let context = try await makePersonLifecycleContext(
+            reportRuntimeFailure: { recorder.record($0) }
+        )
+        let previous = personLifecyclePresentation(context.model)
+        var stagedDocuments = context.originDocuments
+        stagedDocuments[0].relativePath = "refreshed-watcher/person.pdf"
+        await context.documents.setDocuments(stagedDocuments, sourceID: context.originSource.id)
+        try await context.fixture.sources.updateLastScan(
+            id: context.originSource.id,
+            at: Date(timeIntervalSince1970: 800)
+        )
+        await context.people.setSnapshotSteps([.failure])
+
+        context.scheduler.completeRescan(sourceID: context.originSource.id)
+
+        #expect(await waitUntilPersonDossierCondition {
+            await MainActor.run { context.model.lastErrorCode == "dossierLoadFailure" }
+        })
+        #expect(personLifecyclePresentation(context.model) == previous.replacing(
+            detail: .failed(
+                dossierID: context.values.snapshot.dossier.id,
+                previous: .personMatter(context.values.snapshot)
+            ),
+            errorCode: "dossierLoadFailure"
+        ))
+        #expect(recorder.diagnostics.map(\.category) == [.dossierLoad])
+        await context.model.stopWatching()
+    }
+
+    @Test(arguments: PersonDossierRefreshRace.allCases)
+    @MainActor func blockedPersonRefreshRejectsEveryStaleContext(
+        race: PersonDossierRefreshRace
+    ) async throws {
+        let context = try await makePersonLifecycleContext()
+        let refreshed = try refreshedPersonLifecycleSnapshot(in: context)
+        await context.people.setSnapshotSteps([.blocked(.success(refreshed))])
+        let refresh = Task { await context.model.refreshSelectedDossier() }
+        await context.people.waitUntilBlockedSnapshotStarts()
+
+        switch race {
+        case .sourceSelection:
+            await context.model.selectSource(id: context.otherSource.id)
+        case .documentSelection:
+            await context.model.selectDocument(id: context.values.origin.id)
+        case .personMutation:
+            await context.people.setAcceptSteps([.result(context.mutatedSnapshot)])
+            await context.model.acceptPersonDossierSuggestion(
+                context.values.snapshot.suggestions[0]
+            )
+        case .dossierABA:
+            await context.people.setSnapshotSteps([
+                .result(context.otherSnapshot),
+                .result(context.values.snapshot),
+            ])
+            await context.model.selectDossier(id: context.otherSnapshot.dossier.id)
+            await context.model.selectDossier(id: context.values.snapshot.dossier.id)
+        }
+        let expectedWorkspace = context.model.workspaceSelection
+        let expectedDetail = context.model.dossierDetailState
+        await context.people.releaseBlockedSnapshots()
+        await refresh.value
+
+        #expect(context.model.workspaceSelection == expectedWorkspace)
+        #expect(context.model.dossierDetailState == expectedDetail)
+        #expect(context.model.dossierDetailState.personSnapshot != refreshed)
+    }
+
+    @Test @MainActor func removingNonOriginSourcePublishesBothSummariesDocumentsAndPersonSnapshotTogether() async throws {
+        let context = try await makePersonLifecycleContext(selectedSource: .other)
+        let refreshed = context.values.replacingSnapshot(
+            directMembers: context.values.snapshot.directMembers.filter {
+                $0.document.sourceRootID == context.originSource.id
+            },
+            costsAndPayments: context.values.snapshot.costsAndPayments.filter {
+                $0.document.sourceRootID == context.originSource.id
+            },
+            suggestions: [],
+            corrections: context.values.snapshot.corrections.filter {
+                $0.document.sourceRootID == context.originSource.id
+            }
+        )
+        let finalPersonSummaries = [personSummary(refreshed), personSummary(context.otherSnapshot)]
+        let finalCostSummaries = [costSummary(context.costSnapshot)]
+        await context.people.setSummarySteps([.result(finalPersonSummaries)])
+        await context.costs.setSummarySteps([.result(finalCostSummaries)])
+        await context.people.setSnapshotSteps([.result(refreshed)])
+
+        await context.model.removeSource(context.otherSource)
+
+        #expect(context.model.sources == [context.originSource])
+        #expect(context.model.dossiers == finalCostSummaries)
+        #expect(context.model.personDossiers == finalPersonSummaries)
+        #expect(context.model.documents == context.originDocuments)
+        #expect(context.model.workspaceSelection == .dossier(context.values.snapshot.dossier.id))
+        #expect(context.model.dossierDetailState == .available(.personMatter(refreshed)))
+        #expect(context.model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func removingPersonOriginKeepsWorkspaceAndPublishesUnavailableOriginWithoutRemovedDiagnostic() async throws {
+        let context = try await makePersonLifecycleContext(selectedSource: .origin)
+        let refreshed = try unavailablePersonOriginSnapshot(in: context)
+        let finalPersonSummaries = [personSummary(refreshed)]
+        await context.people.setSummarySteps([.result(finalPersonSummaries)])
+        await context.costs.setSummarySteps([.result([])])
+        await context.people.setSnapshotSteps([.result(refreshed)])
+
+        await context.model.removeSource(context.originSource)
+
+        #expect(context.model.sources == [context.otherSource])
+        #expect(context.model.personDossiers == finalPersonSummaries)
+        #expect(context.model.documents == context.otherDocuments)
+        #expect(context.model.workspaceSelection == .dossier(context.values.snapshot.dossier.id))
+        #expect(context.model.dossierDetailState == .available(.personMatter(refreshed)))
+        #expect(context.model.lastErrorCode != "dossierRemoved")
+    }
+
+    @Test @MainActor func actualMissingPersonDossierUsesOneAtomicSharedFallback() async throws {
+        let recorder = PersonDossierDiagnosticRecorder()
+        let context = try await makePersonLifecycleContext(
+            reportRuntimeFailure: { recorder.record($0) }
+        )
+        let remainingPersonSummaries = [personSummary(context.otherSnapshot)]
+        let remainingCostSummaries = [costSummary(context.costSnapshot)]
+        let invoiceDNA = try #require(context.values.dnaByDocument[context.values.invoice.id])
+        let invoicePerson = try #require(invoiceDNA.findings.first { $0.kind == .person })
+        let invoiceSelection = try PersonDossierAnchorSelection(
+            document: context.values.invoice,
+            snapshot: invoiceDNA,
+            finding: invoicePerson
+        )
+        await context.model.selectDocument(id: context.values.invoice.id)
+        await context.costs.setOpenSteps([.result(.choose(remainingCostSummaries))])
+        await context.model.openOrCreateDossierForSelectedDocument()
+        await context.people.setOpenSteps([.result(.choose(remainingPersonSummaries))])
+        await context.model.openOrCreatePersonDossier(from: invoiceSelection)
+        #expect(context.model.dossierChoices == remainingCostSummaries)
+        #expect(context.model.personDossierChoices == remainingPersonSummaries)
+        await context.people.setSnapshotSteps([.dossierFailure(.dossierNotFound)])
+        await context.people.setSummarySteps([.result(remainingPersonSummaries)])
+        await context.costs.setSummarySteps([.result(remainingCostSummaries)])
+
+        await context.model.refreshSelectedDossier()
+
+        #expect(context.model.sources == [context.originSource, context.otherSource])
+        #expect(context.model.dossiers == remainingCostSummaries)
+        #expect(context.model.personDossiers == remainingPersonSummaries)
+        #expect(context.model.documents == context.originDocuments)
+        #expect(context.model.workspaceSelection == .source(context.originSource.id))
+        #expect(context.model.dossierDetailState == .none)
+        #expect(context.model.dossierChoices.isEmpty)
+        #expect(context.model.personDossierChoices.isEmpty)
+        #expect(context.model.lastErrorCode == "dossierRemoved")
+        #expect(recorder.diagnostics.filter { $0.category == .dossierLoad }.count == 1)
+    }
+
+    @Test @MainActor func failedPersonSourceRemovalPublishesNoMixedLifecycleState() async throws {
+        let context = try await makePersonLifecycleContext(selectedSource: .other)
+        let previous = personLifecyclePresentation(context.model)
+        await context.people.setSummarySteps([.result([personSummary(context.otherSnapshot)])])
+        await context.costs.setSummarySteps([.result([costSummary(context.costSnapshot)])])
+        await context.people.setSnapshotSteps([.failure])
+
+        await context.model.removeSource(context.otherSource)
+
+        #expect(personLifecyclePresentation(context.model) == previous.replacing(
+            detail: .failed(
+                dossierID: context.values.snapshot.dossier.id,
+                previous: .personMatter(context.values.snapshot)
+            ),
+            errorCode: "dossierLoadFailure"
+        ))
+    }
+
     @Test @MainActor func sameSourceDirectPersonMemberNavigationKeepsExactWorkspace() async throws {
         let context = try await makeNavigationContext()
 
@@ -1702,7 +1982,7 @@ struct PersonDossierAppModelTests {
         arguments: PersonDossierRefreshPortOutcome.allCases,
         PersonDossierLateCorrectionOutcome.allCases
     )
-    @MainActor func costsRefreshLoadGenerationAloneRejectsLatePersonCorrection(
+    @MainActor func personRefreshLoadGenerationAloneRejectsLatePersonCorrection(
         refreshOutcome: PersonDossierRefreshPortOutcome,
         correctionOutcome: PersonDossierLateCorrectionOutcome
     ) async throws {
@@ -1720,11 +2000,11 @@ struct PersonDossierAppModelTests {
         await context.service.waitUntilBlockedMutationStarts()
         switch refreshOutcome {
         case .returnWrongDossier:
-            await context.costsService.setSnapshotSteps([.result(
-                try CostsAndPaymentsDossierAppModelValues.make().snapshot
+            await context.service.setSnapshotSteps([.result(
+                try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
             )])
         case .failure:
-            await context.costsService.setSnapshotSteps([.failure])
+            await context.service.setSnapshotSteps([.failure])
         }
 
         await context.model.refreshSelectedDossier()
@@ -1840,6 +2120,193 @@ struct PersonDossierAppModelTests {
 }
 
 private extension PersonDossierAppModelTests {
+    @MainActor
+    func makePersonLifecycleContext(
+        selectedSource: PersonDossierLifecycleSelectedSource = .origin,
+        reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
+    ) async throws -> PersonDossierLifecycleContext {
+        let fixture = try PersonDossierAppModelFixture()
+        let originSource = try await fixture.addSource(named: "Archive")
+        let otherSource = try await fixture.addSource(named: "Other archive")
+        let values = try PersonDossierNavigationValues.make(
+            originSourceID: originSource.id,
+            otherSourceID: otherSource.id
+        )
+        let otherSnapshot = try PersonDossierAppModelValues.make(
+            dossierID: UUID(),
+            sourceID: originSource.id,
+            documentID: UUID(),
+            name: "Mara Beispiel"
+        ).snapshot
+        let mutatedSnapshot = values.replacingSnapshot(suggestions: [])
+        let costSnapshot = try CostsAndPaymentsDossierAppModelValues.make().snapshot
+        let originDocuments = [
+            values.origin,
+            values.direct,
+            values.invoice,
+            values.correction,
+        ]
+        let otherDocuments = [
+            values.crossSourceDirect,
+            values.payment,
+            values.suggestion,
+        ]
+        let documents = ScriptedPersonDossierDocumentLoader(documentsBySource: [
+            originSource.id: originDocuments,
+            otherSource.id: otherDocuments,
+        ])
+        let allDocuments = originDocuments + otherDocuments
+        let statuses = PersonDossierDNAStatusLoader(statusesBySource:
+            Dictionary(grouping: allDocuments, by: \.sourceRootID).mapValues { records in
+                records.map { DocumentDNAAnalysisStatus(documentID: $0.id, phase: .ready) }
+            }
+        )
+        let dnaSnapshots = ScriptedPersonDossierDNALoader(
+            snapshotsByDocument: values.dnaByDocument.mapValues {
+                Array(repeating: $0, count: 8)
+            }
+        )
+        let people = ScriptedPersonDossierLoader(
+            summarySteps: [.result([
+                personSummary(values.snapshot),
+                personSummary(otherSnapshot),
+            ])],
+            snapshotSteps: [.result(values.snapshot)]
+        )
+        let costs = ScriptedPersonDossierCostsLoader()
+        let scheduler = PersonDossierWatchScheduler()
+        let model = makeModel(
+            fixture,
+            costsLoader: costs,
+            costsMutator: costs,
+            people: people,
+            peopleMutator: people,
+            dnaStatuses: statuses,
+            dnaSnapshots: dnaSnapshots,
+            watchScheduler: scheduler,
+            documentLoader: { sourceID in
+                try await documents.load(sourceID: sourceID)
+            },
+            reportRuntimeFailure: reportRuntimeFailure
+        )
+        try await model.reload()
+        let selectedSourceID = selectedSource == .origin ? originSource.id : otherSource.id
+        await model.selectSource(id: selectedSourceID)
+        await model.selectDossier(id: values.snapshot.dossier.id)
+        return PersonDossierLifecycleContext(
+            fixture: fixture,
+            originSource: originSource,
+            otherSource: otherSource,
+            originDocuments: originDocuments,
+            otherDocuments: otherDocuments,
+            values: values,
+            otherSnapshot: otherSnapshot,
+            mutatedSnapshot: mutatedSnapshot,
+            costSnapshot: costSnapshot,
+            people: people,
+            costs: costs,
+            documents: documents,
+            scheduler: scheduler,
+            model: model
+        )
+    }
+
+    func refreshedPersonLifecycleSnapshot(
+        in context: PersonDossierLifecycleContext
+    ) throws -> PersonDossierSnapshot {
+        var movedOrigin = context.values.origin
+        movedOrigin.sourceRootID = context.otherSource.id
+        movedOrigin.relativePath = "relocated/person.pdf"
+        movedOrigin.availability = .unavailable
+        let tokenDate = Date(timeIntervalSince1970: 900)
+        return context.values.replacingSnapshot(
+            origin: try PersonDossierOriginState(
+                validity: .stale,
+                document: movedOrigin,
+                sourceDisplayName: context.otherSource.displayName
+            ),
+            directMembers: [context.values.snapshot.directMembers[0]],
+            costsAndPayments: [context.values.snapshot.costsAndPayments[0]],
+            suggestions: [],
+            corrections: [],
+            token: PersonDossierProjectionToken(
+                dossierUpdatedAt: tokenDate,
+                anchorUpdatedAt: tokenDate,
+                originValidity: .stale,
+                documents: [PersonDossierDocumentProjectionIdentity(
+                    document: movedOrigin,
+                    dnaAnalyzedAt: tokenDate
+                )],
+                memberSupports: [],
+                suggestionSupports: [],
+                confirmationRevisionIDs: [],
+                exclusionRevisionIDs: []
+            )
+        )
+    }
+
+    func unavailablePersonOriginSnapshot(
+        in context: PersonDossierLifecycleContext
+    ) throws -> PersonDossierSnapshot {
+        context.values.replacingSnapshot(
+            origin: try PersonDossierOriginState(
+                validity: .unavailable,
+                document: nil,
+                sourceDisplayName: nil
+            ),
+            directMembers: context.values.snapshot.directMembers.filter {
+                $0.document.sourceRootID != context.originSource.id
+            },
+            costsAndPayments: context.values.snapshot.costsAndPayments.filter {
+                $0.document.sourceRootID != context.originSource.id
+            },
+            suggestions: context.values.snapshot.suggestions.filter {
+                $0.document.sourceRootID != context.originSource.id
+            },
+            corrections: context.values.snapshot.corrections.filter {
+                $0.document.sourceRootID != context.originSource.id
+            },
+            token: PersonDossierProjectionToken(
+                dossierUpdatedAt: Date(timeIntervalSince1970: 900),
+                anchorUpdatedAt: Date(timeIntervalSince1970: 900),
+                originValidity: .unavailable,
+                documents: [],
+                memberSupports: [],
+                suggestionSupports: [],
+                confirmationRevisionIDs: [],
+                exclusionRevisionIDs: []
+            )
+        )
+    }
+
+    @MainActor
+    func personLifecyclePresentation(_ model: AppModel) -> PersonDossierLifecyclePresentation {
+        PersonDossierLifecyclePresentation(
+            sources: model.sources,
+            dossiers: model.dossiers,
+            personDossiers: model.personDossiers,
+            selectedSourceID: model.selectedSourceID,
+            documents: model.documents,
+            phases: model.documentDNAAnalysisPhases,
+            unavailableSourceIDs: model.unavailableSourceIDs,
+            selectedDocumentID: model.selectedDocumentID,
+            documentDetail: model.documentDNADetailState,
+            invoiceCandidates: model.invoicePaymentCandidateState,
+            updatingCandidate: model.invoicePaymentDecisionUpdatingCandidate,
+            navigatingCandidate: model.invoicePaymentCounterpartNavigatingCandidate,
+            isDecisionUpdateInFlight: model.isInvoicePaymentDecisionUpdateInFlight,
+            retryingDocumentID: model.documentDNARetryingDocumentID,
+            scanState: model.scanState,
+            workspace: model.workspaceSelection,
+            detail: model.dossierDetailState,
+            entry: model.dossierEntryState,
+            dossierChoices: model.dossierChoices,
+            personDossierChoices: model.personDossierChoices,
+            mutationState: model.dossierMutationState,
+            errorCode: model.lastErrorCode
+        )
+    }
+
     @MainActor
     func perform(
         _ command: PersonDossierCorrectionCommand,
@@ -2076,6 +2543,8 @@ private extension PersonDossierAppModelTests {
     @MainActor
     func makeModel(
         _ fixture: PersonDossierAppModelFixture,
+        catalog: any CatalogScanning = PersonDossierNoopCatalog(),
+        ingestion: any PendingIngesting = PersonDossierNoopIngester(),
         costsLoader: (any DossierLoading)? = nil,
         costsMutator: (any DossierMutating)? = nil,
         people: (any PersonDossierLoading)? = nil,
@@ -2083,15 +2552,17 @@ private extension PersonDossierAppModelTests {
         dnaStatuses: (any DocumentDNAStatusLoading)? = nil,
         dnaSnapshots: (any DocumentDNASnapshotLoading)? = nil,
         invoicePaymentCandidates: (any InvoicePaymentCandidateLoading)? = nil,
-        documentLoader: (@Sendable (UUID) async throws -> [DocumentRecord])? = nil
+        watchScheduler: (any SourceWatchScheduling)? = nil,
+        documentLoader: (@Sendable (UUID) async throws -> [DocumentRecord])? = nil,
+        reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) -> AppModel {
-        if let documentLoader {
+        if let watchScheduler {
             return AppModel(
                 sources: fixture.sources,
                 documents: fixture.documents,
                 sourceAccess: fixture.sourceAccess,
-                catalog: PersonDossierNoopCatalog(),
-                ingestion: PersonDossierNoopIngester(),
+                catalog: catalog,
+                ingestion: ingestion,
                 dnaStatuses: dnaStatuses,
                 dnaSnapshots: dnaSnapshots,
                 invoicePaymentCandidates: invoicePaymentCandidates,
@@ -2099,22 +2570,44 @@ private extension PersonDossierAppModelTests {
                 dossierMutator: costsMutator,
                 personDossierLoader: people,
                 personDossierMutator: peopleMutator,
-                documentLoader: documentLoader
+                watchScheduler: watchScheduler,
+                sourceResolver: { _ in fixture.directory },
+                documentLoader: documentLoader,
+                reportRuntimeFailure: reportRuntimeFailure
+            )
+        }
+        if let documentLoader {
+            return AppModel(
+                sources: fixture.sources,
+                documents: fixture.documents,
+                sourceAccess: fixture.sourceAccess,
+                catalog: catalog,
+                ingestion: ingestion,
+                dnaStatuses: dnaStatuses,
+                dnaSnapshots: dnaSnapshots,
+                invoicePaymentCandidates: invoicePaymentCandidates,
+                dossierLoader: costsLoader,
+                dossierMutator: costsMutator,
+                personDossierLoader: people,
+                personDossierMutator: peopleMutator,
+                documentLoader: documentLoader,
+                reportRuntimeFailure: reportRuntimeFailure
             )
         }
         return AppModel(
             sources: fixture.sources,
             documents: fixture.documents,
             sourceAccess: fixture.sourceAccess,
-            catalog: PersonDossierNoopCatalog(),
-            ingestion: PersonDossierNoopIngester(),
+            catalog: catalog,
+            ingestion: ingestion,
             dnaStatuses: dnaStatuses,
             dnaSnapshots: dnaSnapshots,
             invoicePaymentCandidates: invoicePaymentCandidates,
             dossierLoader: costsLoader,
             dossierMutator: costsMutator,
             personDossierLoader: people,
-            personDossierMutator: peopleMutator
+            personDossierMutator: peopleMutator,
+            reportRuntimeFailure: reportRuntimeFailure
         )
     }
 
@@ -2406,6 +2899,78 @@ private struct PersonDossierNavigationContext {
     let model: AppModel
 }
 
+private struct PersonDossierLifecycleContext {
+    let fixture: PersonDossierAppModelFixture
+    let originSource: SourceRootRecord
+    let otherSource: SourceRootRecord
+    let originDocuments: [DocumentRecord]
+    let otherDocuments: [DocumentRecord]
+    let values: PersonDossierNavigationValues
+    let otherSnapshot: PersonDossierSnapshot
+    let mutatedSnapshot: PersonDossierSnapshot
+    let costSnapshot: DossierSnapshot
+    let people: ScriptedPersonDossierLoader
+    let costs: ScriptedPersonDossierCostsLoader
+    let documents: ScriptedPersonDossierDocumentLoader
+    let scheduler: PersonDossierWatchScheduler
+    let model: AppModel
+}
+
+private struct PersonDossierLifecyclePresentation: Equatable {
+    let sources: [SourceRootRecord]
+    let dossiers: [DossierSummary]
+    let personDossiers: [PersonDossierSummary]
+    let selectedSourceID: UUID?
+    let documents: [DocumentRecord]
+    let phases: [UUID: DocumentDNAAnalysisPhase]
+    let unavailableSourceIDs: Set<UUID>
+    let selectedDocumentID: UUID?
+    let documentDetail: DocumentDNADetailState
+    let invoiceCandidates: InvoicePaymentCandidateDetailState
+    let updatingCandidate: InvoicePaymentCandidate?
+    let navigatingCandidate: InvoicePaymentCandidate?
+    let isDecisionUpdateInFlight: Bool
+    let retryingDocumentID: UUID?
+    let scanState: AppScanState
+    let workspace: AppWorkspaceSelection?
+    let detail: DossierDetailState
+    let entry: DossierEntryState
+    let dossierChoices: [DossierSummary]
+    let personDossierChoices: [PersonDossierSummary]
+    let mutationState: DossierMutationState
+    let errorCode: String?
+
+    func replacing(
+        detail: DossierDetailState? = nil,
+        errorCode: String?? = nil
+    ) -> Self {
+        Self(
+            sources: sources,
+            dossiers: dossiers,
+            personDossiers: personDossiers,
+            selectedSourceID: selectedSourceID,
+            documents: documents,
+            phases: phases,
+            unavailableSourceIDs: unavailableSourceIDs,
+            selectedDocumentID: selectedDocumentID,
+            documentDetail: documentDetail,
+            invoiceCandidates: invoiceCandidates,
+            updatingCandidate: updatingCandidate,
+            navigatingCandidate: navigatingCandidate,
+            isDecisionUpdateInFlight: isDecisionUpdateInFlight,
+            retryingDocumentID: retryingDocumentID,
+            scanState: scanState,
+            workspace: workspace,
+            detail: detail ?? self.detail,
+            entry: entry,
+            dossierChoices: dossierChoices,
+            personDossierChoices: personDossierChoices,
+            mutationState: mutationState,
+            errorCode: errorCode ?? self.errorCode
+        )
+    }
+}
+
 private struct PersonDossierDocumentPresentation: Equatable {
     let selectedSourceID: UUID?
     let selectedDocumentID: UUID?
@@ -2451,6 +3016,11 @@ enum PersonDossierLateCorrectionOutcome: CaseIterable, Sendable {
     case failure
 }
 
+enum PersonDossierLateRefreshOutcome: CaseIterable, Sendable {
+    case success
+    case failure
+}
+
 enum PersonDossierCorrectionInput: Sendable {
     case suggestion(PersonDossierSuggestion)
     case member(PersonDossierMember)
@@ -2468,6 +3038,23 @@ enum PersonDossierRaceScenario: CaseIterable, Sendable {
     case dnaGeneration
     case dossier
     case documentABA
+}
+
+enum PersonDossierRefreshRace: CaseIterable, Sendable {
+    case sourceSelection
+    case documentSelection
+    case personMutation
+    case dossierABA
+}
+
+enum PersonDossierWatcherSource: Sendable {
+    case selected
+    case other
+}
+
+enum PersonDossierLifecycleSelectedSource: Sendable {
+    case origin
+    case other
 }
 
 enum PersonDossierSummaryBoundary: CaseIterable, Sendable {

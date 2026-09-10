@@ -3456,7 +3456,7 @@ struct AppModelTests {
         }
     }
 
-    @Test @MainActor func removingSelectedSourceClearsPresentationBeforeFallbackLoad() async throws {
+    @Test @MainActor func removingSelectedSourceStagesFallbackPresentationAtomically() async throws {
         let results: [Result<[DocumentDNAAnalysisStatus], AppModelTestError>] = [
             .success([]), .failure(.documentDNAStatusLoadFailed),
         ]
@@ -3481,9 +3481,9 @@ struct AppModelTests {
             let remove = Task { await model.removeSource(pair.first) }
             await dnaStatuses.waitUntilBlockedLoadStarts()
 
-            #expect(model.selectedSourceID == nil)
-            #expect(model.documents.isEmpty)
-            #expect(model.documentDNAAnalysisPhases.isEmpty)
+            #expect(model.selectedSourceID == pair.first.id)
+            #expect(model.documents == [pair.firstDocument])
+            #expect(model.documentDNAAnalysisPhases == [firstReady.documentID: firstReady.phase])
             await dnaStatuses.releaseBlockedLoad()
             await remove.value
 
@@ -3492,9 +3492,11 @@ struct AppModelTests {
                 #expect(model.documents == [pair.secondDocument])
                 #expect(model.documentDNAAnalysisPhases == [secondReady.documentID: secondReady.phase])
             } else {
-                #expect(model.selectedSourceID == nil)
-                #expect(model.documents.isEmpty)
-                #expect(model.documentDNAAnalysisPhases.isEmpty)
+                #expect(model.selectedSourceID == pair.first.id)
+                #expect(model.documents == [pair.firstDocument])
+                #expect(model.documentDNAAnalysisPhases == [
+                    firstReady.documentID: firstReady.phase,
+                ])
                 #expect(model.lastErrorCode == "documentLoadFailure")
             }
         }
