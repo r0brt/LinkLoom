@@ -90,6 +90,7 @@ public final class AppModel: ObservableObject {
     @Published public private(set) var dossierEntryState: DossierEntryState = .none
     @Published public private(set) var dossierDetailState: DossierDetailState = .none
     @Published public private(set) var dossierChoices: [DossierSummary] = []
+    @Published public private(set) var personDossierChoices: [PersonDossierSummary] = []
     @Published public private(set) var dossierMutationState: DossierMutationState = .idle
 
     public var lastErrorMessage: String? {
@@ -161,6 +162,7 @@ public final class AppModel: ObservableObject {
     private var dossierLoadGeneration = 0
     private var dossierMutationGeneration = 0
     private var workspaceSelectionGeneration = 0
+    private var pendingPersonDossierSelection: PersonDossierAnchorSelection?
 
     public init(
         sources: SourceRootRepository,
@@ -442,6 +444,7 @@ public final class AppModel: ObservableObject {
 
     public func selectSource(id: UUID?) async {
         guard !isExclusiveSourceOperationActive else { return }
+        clearPendingPersonDossierChoice()
         invalidateDossierLoad()
         invalidateDossierMutation()
         invalidateIncrementalRefreshes()
@@ -466,6 +469,7 @@ public final class AppModel: ObservableObject {
     }
 
     public func selectDocument(id: UUID?) async {
+        clearPendingPersonDossierChoice()
         documentDNADetailGeneration += 1
         invalidateDossierLoad()
         invalidateDossierMutation()
@@ -628,7 +632,110 @@ public final class AppModel: ObservableObject {
         await loadDossier(id: id, selectedSummary: summary)
     }
 
+    public func openOrCreatePersonDossier(
+        from selection: PersonDossierAnchorSelection
+    ) async {
+        guard !isExclusiveSourceOperationActive,
+              case .idle = dossierMutationState,
+              let personDossierMutator,
+              let personDossierLoader,
+              let documentID = selectedDocumentID,
+              documentID == selection.support.documentID,
+              case .available(let dna) = documentDNADetailState,
+              dna.documentID == documentID
+        else {
+            return
+        }
+
+        dossierMutationGeneration &+= 1
+        let mutationGeneration = dossierMutationGeneration
+        invalidateDossierLoad()
+        let dnaGeneration = documentDNADetailGeneration
+        let workspaceGeneration = workspaceSelectionGeneration
+        let sourceID = selectedSourceID
+        let workspace = workspaceSelection
+        let dossierID = dossierDetailState.workspaceSnapshot?.dossier.id
+        dossierMutationState = .openingPerson(documentID: documentID)
+        defer {
+            if mutationGeneration == dossierMutationGeneration {
+                dossierMutationState = .idle
+            }
+        }
+
+        do {
+            let result = try await personDossierMutator.createOrOpenPersonDossier(
+                from: selection
+            )
+            guard matchesPersonDossierMutationContext(
+                mutationGeneration: mutationGeneration,
+                dnaGeneration: dnaGeneration,
+                workspaceGeneration: workspaceGeneration,
+                sourceID: sourceID,
+                documentID: documentID,
+                dossierID: dossierID,
+                workspace: workspace
+            ) else {
+                return
+            }
+
+            switch result {
+            case .opened(let snapshot):
+                guard snapshot.anchor.originDocumentID == documentID else {
+                    throw DossierRepositoryError.invalidStoredState
+                }
+                let refreshedSummaries = try await personDossierLoader.personDossierSummaries()
+                guard matchesPersonDossierMutationContext(
+                    mutationGeneration: mutationGeneration,
+                    dnaGeneration: dnaGeneration,
+                    workspaceGeneration: workspaceGeneration,
+                    sourceID: sourceID,
+                    documentID: documentID,
+                    dossierID: dossierID,
+                    workspace: workspace
+                ) else {
+                    return
+                }
+                publishPersonDossier(snapshot, summaries: refreshedSummaries)
+            case .choose(let choices):
+                pendingPersonDossierSelection = selection
+                personDossierChoices = choices
+                if lastErrorCode == "dossierOpenFailure" {
+                    lastErrorCode = nil
+                }
+            }
+        } catch is CancellationError {
+            return
+        } catch {
+            guard matchesPersonDossierMutationContext(
+                mutationGeneration: mutationGeneration,
+                dnaGeneration: dnaGeneration,
+                workspaceGeneration: workspaceGeneration,
+                sourceID: sourceID,
+                documentID: documentID,
+                dossierID: dossierID,
+                workspace: workspace
+            ) else {
+                return
+            }
+            publishRuntimeFailure(
+                code: "dossierOpenFailure",
+                category: .dossierMutation,
+                error: error
+            )
+        }
+    }
+
+    public func choosePersonDossier(id: UUID) async {
+        guard personDossierChoices.contains(where: { $0.id == id }) else { return }
+        await completePersonDossierChoice(.existing(dossierID: id))
+    }
+
+    public func createNewPersonDossier() async {
+        await completePersonDossierChoice(.new)
+    }
+
     public func selectDossier(id: UUID) async {
+        clearPendingPersonDossierChoice()
         if personDossiers.contains(where: { $0.id == id }) {
             await loadPersonDossier(id: id)
             return
@@ -1480,6 +1587,7 @@ public final class AppModel: ObservableObject {
         dossierDetailState = .available(.costsAndPayments(snapshot))
         if !preservingTransientState {
             dossierChoices = []
+            clearPendingPersonDossierChoice()
         }
         if lastErrorCode == "dossierLoadFailure"
             || lastErrorCode == "dossierRemoved"
@@ -1490,11 +1598,18 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    private func publishPersonDossier(_ snapshot: PersonDossierSnapshot) {
+    private func publishPersonDossier(
+        _ snapshot: PersonDossierSnapshot,
+        summaries: [PersonDossierSummary]? = nil
+    ) {
+        if let summaries {
+            personDossiers = summaries
+        }
         workspaceSelectionGeneration &+= 1
         workspaceSelection = .dossier(snapshot.dossier.id)
         dossierDetailState = .available(.personMatter(snapshot))
         dossierChoices = []
+        clearPendingPersonDossierChoice()
         if lastErrorCode == "dossierLoadFailure"
             || lastErrorCode == "dossierRemoved"
             || lastErrorCode == "dossierOpenFailure"
@@ -1504,6 +1619,7 @@ public final class AppModel: ObservableObject {
     }
 
     private func clearDocumentSelection() {
+        clearPendingPersonDossierChoice()
         documentDNADetailGeneration += 1
         invalidateInvoicePaymentDecisionUpdate()
         invalidateInvoicePaymentCounterpartNavigation()
@@ -1594,6 +1710,7 @@ public final class AppModel: ObservableObject {
         _ selection: DocumentSelectionPresentation,
         workspace: AppWorkspaceSelection
     ) -> Int {
+        clearPendingPersonDossierChoice()
         documentDNADetailGeneration &+= 1
         invalidateInvoicePaymentDecisionUpdate()
         selectedSourceID = selection.sourceID
@@ -1768,11 +1885,135 @@ public final class AppModel: ObservableObject {
         _ sourceID: UUID?,
         presentation: DocumentPresentation
     ) {
+        clearPendingPersonDossierChoice()
         selectedSourceID = sourceID
         workspaceSelectionGeneration &+= 1
         workspaceSelection = sourceID.map(AppWorkspaceSelection.source)
         dossierChoices = []
         publish(presentation)
+    }
+
+    private func completePersonDossierChoice(
+        _ choice: PersonDossierCreationChoice
+    ) async {
+        guard !isExclusiveSourceOperationActive,
+              case .idle = dossierMutationState,
+              let personDossierMutator,
+              let personDossierLoader,
+              let selection = pendingPersonDossierSelection,
+              let documentID = selectedDocumentID,
+              documentID == selection.support.documentID,
+              case .available(let dna) = documentDNADetailState,
+              dna.documentID == documentID
+        else {
+            return
+        }
+
+        dossierMutationGeneration &+= 1
+        let mutationGeneration = dossierMutationGeneration
+        invalidateDossierLoad()
+        let dnaGeneration = documentDNADetailGeneration
+        let workspaceGeneration = workspaceSelectionGeneration
+        let sourceID = selectedSourceID
+        let workspace = workspaceSelection
+        let dossierID = dossierDetailState.workspaceSnapshot?.dossier.id
+        dossierMutationState = .openingPerson(documentID: documentID)
+        defer {
+            if mutationGeneration == dossierMutationGeneration {
+                dossierMutationState = .idle
+            }
+        }
+
+        do {
+            let snapshot = try await personDossierMutator.chooseOrCreatePersonDossier(
+                from: selection,
+                choice: choice
+            )
+            guard matchesPersonDossierMutationContext(
+                mutationGeneration: mutationGeneration,
+                dnaGeneration: dnaGeneration,
+                workspaceGeneration: workspaceGeneration,
+                sourceID: sourceID,
+                documentID: documentID,
+                dossierID: dossierID,
+                workspace: workspace
+            ) else {
+                return
+            }
+            switch choice {
+            case .existing(let selectedDossierID):
+                guard snapshot.dossier.id == selectedDossierID else {
+                    throw DossierRepositoryError.invalidStoredState
+                }
+            case .new:
+                guard snapshot.anchor.originDocumentID == documentID else {
+                    throw DossierRepositoryError.invalidStoredState
+                }
+            }
+            let refreshedSummaries = try await personDossierLoader.personDossierSummaries()
+            guard matchesPersonDossierMutationContext(
+                mutationGeneration: mutationGeneration,
+                dnaGeneration: dnaGeneration,
+                workspaceGeneration: workspaceGeneration,
+                sourceID: sourceID,
+                documentID: documentID,
+                dossierID: dossierID,
+                workspace: workspace
+            ) else {
+                return
+            }
+            publishPersonDossier(snapshot, summaries: refreshedSummaries)
+        } catch is CancellationError {
+            return
+        } catch {
+            guard matchesPersonDossierMutationContext(
+                mutationGeneration: mutationGeneration,
+                dnaGeneration: dnaGeneration,
+                workspaceGeneration: workspaceGeneration,
+                sourceID: sourceID,
+                documentID: documentID,
+                dossierID: dossierID,
+                workspace: workspace
+            ) else {
+                return
+            }
+            publishRuntimeFailure(
+                code: "dossierOpenFailure",
+                category: .dossierMutation,
+                error: error
+            )
+        }
+    }
+
+    private func matchesPersonDossierMutationContext(
+        mutationGeneration: Int,
+        dnaGeneration: Int,
+        workspaceGeneration: Int,
+        sourceID: UUID?,
+        documentID: UUID,
+        dossierID: UUID?,
+        workspace: AppWorkspaceSelection?
+    ) -> Bool {
+        guard !Task.isCancelled,
+              mutationGeneration == dossierMutationGeneration,
+              dnaGeneration == documentDNADetailGeneration,
+              workspaceGeneration == workspaceSelectionGeneration,
+              selectedSourceID == sourceID,
+              selectedDocumentID == documentID,
+              workspaceSelection == workspace,
+              dossierDetailState.workspaceSnapshot?.dossier.id == dossierID,
+              case .available(let dna) = documentDNADetailState,
+              dna.documentID == documentID,
+              dossierMutationState == .openingPerson(documentID: documentID)
+        else {
+            return false
+        }
+        return true
+    }
+
+    private func clearPendingPersonDossierChoice() {
+        pendingPersonDossierSelection = nil
+        personDossierChoices = []
     }
 
     private func finishReload() async {

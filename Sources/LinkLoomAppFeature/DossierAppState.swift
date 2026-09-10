@@ -140,6 +140,7 @@ public enum DossierDetailState: Sendable, Equatable {
 public enum DossierMutationState: Sendable, Equatable {
     case idle
     case opening(documentID: UUID)
+    case openingPerson(documentID: UUID)
     case excluding(dossierID: UUID, documentID: UUID)
     case resetting(dossierID: UUID, documentID: UUID)
 }
