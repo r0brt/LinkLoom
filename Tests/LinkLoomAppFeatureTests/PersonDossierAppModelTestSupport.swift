@@ -62,6 +62,35 @@ struct PersonDossierNoopIngester: PendingIngesting {
 }
 
 actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
+    struct SuggestionInvocation: Sendable, Equatable {
+        let dossierID: UUID
+        let documentID: UUID
+        let expectedSupport: PersonDossierCandidateSupportIdentity
+        let expectedToken: PersonDossierProjectionToken
+    }
+
+    struct MemberInvocation: Sendable, Equatable {
+        let dossierID: UUID
+        let documentID: UUID
+        let expectedSupport: PersonDossierMembershipSupport
+        let expectedToken: PersonDossierProjectionToken
+    }
+
+    struct CorrectionInvocation: Sendable, Equatable {
+        let dossierID: UUID
+        let documentID: UUID
+        let expectedDecision: PersonDossierCorrectionDecision
+        let expectedToken: PersonDossierProjectionToken
+    }
+
+    enum CorrectionStep: Sendable {
+        case result(PersonDossierSnapshot)
+        case failure
+        case staleInput
+        case cancellation
+        case blocked(Result<PersonDossierSnapshot, PersonDossierAppModelTestError>)
+    }
+
     enum SummaryStep: Sendable {
         case result([PersonDossierSummary])
         case failure
@@ -94,6 +123,10 @@ actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
     private var snapshotSteps: [SnapshotStep]
     private var openSteps: [OpenStep]
     private var choiceSteps: [ChoiceStep]
+    private var acceptSteps: [CorrectionStep]
+    private var rejectSteps: [CorrectionStep]
+    private var removeSteps: [CorrectionStep]
+    private var resetSteps: [CorrectionStep]
     private var blockedSummaryCount = 0
     private var summaryStartWaiters: [(
         targetCount: Int,
@@ -116,6 +149,10 @@ actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
     private(set) var openSelections: [PersonDossierAnchorSelection] = []
     private(set) var choiceSelections: [PersonDossierAnchorSelection] = []
     private(set) var creationChoices: [PersonDossierCreationChoice] = []
+    private(set) var acceptInvocations: [SuggestionInvocation] = []
+    private(set) var rejectInvocations: [SuggestionInvocation] = []
+    private(set) var removeInvocations: [MemberInvocation] = []
+    private(set) var resetInvocations: [CorrectionInvocation] = []
     private(set) var summaryInvocationCount = 0
 
     var pendingSummaryStartWaiterCount: Int { summaryStartWaiters.count }
@@ -126,12 +163,20 @@ actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
         summarySteps: [SummaryStep] = [.result([])],
         snapshotSteps: [SnapshotStep] = [],
         openSteps: [OpenStep] = [],
-        choiceSteps: [ChoiceStep] = []
+        choiceSteps: [ChoiceStep] = [],
+        acceptSteps: [CorrectionStep] = [],
+        rejectSteps: [CorrectionStep] = [],
+        removeSteps: [CorrectionStep] = [],
+        resetSteps: [CorrectionStep] = []
     ) {
         self.summarySteps = summarySteps
         self.snapshotSteps = snapshotSteps
         self.openSteps = openSteps
         self.choiceSteps = choiceSteps
+        self.acceptSteps = acceptSteps
+        self.rejectSteps = rejectSteps
+        self.removeSteps = removeSteps
+        self.resetSteps = resetSteps
     }
 
     func personDossierSummaries() async throws -> [PersonDossierSummary] {
@@ -198,7 +243,14 @@ actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
         expectedSupport: PersonDossierCandidateSupportIdentity,
         expectedToken: PersonDossierProjectionToken
     ) async throws -> PersonDossierSnapshot {
-        throw PersonDossierAppModelTestError.loadFailed
+        acceptInvocations.append(.init(
+            dossierID: dossierID,
+            documentID: documentID,
+            expectedSupport: expectedSupport,
+            expectedToken: expectedToken
+        ))
+        let step = acceptSteps.isEmpty ? .failure : acceptSteps.removeFirst()
+        return try await runCorrection(step)
     }
 
     func rejectPersonSuggestion(
@@ -207,7 +259,14 @@ actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
         expectedSupport: PersonDossierCandidateSupportIdentity,
         expectedToken: PersonDossierProjectionToken
     ) async throws -> PersonDossierSnapshot {
-        throw PersonDossierAppModelTestError.loadFailed
+        rejectInvocations.append(.init(
+            dossierID: dossierID,
+            documentID: documentID,
+            expectedSupport: expectedSupport,
+            expectedToken: expectedToken
+        ))
+        let step = rejectSteps.isEmpty ? .failure : rejectSteps.removeFirst()
+        return try await runCorrection(step)
     }
 
     func removePersonMember(
@@ -216,7 +275,14 @@ actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
         expectedSupport: PersonDossierMembershipSupport,
         expectedToken: PersonDossierProjectionToken
     ) async throws -> PersonDossierSnapshot {
-        throw PersonDossierAppModelTestError.loadFailed
+        removeInvocations.append(.init(
+            dossierID: dossierID,
+            documentID: documentID,
+            expectedSupport: expectedSupport,
+            expectedToken: expectedToken
+        ))
+        let step = removeSteps.isEmpty ? .failure : removeSteps.removeFirst()
+        return try await runCorrection(step)
     }
 
     func resetPersonCorrection(
@@ -225,8 +291,21 @@ actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
         expectedDecision: PersonDossierCorrectionDecision,
         expectedToken: PersonDossierProjectionToken
     ) async throws -> PersonDossierSnapshot {
-        throw PersonDossierAppModelTestError.loadFailed
+        resetInvocations.append(.init(
+            dossierID: dossierID,
+            documentID: documentID,
+            expectedDecision: expectedDecision,
+            expectedToken: expectedToken
+        ))
+        let step = resetSteps.isEmpty ? .failure : resetSteps.removeFirst()
+        return try await runCorrection(step)
     }
+
+    func setSnapshotSteps(_ steps: [SnapshotStep]) { snapshotSteps = steps }
+    func setAcceptSteps(_ steps: [CorrectionStep]) { acceptSteps = steps }
+    func setRejectSteps(_ steps: [CorrectionStep]) { rejectSteps = steps }
+    func setRemoveSteps(_ steps: [CorrectionStep]) { removeSteps = steps }
+    func setResetSteps(_ steps: [CorrectionStep]) { resetSteps = steps }
 
     func waitUntilBlockedSnapshotStarts(count: Int = 1) async {
         guard blockedSnapshotCount >= count else {
@@ -270,6 +349,11 @@ actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
         mutationReleaseWaiters.removeAll()
     }
 
+    func releaseNextBlockedMutation() {
+        guard !mutationReleaseWaiters.isEmpty else { return }
+        mutationReleaseWaiters.removeFirst().resume()
+    }
+
     private func nextSnapshotStep() -> SnapshotStep {
         snapshotSteps.isEmpty ? .failure : snapshotSteps.removeFirst()
     }
@@ -289,6 +373,20 @@ actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
             }
             readyWaiters.forEach { $0.continuation.resume() }
             await withCheckedContinuation { snapshotReleaseWaiters.append($0) }
+            return try result.get()
+        }
+    }
+
+    private func runCorrection(
+        _ step: CorrectionStep
+    ) async throws -> PersonDossierSnapshot {
+        switch step {
+        case .result(let snapshot): return snapshot
+        case .failure: throw PersonDossierAppModelTestError.loadFailed
+        case .staleInput: throw DossierRepositoryError.staleInput
+        case .cancellation: throw CancellationError()
+        case .blocked(let result):
+            await blockMutation()
             return try result.get()
         }
     }
@@ -414,13 +512,18 @@ actor PersonDossierCandidateLoader: InvoicePaymentCandidateLoading {
 }
 
 actor ScriptedPersonDossierCostsLoader: DossierLoading, DossierMutating {
+    enum SnapshotStep: Sendable {
+        case result(DossierSnapshot)
+        case failure
+    }
+
     enum OpenStep: Sendable {
         case result(DossierOpenResult)
         case failure
     }
 
     private let summariesValue: [DossierSummary]
-    private var snapshots: [DossierSnapshot]
+    private var snapshotSteps: [SnapshotStep]
     private var openSteps: [OpenStep]
     private(set) var snapshotIDs: [UUID] = []
 
@@ -430,7 +533,7 @@ actor ScriptedPersonDossierCostsLoader: DossierLoading, DossierMutating {
         openSteps: [OpenStep] = []
     ) {
         summariesValue = summaries
-        self.snapshots = snapshots
+        snapshotSteps = snapshots.map(SnapshotStep.result)
         self.openSteps = openSteps
     }
 
@@ -442,10 +545,17 @@ actor ScriptedPersonDossierCostsLoader: DossierLoading, DossierMutating {
 
     func snapshot(id: UUID) async throws -> DossierSnapshot {
         snapshotIDs.append(id)
-        guard !snapshots.isEmpty else {
+        guard !snapshotSteps.isEmpty else {
             throw PersonDossierAppModelTestError.loadFailed
         }
-        return snapshots.removeFirst()
+        switch snapshotSteps.removeFirst() {
+        case .result(let snapshot): return snapshot
+        case .failure: throw PersonDossierAppModelTestError.loadFailed
+        }
+    }
+
+    func setSnapshotSteps(_ steps: [SnapshotStep]) {
+        snapshotSteps = steps
     }
 
     func createOrOpen(anchorDocumentID: UUID) async throws -> DossierOpenResult {
@@ -838,6 +948,7 @@ struct PersonDossierNavigationValues {
         origin: PersonDossierOriginState? = nil,
         directMembers: [PersonDossierMember]? = nil,
         costsAndPayments: [PersonDossierMember]? = nil,
+        suggestions: [PersonDossierSuggestion]? = nil,
         token: PersonDossierProjectionToken? = nil
     ) -> PersonDossierSnapshot {
         PersonDossierSnapshot(
@@ -846,7 +957,7 @@ struct PersonDossierNavigationValues {
             origin: origin ?? snapshot.origin,
             directMembers: directMembers ?? snapshot.directMembers,
             costsAndPayments: costsAndPayments ?? snapshot.costsAndPayments,
-            suggestions: snapshot.suggestions,
+            suggestions: suggestions ?? snapshot.suggestions,
             corrections: snapshot.corrections,
             token: token ?? snapshot.token
         )

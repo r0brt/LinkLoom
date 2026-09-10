@@ -143,4 +143,8 @@ public enum DossierMutationState: Sendable, Equatable {
     case openingPerson(documentID: UUID)
     case excluding(dossierID: UUID, documentID: UUID)
     case resetting(dossierID: UUID, documentID: UUID)
+    case acceptingPerson(dossierID: UUID, documentID: UUID)
+    case rejectingPerson(dossierID: UUID, documentID: UUID)
+    case removingPerson(dossierID: UUID, documentID: UUID)
+    case resettingPerson(dossierID: UUID, documentID: UUID)
 }

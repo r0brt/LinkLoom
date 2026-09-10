@@ -1264,9 +1264,815 @@ struct PersonDossierAppModelTests {
             .personMatter(context.values.snapshot)
         ))
     }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func personCorrectionForwardsExactCurrentInputAndPublishesCompleteSnapshot(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        await configure(
+            command,
+            service: context.service,
+            steps: [.result(context.mutatedSnapshot)]
+        )
+
+        await perform(command, in: context)
+
+        try await assertExactInvocation(command, context: context)
+        #expect(context.model.dossierDetailState == .available(
+            .personMatter(context.mutatedSnapshot)
+        ))
+        #expect(context.model.dossierMutationState == .idle)
+    }
+
+    @Test @MainActor func resetPersonCorrectionForwardsCompleteConfirmationDecision() async throws {
+        let context = try await makeNavigationContext()
+        let confirmed = try snapshotWithConfirmationCorrection(from: context.values.snapshot)
+        await context.service.setSnapshotSteps([.result(confirmed)])
+        await context.model.selectDossier(id: confirmed.dossier.id)
+        let correction = try #require(confirmed.corrections.first)
+        await context.service.setResetSteps([.result(context.mutatedSnapshot)])
+
+        await context.model.resetPersonDossierCorrection(correction)
+
+        #expect(await context.service.resetInvocations == [.init(
+            dossierID: confirmed.dossier.id,
+            documentID: correction.id,
+            expectedDecision: correction.decision,
+            expectedToken: confirmed.token
+        )])
+    }
+
+    @Test @MainActor func removePersonMemberUsesAuthoritativeCommandSupportNotAnotherStoredSupport() async throws {
+        let context = try await makeNavigationContext()
+        let original = try #require(context.values.snapshot.directMembers.first)
+        let revisionID = UUID(uuidString: "74000000-0000-0000-0000-000000000002")!
+        let confirmation = try DossierMembershipConfirmation(
+            dossierID: context.values.snapshot.dossier.id,
+            documentID: original.id,
+            revisionID: revisionID,
+            confirmedAt: Date(timeIntervalSince1970: 401),
+            candidateKind: .birthDateConflict,
+            acceptedContentHash: original.document.contentHash,
+            acceptedExtractionVersion: "text-v1",
+            acceptedDNASchemaVersion: 1,
+            acceptedDNAAnalyzerIdentifier: "local-rules",
+            acceptedDNAAnalyzerVersion: "1",
+            acceptedDNAAnalyzedAt: Date(timeIntervalSince1970: 200),
+            acceptedRole: .resident,
+            acceptedNormalizedName: "elise muster"
+        )
+        let authoritative = try PersonDossierMember(
+            document: original.document,
+            sourceDisplayName: original.sourceDisplayName,
+            documentType: original.documentType,
+            section: original.section,
+            supports: original.supports + [.manualConfirmation(
+                confirmation: confirmation,
+                currentCandidate: nil
+            )],
+            isConfirmationAuthoritative: true,
+            preferredPaymentSupport: nil
+        )
+        let current = context.values.replacingSnapshot(
+            directMembers: [authoritative] + context.values.snapshot.directMembers.dropFirst(),
+            token: PersonDossierProjectionToken(
+                dossierUpdatedAt: context.values.snapshot.token.dossierUpdatedAt,
+                anchorUpdatedAt: context.values.snapshot.token.anchorUpdatedAt,
+                originValidity: context.values.snapshot.token.originValidity,
+                documents: context.values.snapshot.token.documents,
+                memberSupports: [authoritative.supports]
+                    + context.values.snapshot.directMembers.dropFirst().map(\.supports)
+                    + context.values.snapshot.costsAndPayments.map(\.supports),
+                suggestionSupports: context.values.snapshot.token.suggestionSupports,
+                confirmationRevisionIDs: [revisionID],
+                exclusionRevisionIDs: context.values.snapshot.token.exclusionRevisionIDs
+            )
+        )
+        await context.service.setSnapshotSteps([.result(current)])
+        await context.model.selectDossier(id: current.dossier.id)
+        await context.service.setRemoveSteps([.result(context.mutatedSnapshot)])
+
+        await context.model.removePersonDossierMember(authoritative)
+
+        #expect(await context.service.removeInvocations == [.init(
+            dossierID: current.dossier.id,
+            documentID: authoritative.id,
+            expectedSupport: try authoritative.commandSupport,
+            expectedToken: current.token
+        )])
+    }
+
+    @Test(arguments: [PersonDossierCorrectionCommand.accept, .reject])
+    @MainActor func suggestionCommandUsesAuthoritativeSupportWhenItIsNotFirst(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        let original = try #require(context.values.snapshot.suggestions.first)
+        let authoritative = original.commandSupport
+        let originalDNA = try #require(context.values.dnaByDocument[original.id])
+        let finding = authoritative.person.finding
+        let alternateFinding = try DocumentDNAFinding(
+            kind: finding.kind,
+            qualifier: finding.qualifier,
+            displayValue: finding.displayValue,
+            normalizedValue: finding.normalizedValue,
+            secondaryNormalizedValue: finding.secondaryNormalizedValue,
+            confidence: finding.confidence == 0.8 ? 0.7 : 0.8,
+            evidence: finding.evidence
+        )
+        let alternateDNA = try DocumentDNA(
+            documentID: originalDNA.documentID,
+            schemaVersion: originalDNA.schemaVersion,
+            analyzerIdentifier: originalDNA.analyzerIdentifier,
+            analyzerVersion: originalDNA.analyzerVersion,
+            inputContentHash: originalDNA.inputContentHash,
+            inputExtractionVersion: originalDNA.inputExtractionVersion,
+            findings: originalDNA.findings + [alternateFinding],
+            analyzedAt: originalDNA.analyzedAt
+        )
+        let alternatePerson = try PersonDossierFindingSupportIdentity(
+            current: CurrentDocumentDNA(document: original.document, snapshot: alternateDNA),
+            role: authoritative.person.role,
+            finding: alternateFinding
+        )
+        let alternate = try PersonDossierCandidateSupportIdentity(
+            kind: authoritative.kind,
+            person: alternatePerson,
+            conflict: authoritative.conflict
+        )
+        let suggestion = try PersonDossierSuggestion(
+            document: original.document,
+            sourceDisplayName: original.sourceDisplayName,
+            documentType: original.documentType,
+            section: original.section,
+            kind: original.kind,
+            conflict: original.conflict,
+            currentSupports: [alternate, authoritative],
+            commandSupport: authoritative
+        )
+        let current = context.values.replacingSnapshot(
+            suggestions: [suggestion],
+            token: PersonDossierProjectionToken(
+                dossierUpdatedAt: context.values.snapshot.token.dossierUpdatedAt,
+                anchorUpdatedAt: context.values.snapshot.token.anchorUpdatedAt,
+                originValidity: context.values.snapshot.token.originValidity,
+                documents: context.values.snapshot.token.documents,
+                memberSupports: context.values.snapshot.token.memberSupports,
+                suggestionSupports: [alternate, authoritative],
+                confirmationRevisionIDs: context.values.snapshot.token.confirmationRevisionIDs,
+                exclusionRevisionIDs: context.values.snapshot.token.exclusionRevisionIDs
+            )
+        )
+        await context.service.setSnapshotSteps([.result(current)])
+        await context.model.selectDossier(id: current.dossier.id)
+        await configure(
+            command,
+            service: context.service,
+            steps: [.result(context.mutatedSnapshot)]
+        )
+
+        await perform(command, in: context)
+
+        let invocation: ScriptedPersonDossierLoader.SuggestionInvocation? = switch command {
+        case .accept: await context.service.acceptInvocations.first
+        case .reject: await context.service.rejectInvocations.first
+        default: nil
+        }
+        #expect(invocation == .init(
+            dossierID: current.dossier.id,
+            documentID: suggestion.id,
+            expectedSupport: authoritative,
+            expectedToken: current.token
+        ))
+    }
+
+    @Test @MainActor func removePersonCostsMemberForwardsExactCommandSupportAndPublishesSnapshot() async throws {
+        let context = try await makeNavigationContext()
+        let member = try #require(context.values.snapshot.costsAndPayments.first)
+        await context.service.setRemoveSteps([.result(context.mutatedSnapshot)])
+
+        await context.model.removePersonDossierMember(member)
+
+        #expect(await context.service.removeInvocations == [.init(
+            dossierID: context.values.snapshot.dossier.id,
+            documentID: member.id,
+            expectedSupport: try member.commandSupport,
+            expectedToken: context.values.snapshot.token
+        )])
+        #expect(context.model.dossierDetailState == .available(
+            .personMatter(context.mutatedSnapshot)
+        ))
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func staleDisplayedPersonCorrectionValueDoesNotStart(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        let stale = try staleInput(for: command, snapshot: context.values.snapshot)
+
+        await perform(command, input: stale, model: context.model)
+
+        #expect(await invocationCount(command, service: context.service) == 0)
+        #expect(context.model.dossierDetailState == .available(
+            .personMatter(context.values.snapshot)
+        ))
+        #expect(context.model.lastErrorCode == nil)
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func personCorrectionFailurePreservesLastGoodSnapshotAndPublishesSafeDiagnostic(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        await configure(command, service: context.service, steps: [.failure])
+
+        await perform(command, in: context)
+
+        #expect(context.model.dossierDetailState == .available(
+            .personMatter(context.values.snapshot)
+        ))
+        #expect(context.model.lastErrorCode == "dossierMutationFailure")
+        #expect(
+            context.model.lastErrorMessage
+                == "Die Dossier-Korrektur konnte nicht gespeichert werden. Bitte versuche es erneut."
+        )
+        #expect(context.model.dossierMutationState == .idle)
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func wrongDossierPersonCorrectionResultPreservesSnapshotAndPublishesFailure(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        let wrong = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
+        await configure(command, service: context.service, steps: [.result(wrong)])
+
+        await perform(command, in: context)
+
+        #expect(context.model.dossierDetailState == .available(
+            .personMatter(context.values.snapshot)
+        ))
+        #expect(context.model.lastErrorCode == "dossierMutationFailure")
+        #expect(context.model.dossierMutationState == .idle)
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func stalePersonCorrectionInputPreservesSnapshotAndPublishesSafeDiagnostic(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        await configure(command, service: context.service, steps: [.staleInput])
+
+        await perform(command, in: context)
+
+        #expect(context.model.dossierDetailState == .available(
+            .personMatter(context.values.snapshot)
+        ))
+        #expect(context.model.lastErrorCode == "dossierMutationFailure")
+        #expect(
+            context.model.lastErrorMessage
+                == "Die Dossier-Korrektur konnte nicht gespeichert werden. Bitte versuche es erneut."
+        )
+        #expect(context.model.dossierMutationState == .idle)
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func cancelledPersonCorrectionPreservesSnapshotWithoutDiagnostic(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        await configure(command, service: context.service, steps: [.cancellation])
+
+        await perform(command, in: context)
+
+        #expect(context.model.dossierDetailState == .available(
+            .personMatter(context.values.snapshot)
+        ))
+        #expect(context.model.lastErrorCode == nil)
+        #expect(context.model.dossierMutationState == .idle)
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func cancelledCancellationInsensitivePersonCorrectionIsIdleAndSilent(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        await configure(
+            command,
+            service: context.service,
+            steps: [.blocked(.failure(.loadFailed))]
+        )
+        let mutation = Task { await perform(command, in: context) }
+        await context.service.waitUntilBlockedMutationStarts()
+
+        mutation.cancel()
+        await context.service.releaseBlockedMutations()
+        await mutation.value
+
+        #expect(context.model.dossierDetailState == .available(
+            .personMatter(context.values.snapshot)
+        ))
+        #expect(context.model.lastErrorCode == nil)
+        #expect(context.model.dossierMutationState == .idle)
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func cancelledCancellationInsensitivePersonCorrectionSuccessIsIdleAndSilent(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        await configure(
+            command,
+            service: context.service,
+            steps: [.blocked(.success(context.mutatedSnapshot))]
+        )
+        let mutation = Task { await perform(command, in: context) }
+        await context.service.waitUntilBlockedMutationStarts()
+
+        mutation.cancel()
+        await context.service.releaseNextBlockedMutation()
+        await mutation.value
+
+        #expect(context.model.dossierDetailState == .available(
+            .personMatter(context.values.snapshot)
+        ))
+        #expect(context.model.lastErrorCode == nil)
+        #expect(context.model.dossierMutationState == .idle)
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func personCorrectionSuppressesEverySecondMutationWhileInFlight(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        await configure(
+            command,
+            service: context.service,
+            steps: [.blocked(.success(context.mutatedSnapshot))]
+        )
+        let first = Task { await perform(command, in: context) }
+        await context.service.waitUntilBlockedMutationStarts()
+
+        #expect(context.model.dossierMutationState == mutationState(
+            command,
+            snapshot: context.values.snapshot
+        ))
+        for second in PersonDossierCorrectionCommand.allCases {
+            await perform(second, in: context)
+        }
+
+        #expect(await totalCorrectionInvocationCount(context.service) == 1)
+        await context.service.releaseBlockedMutations()
+        await first.value
+    }
+
+    @Test(
+        arguments: PersonDossierCorrectionCommand.allCases,
+        PersonDossierCorrectionSelectionRace.allCases
+    )
+    @MainActor func personCorrectionRejectsLateCompletionAfterEverySelectionRace(
+        command: PersonDossierCorrectionCommand,
+        race: PersonDossierCorrectionSelectionRace
+    ) async throws {
+        let other = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
+        let context = try await makeNavigationContext(dossierABASnapshot: other)
+        await configure(
+            command,
+            service: context.service,
+            steps: [.blocked(.success(context.mutatedSnapshot))]
+        )
+        let mutation = Task { await perform(command, in: context) }
+        await context.service.waitUntilBlockedMutationStarts()
+
+        switch race {
+        case .source:
+            await context.model.selectSource(id: context.otherSource.id)
+        case .document:
+            await context.model.selectPersonDossierDocument(
+                documentID: context.values.crossSourceDirect.id
+            )
+        case .dossier:
+            await context.model.selectDossier(id: other.dossier.id)
+        case .dossierABA:
+            await context.model.selectDossier(id: other.dossier.id)
+            await context.model.selectDossier(id: context.values.snapshot.dossier.id)
+        }
+        let workspaceAfterRace = context.model.workspaceSelection
+        let detailAfterRace = context.model.dossierDetailState
+        let sourceAfterRace = context.model.selectedSourceID
+        let documentAfterRace = context.model.selectedDocumentID
+        await context.service.releaseBlockedMutations()
+        await mutation.value
+
+        #expect(context.model.workspaceSelection == workspaceAfterRace)
+        #expect(context.model.dossierDetailState == detailAfterRace)
+        #expect(context.model.selectedSourceID == sourceAfterRace)
+        #expect(context.model.selectedDocumentID == documentAfterRace)
+        #expect(context.model.lastErrorCode == nil)
+        #expect(context.model.dossierMutationState == .idle)
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func concurrentPersonReloadPreventsOlderCorrectionFromPublishing(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        await configure(
+            command,
+            service: context.service,
+            steps: [.blocked(.success(context.mutatedSnapshot))]
+        )
+        let mutation = Task { await perform(command, in: context) }
+        await context.service.waitUntilBlockedMutationStarts()
+        await context.service.setSnapshotSteps([.result(context.values.snapshot)])
+
+        await context.model.selectDossier(id: context.values.snapshot.dossier.id)
+        await context.service.releaseBlockedMutations()
+        await mutation.value
+
+        #expect(context.model.dossierDetailState == .available(
+            .personMatter(context.values.snapshot)
+        ))
+        #expect(context.model.lastErrorCode == nil)
+    }
+
+    @Test(
+        arguments: PersonDossierRefreshPortOutcome.allCases,
+        PersonDossierLateCorrectionOutcome.allCases
+    )
+    @MainActor func costsRefreshLoadGenerationAloneRejectsLatePersonCorrection(
+        refreshOutcome: PersonDossierRefreshPortOutcome,
+        correctionOutcome: PersonDossierLateCorrectionOutcome
+    ) async throws {
+        let context = try await makeNavigationContext()
+        let correctionStep: ScriptedPersonDossierLoader.CorrectionStep = switch correctionOutcome {
+        case .success: .blocked(.success(context.mutatedSnapshot))
+        case .failure: .blocked(.failure(.loadFailed))
+        }
+        await context.service.setAcceptSteps([correctionStep])
+        let correction = Task {
+            await context.model.acceptPersonDossierSuggestion(
+                context.values.snapshot.suggestions[0]
+            )
+        }
+        await context.service.waitUntilBlockedMutationStarts()
+        switch refreshOutcome {
+        case .returnWrongDossier:
+            await context.costsService.setSnapshotSteps([.result(
+                try CostsAndPaymentsDossierAppModelValues.make().snapshot
+            )])
+        case .failure:
+            await context.costsService.setSnapshotSteps([.failure])
+        }
+
+        await context.model.refreshSelectedDossier()
+        let detailAfterRefresh = context.model.dossierDetailState
+        let failureAfterRefresh = context.model.lastErrorCode
+        #expect(detailAfterRefresh == .failed(
+            dossierID: context.values.snapshot.dossier.id,
+            previous: .personMatter(context.values.snapshot)
+        ))
+        #expect(failureAfterRefresh == "dossierLoadFailure")
+        await context.service.releaseNextBlockedMutation()
+        await correction.value
+
+        #expect(context.model.dossierDetailState == detailAfterRefresh)
+        #expect(context.model.lastErrorCode == failureAfterRefresh)
+        #expect(context.model.dossierMutationState == .idle)
+    }
+
+    @Test @MainActor func oldMutationDeferCannotClearNewerInFlightMutation() async throws {
+        let context = try await makeNavigationContext()
+        await context.service.setAcceptSteps([
+            .blocked(.success(context.mutatedSnapshot)),
+        ])
+        let old = Task { await perform(.accept, in: context) }
+        await context.service.waitUntilBlockedMutationStarts(count: 1)
+        await context.service.setSnapshotSteps([.result(context.values.snapshot)])
+        await context.model.selectDossier(id: context.values.snapshot.dossier.id)
+        await context.service.setRejectSteps([
+            .blocked(.success(context.mutatedSnapshot)),
+        ])
+        let newer = Task { await perform(.reject, in: context) }
+        await context.service.waitUntilBlockedMutationStarts(count: 2)
+
+        await context.service.releaseNextBlockedMutation()
+        await old.value
+        #expect(context.model.dossierMutationState == .rejectingPerson(
+            dossierID: context.values.snapshot.dossier.id,
+            documentID: context.values.snapshot.suggestions[0].id
+        ))
+        await perform(.remove, in: context)
+        #expect(await totalCorrectionInvocationCount(context.service) == 2)
+
+        await context.service.releaseNextBlockedMutation()
+        await newer.value
+        #expect(context.model.dossierMutationState == .idle)
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func personCorrectionInvalidatesInFlightPersonDossierLoad(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        let staleLoad = try PersonDossierAppModelValues.make(
+            dossierID: context.values.snapshot.dossier.id,
+            documentID: UUID()
+        ).snapshot
+        await context.service.setSnapshotSteps([.blocked(.success(staleLoad))])
+        let load = Task {
+            await context.model.selectDossier(id: context.values.snapshot.dossier.id)
+        }
+        await context.service.waitUntilBlockedSnapshotStarts()
+        await configure(
+            command,
+            service: context.service,
+            steps: [.result(context.mutatedSnapshot)]
+        )
+
+        await perform(command, in: context)
+        await context.service.releaseBlockedSnapshots()
+        await load.value
+
+        #expect(context.model.dossierDetailState == .available(
+            .personMatter(context.mutatedSnapshot)
+        ))
+        #expect(context.model.lastErrorCode == nil)
+        #expect(context.model.dossierMutationState == .idle)
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func newerCompletedPersonCorrectionPreventsOlderResultFromPublishing(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        let newerCommand = command.next
+        let newerSnapshot = try PersonDossierAppModelValues.make(
+            dossierID: context.values.snapshot.dossier.id,
+            documentID: UUID()
+        ).snapshot
+        await configure(
+            command,
+            service: context.service,
+            steps: [.blocked(.success(context.mutatedSnapshot))]
+        )
+        let older = Task { await perform(command, in: context) }
+        await context.service.waitUntilBlockedMutationStarts()
+        await context.service.setSnapshotSteps([.result(context.values.snapshot)])
+        await context.model.selectDossier(id: context.values.snapshot.dossier.id)
+        await configure(
+            newerCommand,
+            service: context.service,
+            steps: [.result(newerSnapshot)]
+        )
+
+        await perform(newerCommand, in: context)
+        await context.service.releaseBlockedMutations()
+        await older.value
+
+        #expect(context.model.dossierDetailState == .available(
+            .personMatter(newerSnapshot)
+        ))
+        #expect(context.model.lastErrorCode == nil)
+    }
 }
 
 private extension PersonDossierAppModelTests {
+    @MainActor
+    func perform(
+        _ command: PersonDossierCorrectionCommand,
+        in context: PersonDossierNavigationContext
+    ) async {
+        let snapshot = context.model.dossierDetailState.personSnapshot
+            ?? context.values.snapshot
+        switch command {
+        case .accept:
+            guard let value = snapshot.suggestions.first else { return }
+            await context.model.acceptPersonDossierSuggestion(value)
+        case .reject:
+            guard let value = snapshot.suggestions.first else { return }
+            await context.model.rejectPersonDossierSuggestion(value)
+        case .remove:
+            guard let value = snapshot.directMembers.first else { return }
+            await context.model.removePersonDossierMember(value)
+        case .reset:
+            guard let value = snapshot.corrections.first else { return }
+            await context.model.resetPersonDossierCorrection(value)
+        }
+    }
+
+    @MainActor
+    func perform(
+        _ command: PersonDossierCorrectionCommand,
+        input: PersonDossierCorrectionInput,
+        model: AppModel
+    ) async {
+        switch (command, input) {
+        case (.accept, .suggestion(let value)):
+            await model.acceptPersonDossierSuggestion(value)
+        case (.reject, .suggestion(let value)):
+            await model.rejectPersonDossierSuggestion(value)
+        case (.remove, .member(let value)):
+            await model.removePersonDossierMember(value)
+        case (.reset, .correction(let value)):
+            await model.resetPersonDossierCorrection(value)
+        default:
+            Issue.record("Mismatched correction input")
+        }
+    }
+
+    func configure(
+        _ command: PersonDossierCorrectionCommand,
+        service: ScriptedPersonDossierLoader,
+        steps: [ScriptedPersonDossierLoader.CorrectionStep]
+    ) async {
+        switch command {
+        case .accept: await service.setAcceptSteps(steps)
+        case .reject: await service.setRejectSteps(steps)
+        case .remove: await service.setRemoveSteps(steps)
+        case .reset: await service.setResetSteps(steps)
+        }
+    }
+
+    func invocationCount(
+        _ command: PersonDossierCorrectionCommand,
+        service: ScriptedPersonDossierLoader
+    ) async -> Int {
+        switch command {
+        case .accept: await service.acceptInvocations.count
+        case .reject: await service.rejectInvocations.count
+        case .remove: await service.removeInvocations.count
+        case .reset: await service.resetInvocations.count
+        }
+    }
+
+    func totalCorrectionInvocationCount(
+        _ service: ScriptedPersonDossierLoader
+    ) async -> Int {
+        await service.acceptInvocations.count
+            + service.rejectInvocations.count
+            + service.removeInvocations.count
+            + service.resetInvocations.count
+    }
+
+    func assertExactInvocation(
+        _ command: PersonDossierCorrectionCommand,
+        context: PersonDossierNavigationContext
+    ) async throws {
+        let snapshot = context.values.snapshot
+        switch command {
+        case .accept:
+            let suggestion = try #require(snapshot.suggestions.first)
+            #expect(await context.service.acceptInvocations == [.init(
+                dossierID: snapshot.dossier.id,
+                documentID: suggestion.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: snapshot.token
+            )])
+        case .reject:
+            let suggestion = try #require(snapshot.suggestions.first)
+            #expect(await context.service.rejectInvocations == [.init(
+                dossierID: snapshot.dossier.id,
+                documentID: suggestion.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: snapshot.token
+            )])
+        case .remove:
+            let member = try #require(snapshot.directMembers.first)
+            #expect(await context.service.removeInvocations == [.init(
+                dossierID: snapshot.dossier.id,
+                documentID: member.id,
+                expectedSupport: try member.commandSupport,
+                expectedToken: snapshot.token
+            )])
+        case .reset:
+            let correction = try #require(snapshot.corrections.first)
+            #expect(await context.service.resetInvocations == [.init(
+                dossierID: snapshot.dossier.id,
+                documentID: correction.id,
+                expectedDecision: correction.decision,
+                expectedToken: snapshot.token
+            )])
+        }
+    }
+
+    func staleInput(
+        for command: PersonDossierCorrectionCommand,
+        snapshot: PersonDossierSnapshot
+    ) throws -> PersonDossierCorrectionInput {
+        switch command {
+        case .accept, .reject:
+            let value = try #require(snapshot.suggestions.first)
+            return .suggestion(try PersonDossierSuggestion(
+                document: value.document,
+                sourceDisplayName: "Stale archive",
+                documentType: value.documentType,
+                section: value.section,
+                kind: value.kind,
+                conflict: value.conflict,
+                currentSupports: value.currentSupports,
+                commandSupport: value.commandSupport
+            ))
+        case .remove:
+            let value = try #require(snapshot.directMembers.first)
+            return .member(try PersonDossierMember(
+                document: value.document,
+                sourceDisplayName: "Stale archive",
+                documentType: value.documentType,
+                section: value.section,
+                supports: value.supports,
+                isConfirmationAuthoritative: value.isConfirmationAuthoritative,
+                preferredPaymentSupport: value.preferredPaymentSupport
+            ))
+        case .reset:
+            let value = try #require(snapshot.corrections.first)
+            return .correction(try PersonDossierCorrection(
+                document: value.document,
+                sourceDisplayName: "Stale archive",
+                documentType: value.documentType,
+                decision: value.decision
+            ))
+        }
+    }
+
+    func mutationState(
+        _ command: PersonDossierCorrectionCommand,
+        snapshot: PersonDossierSnapshot
+    ) -> DossierMutationState {
+        switch command {
+        case .accept:
+            .acceptingPerson(
+                dossierID: snapshot.dossier.id,
+                documentID: snapshot.suggestions[0].id
+            )
+        case .reject:
+            .rejectingPerson(
+                dossierID: snapshot.dossier.id,
+                documentID: snapshot.suggestions[0].id
+            )
+        case .remove:
+            .removingPerson(
+                dossierID: snapshot.dossier.id,
+                documentID: snapshot.directMembers[0].id
+            )
+        case .reset:
+            .resettingPerson(
+                dossierID: snapshot.dossier.id,
+                documentID: snapshot.corrections[0].id
+            )
+        }
+    }
+
+    func snapshotWithConfirmationCorrection(
+        from snapshot: PersonDossierSnapshot
+    ) throws -> PersonDossierSnapshot {
+        let previous = try #require(snapshot.corrections.first)
+        let revisionID = UUID(uuidString: "74000000-0000-0000-0000-000000000001")!
+        let confirmation = try DossierMembershipConfirmation(
+            dossierID: snapshot.dossier.id,
+            documentID: previous.id,
+            revisionID: revisionID,
+            confirmedAt: Date(timeIntervalSince1970: 400),
+            candidateKind: .secondaryRole,
+            acceptedContentHash: previous.document.contentHash,
+            acceptedExtractionVersion: "text-v1",
+            acceptedDNASchemaVersion: 1,
+            acceptedDNAAnalyzerIdentifier: "local-rules",
+            acceptedDNAAnalyzerVersion: "1",
+            acceptedDNAAnalyzedAt: Date(timeIntervalSince1970: 200),
+            acceptedRole: .authorizedPerson,
+            acceptedNormalizedName: "elise muster"
+        )
+        let correction = try PersonDossierCorrection(
+            document: previous.document,
+            sourceDisplayName: previous.sourceDisplayName,
+            documentType: previous.documentType,
+            decision: .confirmation(confirmation)
+        )
+        let token = PersonDossierProjectionToken(
+            dossierUpdatedAt: snapshot.token.dossierUpdatedAt,
+            anchorUpdatedAt: snapshot.token.anchorUpdatedAt,
+            originValidity: snapshot.token.originValidity,
+            documents: snapshot.token.documents,
+            memberSupports: snapshot.token.memberSupports,
+            suggestionSupports: snapshot.token.suggestionSupports,
+            confirmationRevisionIDs: [revisionID],
+            exclusionRevisionIDs: []
+        )
+        return PersonDossierSnapshot(
+            dossier: snapshot.dossier,
+            anchor: snapshot.anchor,
+            origin: snapshot.origin,
+            directMembers: snapshot.directMembers,
+            costsAndPayments: snapshot.costsAndPayments,
+            suggestions: snapshot.suggestions,
+            corrections: [correction],
+            token: token
+        )
+    }
+
     @MainActor
     func makeModel(
         _ fixture: PersonDossierAppModelFixture,
@@ -1441,6 +2247,8 @@ private extension PersonDossierAppModelTests {
             openedSnapshot: openedSnapshot,
             mutatedSnapshot: mutatedSnapshot,
             documents: documents,
+            service: people,
+            costsService: dossierLoader,
             model: model
         )
     }
@@ -1593,6 +2401,8 @@ private struct PersonDossierNavigationContext {
     let openedSnapshot: PersonDossierSnapshot
     let mutatedSnapshot: PersonDossierSnapshot
     let documents: ScriptedPersonDossierDocumentLoader
+    let service: ScriptedPersonDossierLoader
+    let costsService: ScriptedPersonDossierCostsLoader
     let model: AppModel
 }
 
@@ -1606,6 +2416,45 @@ private struct PersonDossierDocumentPresentation: Equatable {
     let dossierEntryState: DossierEntryState
     let workspaceSelection: AppWorkspaceSelection?
     let dossierDetailState: DossierDetailState
+}
+
+enum PersonDossierCorrectionCommand: CaseIterable, Sendable {
+    case accept
+    case reject
+    case remove
+    case reset
+
+    var next: Self {
+        switch self {
+        case .accept: .reject
+        case .reject: .remove
+        case .remove: .reset
+        case .reset: .accept
+        }
+    }
+}
+
+enum PersonDossierCorrectionSelectionRace: CaseIterable, Sendable {
+    case source
+    case document
+    case dossier
+    case dossierABA
+}
+
+enum PersonDossierRefreshPortOutcome: CaseIterable, Sendable {
+    case returnWrongDossier
+    case failure
+}
+
+enum PersonDossierLateCorrectionOutcome: CaseIterable, Sendable {
+    case success
+    case failure
+}
+
+enum PersonDossierCorrectionInput: Sendable {
+    case suggestion(PersonDossierSuggestion)
+    case member(PersonDossierMember)
+    case correction(PersonDossierCorrection)
 }
 
 enum PersonDossierNavigationRow: Sendable {

@@ -1350,6 +1350,304 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    public func acceptPersonDossierSuggestion(
+        _ suggestion: PersonDossierSuggestion
+    ) async {
+        guard !isExclusiveSourceOperationActive,
+              case .idle = dossierMutationState,
+              let personDossierMutator,
+              case .dossier(let dossierID) = workspaceSelection,
+              let current = dossierDetailState.personSnapshot,
+              current.dossier.id == dossierID,
+              current.suggestions.contains(suggestion)
+        else {
+            return
+        }
+        dossierMutationGeneration &+= 1
+        let mutationGeneration = dossierMutationGeneration
+        let expectedToken = current.token
+        invalidateDossierLoad()
+        let loadGeneration = dossierLoadGeneration
+        let workspaceGeneration = workspaceSelectionGeneration
+        let dnaGeneration = documentDNADetailGeneration
+        let sourceID = selectedSourceID
+        let documentID = selectedDocumentID
+        let state = DossierMutationState.acceptingPerson(
+            dossierID: dossierID,
+            documentID: suggestion.id
+        )
+        dossierMutationState = state
+        defer {
+            if mutationGeneration == dossierMutationGeneration {
+                dossierMutationState = .idle
+            }
+        }
+
+        await runPersonDossierMutation(
+            state: state,
+            mutationGeneration: mutationGeneration,
+            loadGeneration: loadGeneration,
+            workspaceGeneration: workspaceGeneration,
+            dnaGeneration: dnaGeneration,
+            sourceID: sourceID,
+            selectedDocumentID: documentID,
+            dossierID: dossierID,
+            expectedToken: expectedToken
+        ) {
+            try await personDossierMutator.acceptPersonSuggestion(
+                dossierID: dossierID,
+                documentID: suggestion.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: expectedToken
+            )
+        }
+    }
+
+    public func rejectPersonDossierSuggestion(
+        _ suggestion: PersonDossierSuggestion
+    ) async {
+        guard !isExclusiveSourceOperationActive,
+              case .idle = dossierMutationState,
+              let personDossierMutator,
+              case .dossier(let dossierID) = workspaceSelection,
+              let current = dossierDetailState.personSnapshot,
+              current.dossier.id == dossierID,
+              current.suggestions.contains(suggestion)
+        else {
+            return
+        }
+        dossierMutationGeneration &+= 1
+        let mutationGeneration = dossierMutationGeneration
+        let expectedToken = current.token
+        invalidateDossierLoad()
+        let loadGeneration = dossierLoadGeneration
+        let workspaceGeneration = workspaceSelectionGeneration
+        let dnaGeneration = documentDNADetailGeneration
+        let sourceID = selectedSourceID
+        let documentID = selectedDocumentID
+        let state = DossierMutationState.rejectingPerson(
+            dossierID: dossierID,
+            documentID: suggestion.id
+        )
+        dossierMutationState = state
+        defer {
+            if mutationGeneration == dossierMutationGeneration {
+                dossierMutationState = .idle
+            }
+        }
+
+        await runPersonDossierMutation(
+            state: state,
+            mutationGeneration: mutationGeneration,
+            loadGeneration: loadGeneration,
+            workspaceGeneration: workspaceGeneration,
+            dnaGeneration: dnaGeneration,
+            sourceID: sourceID,
+            selectedDocumentID: documentID,
+            dossierID: dossierID,
+            expectedToken: expectedToken
+        ) {
+            try await personDossierMutator.rejectPersonSuggestion(
+                dossierID: dossierID,
+                documentID: suggestion.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: expectedToken
+            )
+        }
+    }
+
+    public func removePersonDossierMember(
+        _ member: PersonDossierMember
+    ) async {
+        guard !isExclusiveSourceOperationActive,
+              case .idle = dossierMutationState,
+              let personDossierMutator,
+              case .dossier(let dossierID) = workspaceSelection,
+              let current = dossierDetailState.personSnapshot,
+              current.dossier.id == dossierID,
+              current.directMembers.contains(member)
+                || current.costsAndPayments.contains(member)
+        else {
+            return
+        }
+        let support: PersonDossierMembershipSupport
+        do {
+            support = try member.commandSupport
+        } catch {
+            return
+        }
+        dossierMutationGeneration &+= 1
+        let mutationGeneration = dossierMutationGeneration
+        let expectedToken = current.token
+        invalidateDossierLoad()
+        let loadGeneration = dossierLoadGeneration
+        let workspaceGeneration = workspaceSelectionGeneration
+        let dnaGeneration = documentDNADetailGeneration
+        let sourceID = selectedSourceID
+        let documentID = selectedDocumentID
+        let state = DossierMutationState.removingPerson(
+            dossierID: dossierID,
+            documentID: member.id
+        )
+        dossierMutationState = state
+        defer {
+            if mutationGeneration == dossierMutationGeneration {
+                dossierMutationState = .idle
+            }
+        }
+
+        await runPersonDossierMutation(
+            state: state,
+            mutationGeneration: mutationGeneration,
+            loadGeneration: loadGeneration,
+            workspaceGeneration: workspaceGeneration,
+            dnaGeneration: dnaGeneration,
+            sourceID: sourceID,
+            selectedDocumentID: documentID,
+            dossierID: dossierID,
+            expectedToken: expectedToken
+        ) {
+            try await personDossierMutator.removePersonMember(
+                dossierID: dossierID,
+                documentID: member.id,
+                expectedSupport: support,
+                expectedToken: expectedToken
+            )
+        }
+    }
+
+    public func resetPersonDossierCorrection(
+        _ correction: PersonDossierCorrection
+    ) async {
+        guard !isExclusiveSourceOperationActive,
+              case .idle = dossierMutationState,
+              let personDossierMutator,
+              case .dossier(let dossierID) = workspaceSelection,
+              let current = dossierDetailState.personSnapshot,
+              current.dossier.id == dossierID,
+              current.corrections.contains(correction)
+        else {
+            return
+        }
+        dossierMutationGeneration &+= 1
+        let mutationGeneration = dossierMutationGeneration
+        let expectedToken = current.token
+        invalidateDossierLoad()
+        let loadGeneration = dossierLoadGeneration
+        let workspaceGeneration = workspaceSelectionGeneration
+        let dnaGeneration = documentDNADetailGeneration
+        let sourceID = selectedSourceID
+        let documentID = selectedDocumentID
+        let state = DossierMutationState.resettingPerson(
+            dossierID: dossierID,
+            documentID: correction.id
+        )
+        dossierMutationState = state
+        defer {
+            if mutationGeneration == dossierMutationGeneration {
+                dossierMutationState = .idle
+            }
+        }
+
+        await runPersonDossierMutation(
+            state: state,
+            mutationGeneration: mutationGeneration,
+            loadGeneration: loadGeneration,
+            workspaceGeneration: workspaceGeneration,
+            dnaGeneration: dnaGeneration,
+            sourceID: sourceID,
+            selectedDocumentID: documentID,
+            dossierID: dossierID,
+            expectedToken: expectedToken
+        ) {
+            try await personDossierMutator.resetPersonCorrection(
+                dossierID: dossierID,
+                documentID: correction.id,
+                expectedDecision: correction.decision,
+                expectedToken: expectedToken
+            )
+        }
+    }
+
+    private func runPersonDossierMutation(
+        state: DossierMutationState,
+        mutationGeneration: Int,
+        loadGeneration: Int,
+        workspaceGeneration: Int,
+        dnaGeneration: Int,
+        sourceID: UUID?,
+        selectedDocumentID: UUID?,
+        dossierID: UUID,
+        expectedToken: PersonDossierProjectionToken,
+        operation: () async throws -> PersonDossierSnapshot
+    ) async {
+        do {
+            let snapshot = try await operation()
+            guard snapshot.dossier.id == dossierID else {
+                throw DossierRepositoryError.invalidStoredState
+            }
+            guard matchesPersonDossierMutationContext(
+                state: state,
+                mutationGeneration: mutationGeneration,
+                loadGeneration: loadGeneration,
+                workspaceGeneration: workspaceGeneration,
+                dnaGeneration: dnaGeneration,
+                sourceID: sourceID,
+                selectedDocumentID: selectedDocumentID,
+                dossierID: dossierID,
+                expectedToken: expectedToken
+            ) else {
+                return
+            }
+            publishPersonDossier(snapshot)
+        } catch is CancellationError {
+            return
+        } catch {
+            guard matchesPersonDossierMutationContext(
+                state: state,
+                mutationGeneration: mutationGeneration,
+                loadGeneration: loadGeneration,
+                workspaceGeneration: workspaceGeneration,
+                dnaGeneration: dnaGeneration,
+                sourceID: sourceID,
+                selectedDocumentID: selectedDocumentID,
+                dossierID: dossierID,
+                expectedToken: expectedToken
+            ) else {
+                return
+            }
+            publishRuntimeFailure(
+                code: "dossierMutationFailure",
+                category: .dossierMutation,
+                error: error
+            )
+        }
+    }
+
+    private func matchesPersonDossierMutationContext(
+        state: DossierMutationState,
+        mutationGeneration: Int,
+        loadGeneration: Int,
+        workspaceGeneration: Int,
+        dnaGeneration: Int,
+        sourceID: UUID?,
+        selectedDocumentID: UUID?,
+        dossierID: UUID,
+        expectedToken: PersonDossierProjectionToken
+    ) -> Bool {
+        !Task.isCancelled
+            && mutationGeneration == dossierMutationGeneration
+            && loadGeneration == dossierLoadGeneration
+            && workspaceGeneration == workspaceSelectionGeneration
+            && dnaGeneration == documentDNADetailGeneration
+            && self.selectedSourceID == sourceID
+            && self.selectedDocumentID == selectedDocumentID
+            && workspaceSelection == .dossier(dossierID)
+            && dossierDetailState.personSnapshot?.dossier.id == dossierID
+            && dossierDetailState.personSnapshot?.token == expectedToken
+            && dossierMutationState == state
+    }
+
     public func refreshSelectedDossier() async {
         guard !isExclusiveSourceOperationActive,
               case .dossier(let dossierID) = workspaceSelection
