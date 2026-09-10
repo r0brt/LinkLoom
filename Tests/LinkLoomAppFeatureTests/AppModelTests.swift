@@ -267,7 +267,7 @@ struct AppModelTests {
         await context.model.openOrCreateDossierForSelectedDocument()
 
         #expect(context.model.workspaceSelection == .dossier(snapshot.dossier.id))
-        #expect(context.model.dossierDetailState == .available(snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(snapshot)))
         #expect(context.model.dossiers == [try summary(for: snapshot)])
         #expect(context.model.dossierChoices.isEmpty)
         #expect(context.model.dossierMutationState == .idle)
@@ -312,7 +312,7 @@ struct AppModelTests {
         await context.model.chooseDossier(id: selected.id)
 
         #expect(context.model.workspaceSelection == .dossier(selected.id))
-        #expect(context.model.dossierDetailState == .available(selectedSnapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(selectedSnapshot)))
         #expect(context.model.dossierChoices.isEmpty)
         #expect(context.model.dossiers.contains(selected))
     }
@@ -322,7 +322,7 @@ struct AppModelTests {
         let dossierID = UUID()
         await context.service.setSnapshotSteps([.failure])
         let workspace = context.model.workspaceSelection
-        let previous = context.model.dossierDetailState.snapshot
+        let previous = context.model.dossierDetailState.workspaceSnapshot
 
         await context.model.selectDossier(id: dossierID)
 
@@ -345,7 +345,7 @@ struct AppModelTests {
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
         #expect(context.model.dossierDetailState == .failed(
             dossierID: requestedID,
-            previous: context.snapshot
+            previous: .costsAndPayments(context.snapshot)
         ))
         #expect(context.model.lastErrorCode == "dossierLoadFailure")
     }
@@ -363,7 +363,7 @@ struct AppModelTests {
         await selection.value
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
         #expect(context.model.lastErrorCode == nil)
     }
 
@@ -432,7 +432,7 @@ struct AppModelTests {
         await sourceSelection.value
 
         #expect(model.workspaceSelection == .dossier(snapshot.dossier.id))
-        #expect(model.dossierDetailState == .available(snapshot))
+        #expect(model.dossierDetailState == .available(.costsAndPayments(snapshot)))
     }
 
     @Test @MainActor func duplicateOpenIsSuppressedWhileFirstRequestIsInFlight() async throws {
@@ -659,7 +659,7 @@ struct AppModelTests {
                 expectedSupport: try #require(member.support)
             ),
         ])
-        #expect(context.model.dossierDetailState == .available(corrected))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(corrected)))
         #expect(context.model.dossierMutationState == .idle)
     }
 
@@ -681,7 +681,7 @@ struct AppModelTests {
                 expectedRevisionID: correction.exclusion.revisionID
             ),
         ])
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
     }
 
     @Test @MainActor func resetFailurePreservesSnapshotAndPublishesSafeError() async throws {
@@ -695,7 +695,7 @@ struct AppModelTests {
 
         await context.model.resetDossierCorrection(correction)
 
-        #expect(context.model.dossierDetailState == .available(corrected))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(corrected)))
         #expect(context.model.lastErrorCode == "dossierMutationFailure")
     }
 
@@ -710,7 +710,7 @@ struct AppModelTests {
 
         await context.model.resetDossierCorrection(correction)
 
-        #expect(context.model.dossierDetailState == .available(corrected))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(corrected)))
         #expect(context.model.lastErrorCode == nil)
     }
 
@@ -739,7 +739,7 @@ struct AppModelTests {
 
         await context.model.excludeDossierMember(member)
 
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
         #expect(context.model.lastErrorCode == "dossierMutationFailure")
         #expect(
             context.model.lastErrorMessage
@@ -754,7 +754,7 @@ struct AppModelTests {
 
         await context.model.excludeDossierMember(member)
 
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
         #expect(context.model.lastErrorCode == nil)
     }
 
@@ -788,7 +788,7 @@ struct AppModelTests {
         await mutation.value
 
         #expect(context.model.workspaceSelection == .dossier(other.dossier.id))
-        #expect(context.model.dossierDetailState == .available(other))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(other)))
     }
 
     @Test @MainActor func staleCorrectionCannotReplaceReopenedDossierABA() async throws {
@@ -806,7 +806,7 @@ struct AppModelTests {
         await mutation.value
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
     }
 
     @Test @MainActor func manualScanRefreshesActiveDossier() async throws {
@@ -817,7 +817,7 @@ struct AppModelTests {
         await context.model.scanSelectedSource()
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
-        #expect(context.model.dossierDetailState == .available(refreshed))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(refreshed)))
     }
 
     @Test @MainActor func otherSourceWatcherCompletionRefreshesActiveDossier() async throws {
@@ -827,7 +827,7 @@ struct AppModelTests {
 
         context.scheduler.completeRescan(sourceID: context.paymentSource.id)
         await waitUntil {
-            context.model.dossierDetailState == .available(refreshed)
+            context.model.dossierDetailState == .available(.costsAndPayments(refreshed))
         }
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
@@ -854,7 +854,7 @@ struct AppModelTests {
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
         #expect(context.model.selectedDocumentID == context.invoice.id)
-        #expect(context.model.dossierDetailState == .available(corrected))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(corrected)))
     }
 
     @Test @MainActor func failedWatcherRefreshKeepsSnapshotAndPublishesLoadFailure() async throws {
@@ -869,7 +869,7 @@ struct AppModelTests {
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
         #expect(context.model.dossierDetailState == .failed(
             dossierID: context.snapshot.dossier.id,
-            previous: context.snapshot
+            previous: .costsAndPayments(context.snapshot)
         ))
     }
 
@@ -910,7 +910,9 @@ struct AppModelTests {
         await model.selectDossier(id: context.snapshot.dossier.id)
         scheduler.completeRescan(sourceID: context.paymentSource.id)
         await sourceLoader.releaseFirstLoad()
-        await waitUntil { model.dossierDetailState == .available(refreshedOriginal) }
+        await waitUntil {
+            model.dossierDetailState == .available(.costsAndPayments(refreshedOriginal))
+        }
 
         #expect(model.workspaceSelection == .dossier(context.snapshot.dossier.id))
         #expect(model.lastErrorCode == nil)
@@ -961,7 +963,7 @@ struct AppModelTests {
         await refresh.value
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
         #expect(context.model.lastErrorCode == nil)
     }
 
@@ -981,7 +983,7 @@ struct AppModelTests {
         await refresh.value
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
-        #expect(context.model.dossierDetailState == .available(corrected))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(corrected)))
         #expect(context.model.lastErrorCode == nil)
     }
 
@@ -998,7 +1000,7 @@ struct AppModelTests {
         await context.service.releaseBlockedOperation()
         await refresh.value
 
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
         #expect(context.model.dossierChoices == [choice])
     }
 
@@ -1015,7 +1017,7 @@ struct AppModelTests {
         await context.service.releaseBlockedOperation()
         await refresh.value
 
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
         #expect(context.model.lastErrorCode == "dossierMutationFailure")
     }
 
@@ -1034,7 +1036,9 @@ struct AppModelTests {
 
         await context.model.openOrCreateDossierForSelectedDocument()
         await sourceLoader.releaseFirstLoad()
-        await waitUntil { context.model.dossierDetailState == .available(refreshed) }
+        await waitUntil {
+            context.model.dossierDetailState == .available(.costsAndPayments(refreshed))
+        }
 
         #expect(context.model.dossierChoices == [choice])
         #expect(context.model.lastErrorCode == nil)
@@ -1056,7 +1060,9 @@ struct AppModelTests {
 
         await context.model.excludeDossierMember(member)
         await sourceLoader.releaseFirstLoad()
-        await waitUntil { context.model.dossierDetailState == .available(refreshed) }
+        await waitUntil {
+            context.model.dossierDetailState == .available(.costsAndPayments(refreshed))
+        }
 
         #expect(context.model.lastErrorCode == "dossierMutationFailure")
         await context.model.stopWatching()
@@ -1106,7 +1112,7 @@ struct AppModelTests {
 
         #expect(context.model.sources == [context.invoiceSource])
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
-        #expect(context.model.dossierDetailState == .available(refreshed))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(refreshed)))
         #expect(context.model.lastErrorCode == nil)
     }
 
@@ -1127,7 +1133,7 @@ struct AppModelTests {
         #expect(context.model.sources == [context.paymentSource])
         #expect(context.model.dossiers == [retainedSummary])
         #expect(context.model.workspaceSelection == .dossier(retained.dossier.id))
-        #expect(context.model.dossierDetailState == .available(retained))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(retained)))
     }
 
     @Test @MainActor func scanPublishesProgressAndReloadsDocuments() async throws {
@@ -3797,7 +3803,7 @@ struct AppModelTests {
         await model.refreshSelectedDossier()
 
         #expect(await service.snapshotInvocationCount == invocationCount)
-        #expect(model.dossierDetailState == .available(snapshot))
+        #expect(model.dossierDetailState == .available(.costsAndPayments(snapshot)))
         sourceAccess.releaseBookmarkCreation()
         await add.value
     }

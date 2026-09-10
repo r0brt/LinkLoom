@@ -137,6 +137,8 @@ public final class AppModel: ObservableObject {
     private let invoicePaymentDecisions: (any InvoicePaymentDecisionUpdating)?
     private let dossierLoader: (any DossierLoading)?
     private let dossierMutator: (any DossierMutating)?
+    private let personDossierLoader: (any PersonDossierLoading)?
+    private let personDossierMutator: (any PersonDossierMutating)?
     private let sourceLoader: @Sendable () async throws -> [SourceRootRecord]
     private let documentLoader: @Sendable (UUID) async throws -> [DocumentRecord]
     private let watchScheduler: (any SourceWatchScheduling)?
@@ -172,6 +174,8 @@ public final class AppModel: ObservableObject {
         invoicePaymentDecisions: (any InvoicePaymentDecisionUpdating)? = nil,
         dossierLoader: (any DossierLoading)? = nil,
         dossierMutator: (any DossierMutating)? = nil,
+        personDossierLoader: (any PersonDossierLoading)? = nil,
+        personDossierMutator: (any PersonDossierMutating)? = nil,
         watchScheduler: (any SourceWatchScheduling)? = nil,
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
@@ -186,6 +190,8 @@ public final class AppModel: ObservableObject {
         self.invoicePaymentDecisions = invoicePaymentDecisions
         self.dossierLoader = dossierLoader
         self.dossierMutator = dossierMutator
+        self.personDossierLoader = personDossierLoader
+        self.personDossierMutator = personDossierMutator
         sourceLoader = { try await sources.all() }
         self.watchScheduler = watchScheduler
         self.reportRuntimeFailure = reportRuntimeFailure
@@ -210,6 +216,8 @@ public final class AppModel: ObservableObject {
         invoicePaymentDecisions: (any InvoicePaymentDecisionUpdating)? = nil,
         dossierLoader: (any DossierLoading)? = nil,
         dossierMutator: (any DossierMutating)? = nil,
+        personDossierLoader: (any PersonDossierLoading)? = nil,
+        personDossierMutator: (any PersonDossierMutating)? = nil,
         documentLoader: @escaping @Sendable (UUID) async throws -> [DocumentRecord],
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) {
@@ -224,6 +232,8 @@ public final class AppModel: ObservableObject {
         self.invoicePaymentDecisions = invoicePaymentDecisions
         self.dossierLoader = dossierLoader
         self.dossierMutator = dossierMutator
+        self.personDossierLoader = personDossierLoader
+        self.personDossierMutator = personDossierMutator
         sourceLoader = { try await sources.all() }
         self.documentLoader = documentLoader
         watchScheduler = nil
@@ -244,6 +254,8 @@ public final class AppModel: ObservableObject {
         invoicePaymentDecisions: (any InvoicePaymentDecisionUpdating)? = nil,
         dossierLoader: (any DossierLoading)? = nil,
         dossierMutator: (any DossierMutating)? = nil,
+        personDossierLoader: (any PersonDossierLoading)? = nil,
+        personDossierMutator: (any PersonDossierMutating)? = nil,
         watchScheduler: any SourceWatchScheduling,
         sourceResolver: @escaping @Sendable (SourceRootRecord) throws -> URL,
         sourceLoader: (@Sendable () async throws -> [SourceRootRecord])? = nil,
@@ -261,6 +273,8 @@ public final class AppModel: ObservableObject {
         self.invoicePaymentDecisions = invoicePaymentDecisions
         self.dossierLoader = dossierLoader
         self.dossierMutator = dossierMutator
+        self.personDossierLoader = personDossierLoader
+        self.personDossierMutator = personDossierMutator
         self.sourceLoader = sourceLoader ?? { try await sources.all() }
         self.documentLoader = documentLoader ?? { sourceID in
             try await documents.all(sourceRootID: sourceID)
@@ -627,7 +641,7 @@ public final class AppModel: ObservableObject {
         invalidateDossierMutation()
         invalidateDossierLoad()
         let generation = dossierLoadGeneration
-        let previous = dossierDetailState.snapshot
+        let previous = dossierDetailState.workspaceSnapshot
         dossierDetailState = .loading(dossierID: id, previous: previous)
         do {
             let snapshot = try await dossierLoader.snapshot(id: id)
@@ -692,7 +706,7 @@ public final class AppModel: ObservableObject {
         }
         dossierLoadGeneration &+= 1
         let generation = dossierLoadGeneration
-        let previous = dossierDetailState.snapshot
+        let previous = dossierDetailState.workspaceSnapshot
         dossierDetailState = .loading(dossierID: id, previous: previous)
         do {
             let snapshot = try await dossierLoader.snapshot(id: id)
@@ -786,7 +800,7 @@ public final class AppModel: ObservableObject {
     private func publishRemovedDossierFallback(
         dossierID: UUID,
         generation: Int,
-        previous: DossierSnapshot?
+        previous: DossierWorkspaceSnapshot?
     ) async throws {
         guard let dossierLoader else { return }
         let refreshedSources = try await sourceLoader()
@@ -820,7 +834,7 @@ public final class AppModel: ObservableObject {
     private func restoreDossierDetailIfCurrent(
         dossierID: UUID,
         generation: Int,
-        previous: DossierSnapshot?
+        previous: DossierWorkspaceSnapshot?
     ) {
         guard generation == dossierLoadGeneration,
               workspaceSelection == .dossier(dossierID),
@@ -1399,7 +1413,7 @@ public final class AppModel: ObservableObject {
         }
         workspaceSelectionGeneration &+= 1
         workspaceSelection = .dossier(snapshot.dossier.id)
-        dossierDetailState = .available(snapshot)
+        dossierDetailState = .available(.costsAndPayments(snapshot))
         if !preservingTransientState {
             dossierChoices = []
         }
