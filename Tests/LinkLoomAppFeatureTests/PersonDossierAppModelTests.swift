@@ -45,9 +45,11 @@ struct PersonDossierAppModelTests {
     @Test @MainActor func cancelledPersonSummaryLoadPublishesNothingAndRethrowsCancellation() async throws {
         let fixture = try PersonDossierAppModelFixture()
         _ = try await fixture.addSource(named: "Archive")
+        let recorder = PersonDossierDiagnosticRecorder()
         let model = makeModel(
             fixture,
-            people: ScriptedPersonDossierLoader(summarySteps: [.cancellation])
+            people: ScriptedPersonDossierLoader(summarySteps: [.cancellation]),
+            reportRuntimeFailure: { recorder.record($0) }
         )
 
         await #expect(throws: CancellationError.self) {
@@ -58,6 +60,7 @@ struct PersonDossierAppModelTests {
         #expect(model.dossiers.isEmpty)
         #expect(model.personDossiers.isEmpty)
         #expect(model.workspaceSelection == nil)
+        #expect(recorder.diagnostics.isEmpty)
     }
 
     @Test @MainActor func currentSelectedSupportPublishesOpenedPersonWorkspaceAndFreshSummariesAtomically() async throws {
@@ -67,7 +70,7 @@ struct PersonDossierAppModelTests {
         let context = try await makeOpenContext(
             summarySteps: [
                 .result([personSummary(initial.snapshot)]),
-                .blocked(refreshed),
+                .blocked(.success(refreshed)),
             ],
             openSteps: [.result(.opened(opened))]
         )
@@ -110,6 +113,25 @@ struct PersonDossierAppModelTests {
         #expect(context.model.dossierMutationState == .idle)
     }
 
+    @Test @MainActor func malformedOpenedPersonResultPreservesPriorCompletePresentation() async throws {
+        let wrong = try PersonDossierAppModelValues.make(
+            dossierID: UUID(),
+            documentID: UUID()
+        ).snapshot
+        let context = try await makeOpenContext(openSteps: [.result(.opened(wrong))])
+        let previousWorkspace = context.model.workspaceSelection
+        let previousDetail = context.model.dossierDetailState
+        let previousSummaries = context.model.personDossiers
+
+        await context.model.openOrCreatePersonDossier(from: context.values.selection)
+
+        #expect(context.model.workspaceSelection == previousWorkspace)
+        #expect(context.model.dossierDetailState == previousDetail)
+        #expect(context.model.personDossiers == previousSummaries)
+        #expect(context.model.lastErrorCode == "dossierOpenFailure")
+        #expect(await context.service.summaryInvocationCount == 1)
+    }
+
     @Test @MainActor func sameNameOpenPublishesOnlyPersonChoices() async throws {
         let choice = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
         let context = try await makeOpenContext(
@@ -147,6 +169,27 @@ struct PersonDossierAppModelTests {
         #expect(context.model.personDossiers == [personSummary(selected)])
     }
 
+    @Test @MainActor func malformedExistingPersonChoicePreservesChoicesAndPresentation() async throws {
+        let selected = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
+        let wrong = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
+        let context = try await makeOpenContext(
+            openSteps: [.result(.choose([personSummary(selected)]))],
+            choiceSteps: [.result(wrong)]
+        )
+        await context.model.openOrCreatePersonDossier(from: context.values.selection)
+        let previousWorkspace = context.model.workspaceSelection
+        let previousDetail = context.model.dossierDetailState
+        let previousChoices = context.model.personDossierChoices
+
+        await context.model.choosePersonDossier(id: selected.dossier.id)
+
+        #expect(context.model.workspaceSelection == previousWorkspace)
+        #expect(context.model.dossierDetailState == previousDetail)
+        #expect(context.model.personDossierChoices == previousChoices)
+        #expect(context.model.lastErrorCode == "dossierOpenFailure")
+        #expect(await context.service.summaryInvocationCount == 1)
+    }
+
     @Test @MainActor func explicitNewPersonForwardsExactSelectionAndNewChoice() async throws {
         let created = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
         let context = try await makeOpenContext(
@@ -161,6 +204,29 @@ struct PersonDossierAppModelTests {
         #expect(await context.service.choiceSelections == [context.values.selection])
         #expect(await context.service.creationChoices == [.new])
         #expect(context.model.dossierDetailState.personSnapshot == created)
+    }
+
+    @Test @MainActor func malformedNewPersonChoicePreservesPriorPresentation() async throws {
+        let wrong = try PersonDossierAppModelValues.make(
+            dossierID: UUID(),
+            documentID: UUID()
+        ).snapshot
+        let context = try await makeOpenContext(
+            openSteps: [.result(.choose([]))],
+            choiceSteps: [.result(wrong)]
+        )
+        await context.model.openOrCreatePersonDossier(from: context.values.selection)
+        let previousWorkspace = context.model.workspaceSelection
+        let previousDetail = context.model.dossierDetailState
+        let previousChoices = context.model.personDossierChoices
+
+        await context.model.createNewPersonDossier()
+
+        #expect(context.model.workspaceSelection == previousWorkspace)
+        #expect(context.model.dossierDetailState == previousDetail)
+        #expect(context.model.personDossierChoices == previousChoices)
+        #expect(context.model.lastErrorCode == "dossierOpenFailure")
+        #expect(await context.service.summaryInvocationCount == 1)
     }
 
     @Test @MainActor func absentPersonChoiceIDPerformsNoCommand() async throws {
@@ -273,7 +339,7 @@ struct PersonDossierAppModelTests {
         let context = try await makeOpenContext(
             summarySteps: [
                 .result([personSummary(other)]),
-                .blocked([personSummary(published)]),
+                .blocked(.success([personSummary(published)])),
             ],
             snapshotSteps: [.result(other)],
             openSteps: openSteps,
@@ -369,7 +435,7 @@ struct PersonDossierAppModelTests {
     @Test @MainActor func cancelledCancellationInsensitivePersonSummaryReloadPreservesState() async throws {
         let opened = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
         let context = try await makeOpenContext(
-            summarySteps: [.result([]), .blocked([personSummary(opened)])],
+            summarySteps: [.result([]), .blocked(.success([personSummary(opened)]))],
             openSteps: [.result(.opened(opened))]
         )
         let workspace = context.model.workspaceSelection
@@ -413,7 +479,7 @@ struct PersonDossierAppModelTests {
     }
 
     @Test func summaryCountGateKeepsHigherTargetWaiting() async throws {
-        let service = ScriptedPersonDossierLoader(summarySteps: [.blocked([]), .blocked([])])
+        let service = ScriptedPersonDossierLoader(summarySteps: [.blocked(.success([])), .blocked(.success([]))])
         let targetTwo = Task { await service.waitUntilBlockedSummaryStarts(count: 2) }
         #expect(await waitUntilPersonDossierCondition {
             await service.pendingSummaryStartWaiterCount == 1
@@ -734,15 +800,17 @@ struct PersonDossierAppModelTests {
         let costs = try CostsAndPaymentsDossierAppModelValues.make().snapshot
         let firstPerson = try PersonDossierAppModelValues.make().snapshot
         let secondPerson = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
+        let recorder = PersonDossierDiagnosticRecorder()
         let people = ScriptedPersonDossierLoader(summarySteps: [
             .result([personSummary(firstPerson)]),
-            .blocked([personSummary(secondPerson)]),
+            .blocked(.success([personSummary(secondPerson)])),
         ])
         let model = makeModel(
             fixture,
             costsLoader: ScriptedPersonDossierCostsLoader(summaries: [costSummary(costs)]),
             people: people,
-            documentLoader: { _ in [document] }
+            documentLoader: { _ in [document] },
+            reportRuntimeFailure: { recorder.record($0) }
         )
         try await model.reload()
         let previousSources = model.sources
@@ -775,6 +843,54 @@ struct PersonDossierAppModelTests {
         #expect(model.documentDNAAnalysisPhases == previousPhases)
         #expect(model.selectedSourceID == previousSelectedSourceID)
         #expect(model.workspaceSelection == previousWorkspaceSelection)
+        #expect(recorder.diagnostics.isEmpty)
+    }
+
+    @Test @MainActor func blockedPersonSummaryReloadCannotReplaceNewerDocumentABAPresentation() async throws {
+        let fixture = try PersonDossierAppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let first = try PersonDossierAppModelValues.make(
+            sourceID: source.id,
+            documentID: UUID(),
+            name: "First A"
+        )
+        let second = try PersonDossierAppModelValues.make(
+            sourceID: source.id,
+            documentID: UUID(),
+            name: "B"
+        )
+        try await fixture.documents.save(first.document)
+        try await fixture.documents.save(second.document)
+        let people = ScriptedPersonDossierLoader(summarySteps: [
+            .result([]),
+            .blocked(.success([])),
+        ])
+        let model = makeModel(
+            fixture,
+            people: people,
+            dnaStatuses: PersonDossierDNAStatusLoader(statusesBySource: [source.id: [
+                .init(documentID: first.document.id, phase: .ready),
+                .init(documentID: second.document.id, phase: .ready),
+            ]]),
+            dnaSnapshots: ScriptedPersonDossierDNALoader(snapshotsByDocument: [
+                first.document.id: [first.dna, first.dna],
+                second.document.id: [second.dna],
+            ]),
+            documentLoader: { _ in [first.document, second.document] }
+        )
+        try await model.reload()
+
+        let reload = Task { @MainActor in try await model.reload() }
+        await people.waitUntilBlockedSummaryStarts()
+        await model.selectDocument(id: first.document.id)
+        await model.selectDocument(id: second.document.id)
+        await model.selectDocument(id: first.document.id)
+        await people.releaseBlockedSummaries()
+        try await reload.value
+
+        #expect(model.selectedDocumentID == first.document.id)
+        #expect(model.documentDNADetailState == .available(first.dna))
+        #expect(model.workspaceSelection == .source(source.id))
     }
 
     @Test @MainActor func selectingPersonSummaryLoadsOneCompleteTypedSnapshot() async throws {
@@ -931,11 +1047,19 @@ struct PersonDossierAppModelTests {
 
     @Test @MainActor func personDossierLoadCannotCrossDossierABA() async throws {
         let fixture = try PersonDossierAppModelFixture()
-        let first = try PersonDossierAppModelValues.make().snapshot
+        let first = try PersonDossierAppModelValues.make(name: "Stale Elise").snapshot
+        let currentFirst = try PersonDossierAppModelValues.make(
+            dossierID: first.dossier.id,
+            name: "Current Elise"
+        ).snapshot
         let second = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
         let people = ScriptedPersonDossierLoader(
             summarySteps: [.result([personSummary(first), personSummary(second)])],
-            snapshotSteps: [.blocked(.success(first)), .result(second), .blocked(.success(first))]
+            snapshotSteps: [
+                .blocked(.success(first)),
+                .result(second),
+                .blocked(.success(currentFirst)),
+            ]
         )
         let model = makeModel(fixture, people: people)
         try await model.reload()
@@ -943,14 +1067,15 @@ struct PersonDossierAppModelTests {
         let staleFirst = Task { await model.selectDossier(id: first.dossier.id) }
         await people.waitUntilBlockedSnapshotStarts()
         await model.selectDossier(id: second.dossier.id)
-        let currentFirst = Task { await model.selectDossier(id: first.dossier.id) }
+        let currentFirstLoad = Task { await model.selectDossier(id: first.dossier.id) }
         await people.waitUntilBlockedSnapshotStarts(count: 2)
+        await people.releaseMostRecentBlockedSnapshot()
+        await currentFirstLoad.value
         await people.releaseBlockedSnapshots()
         await staleFirst.value
-        await currentFirst.value
 
         #expect(model.workspaceSelection == .dossier(first.dossier.id))
-        #expect(model.dossierDetailState == .available(.personMatter(first)))
+        #expect(model.dossierDetailState == .available(.personMatter(currentFirst)))
     }
 
     @Test @MainActor func existingCostsSelectDossierStillCallsOnlyTheCostsLoader() async throws {
@@ -1234,22 +1359,468 @@ struct PersonDossierAppModelTests {
         #expect(recorder.diagnostics.filter { $0.category == .dossierLoad }.count == 1)
     }
 
-    @Test @MainActor func failedPersonSourceRemovalPublishesNoMixedLifecycleState() async throws {
+    @Test @MainActor func failedPostCommitPersonRemovalReconcilesSourcesAndRetainsTypedSnapshot() async throws {
         let context = try await makePersonLifecycleContext(selectedSource: .other)
-        let previous = personLifecyclePresentation(context.model)
+        context.scheduler.emit(DirectoryChange(
+            sourceRootID: context.otherSource.id,
+            kind: .rootUnavailable
+        ))
+        #expect(await waitUntilPersonDossierCondition {
+            context.model.unavailableSourceIDs == [context.otherSource.id]
+        })
         await context.people.setSummarySteps([.result([personSummary(context.otherSnapshot)])])
         await context.costs.setSummarySteps([.result([costSummary(context.costSnapshot)])])
         await context.people.setSnapshotSteps([.failure])
 
         await context.model.removeSource(context.otherSource)
 
-        #expect(personLifecyclePresentation(context.model) == previous.replacing(
-            detail: .failed(
-                dossierID: context.values.snapshot.dossier.id,
-                previous: .personMatter(context.values.snapshot)
-            ),
-            errorCode: "dossierLoadFailure"
+        #expect(context.model.sources == [context.originSource])
+        #expect(context.model.documents == context.originDocuments)
+        #expect(context.model.unavailableSourceIDs.isEmpty)
+        #expect(context.model.dossierDetailState == .failed(
+            dossierID: context.values.snapshot.dossier.id,
+            previous: .personMatter(context.values.snapshot)
         ))
+        #expect(context.model.lastErrorCode == "dossierLoadFailure")
+        #expect(!(try await context.fixture.sources.all()).contains(where: {
+            $0.id == context.otherSource.id
+        }))
+        #expect(!(await context.scheduler.isWatching(sourceID: context.otherSource.id)))
+    }
+
+    @Test @MainActor func successfulActivePersonRemovalRetryClearsDocumentLoadFailure() async throws {
+        let context = try await makePersonLifecycleContext(selectedSource: .other)
+        await context.documents.setSteps([.failure], sourceID: context.otherSource.id)
+
+        await context.model.removeSource(context.originSource)
+        #expect(context.model.lastErrorCode == "documentLoadFailure")
+
+        await context.people.setSnapshotSteps([.result(context.values.snapshot)])
+        await context.model.removeSource(context.originSource)
+
+        #expect(context.model.lastErrorCode == nil)
+        #expect(!context.model.sources.contains(where: { $0.id == context.originSource.id }))
+    }
+
+    @Test @MainActor func olderActivePersonRemovalCannotClearNewerDocumentLoadFailure() async throws {
+        let context = try await makePersonLifecycleContext(selectedSource: .other)
+        await context.people.setSummarySteps([.result([personSummary(context.values.snapshot)])])
+        await context.people.setSnapshotSteps([
+            .blocked(.success(context.values.snapshot)),
+        ])
+
+        let removal = Task { await context.model.removeSource(context.otherSource) }
+        await context.people.waitUntilBlockedSnapshotStarts()
+        #expect(context.model.sources == [context.originSource])
+        #expect(context.model.documents == context.originDocuments)
+
+        await context.documents.setSteps([.failure], sourceID: context.originSource.id)
+        await context.model.selectSource(id: context.originSource.id)
+        #expect(context.model.lastErrorCode == "documentLoadFailure")
+        #expect(context.model.sources == [context.originSource])
+        #expect(context.model.documents == context.originDocuments)
+
+        await context.people.releaseBlockedSnapshots()
+        await removal.value
+
+        #expect(context.model.lastErrorCode == "documentLoadFailure")
+        #expect(context.model.sources == [context.originSource])
+        #expect(context.model.documents == context.originDocuments)
+    }
+
+    @Test @MainActor func cancelledActivePersonRemovalCannotClearNewerDocumentLoadFailure() async throws {
+        let context = try await makePersonLifecycleContext(selectedSource: .other)
+        await context.people.setSummarySteps([.result([personSummary(context.values.snapshot)])])
+        await context.people.setSnapshotSteps([.blockedCancellation])
+
+        let removal = Task { await context.model.removeSource(context.otherSource) }
+        await context.people.waitUntilBlockedSnapshotStarts()
+        await context.documents.setSteps([.failure], sourceID: context.originSource.id)
+        await context.model.selectSource(id: context.originSource.id)
+        #expect(context.model.lastErrorCode == "documentLoadFailure")
+
+        await context.people.releaseBlockedSnapshots()
+        await removal.value
+
+        #expect(context.model.lastErrorCode == "documentLoadFailure")
+        #expect(context.model.sources == [context.originSource])
+        #expect(context.model.documents == context.originDocuments)
+    }
+
+    @Test @MainActor func cancelledPersonSummaryDuringSourceRemovalPreservesPresentationWithoutDiagnostic() async throws {
+        let recorder = PersonDossierDiagnosticRecorder()
+        let context = try await makePersonLifecycleContext(
+            selectedSource: .other,
+            reportRuntimeFailure: { recorder.record($0) }
+        )
+        let previous = personLifecyclePresentation(context.model)
+        await context.people.setSummarySteps([.cancellation])
+
+        await context.model.removeSource(context.otherSource)
+
+        #expect(personLifecyclePresentation(context.model) == previous)
+        #expect(recorder.diagnostics.isEmpty)
+        #expect((try await context.fixture.sources.all()).contains(where: {
+            $0.id == context.otherSource.id
+        }))
+        #expect(await context.scheduler.isWatching(sourceID: context.otherSource.id))
+    }
+
+    @Test @MainActor func cancelledPersonSummarySourceRemovalRestoresUnavailableSourcePresentationWithoutDiagnostic() async throws {
+        let recorder = PersonDossierDiagnosticRecorder()
+        let context = try await makePersonLifecycleContext(
+            selectedSource: .other,
+            reportRuntimeFailure: { recorder.record($0) }
+        )
+        context.scheduler.emit(DirectoryChange(
+            sourceRootID: context.otherSource.id,
+            kind: .rootUnavailable
+        ))
+        #expect(await waitUntilPersonDossierCondition {
+            context.model.unavailableSourceIDs == [context.otherSource.id]
+        })
+        let previous = personLifecyclePresentation(context.model)
+        await context.people.setSummarySteps([.cancellation])
+
+        await context.model.removeSource(context.otherSource)
+
+        #expect(personLifecyclePresentation(context.model) == previous)
+        #expect(recorder.diagnostics.isEmpty)
+    }
+
+    @Test @MainActor func cancellationInsensitivePersonSummarySourceRemovalStopsBeforeDocumentFailure() async throws {
+        let recorder = PersonDossierDiagnosticRecorder()
+        let context = try await makePersonLifecycleContext(
+            selectedSource: .other,
+            reportRuntimeFailure: { recorder.record($0) }
+        )
+        let previous = personLifecyclePresentation(context.model)
+        await context.people.setSummarySteps([
+            .blocked(.success([personSummary(context.values.snapshot)])),
+        ])
+        await context.documents.setSteps(
+            [.failure],
+            sourceID: context.originSource.id
+        )
+
+        let removal = Task { await context.model.removeSource(context.otherSource) }
+        await context.people.waitUntilBlockedSummaryStarts()
+        removal.cancel()
+        await context.people.releaseBlockedSummaries()
+        await removal.value
+
+        #expect(personLifecyclePresentation(context.model) == previous)
+        #expect(recorder.diagnostics.isEmpty)
+    }
+
+    @Test @MainActor func cancelledPersonRemovalPreservesNewerRetainedWatcherABATransition() async throws {
+        let context = try await makePersonLifecycleContext(selectedSource: .other)
+        await context.people.setSummarySteps([
+            .blocked(.success([personSummary(context.values.snapshot)])),
+        ])
+
+        let removal = Task { await context.model.removeSource(context.otherSource) }
+        await context.people.waitUntilBlockedSummaryStarts()
+        context.scheduler.emit(DirectoryChange(
+            sourceRootID: context.originSource.id,
+            kind: .rootUnavailable
+        ))
+        #expect(await waitUntilPersonDossierCondition {
+            context.model.unavailableSourceIDs == [context.originSource.id]
+        })
+        context.scheduler.emit(DirectoryChange(
+            sourceRootID: context.originSource.id,
+            kind: .rootAvailable
+        ))
+        #expect(await waitUntilPersonDossierCondition {
+            context.model.unavailableSourceIDs.isEmpty
+        })
+        context.scheduler.emit(DirectoryChange(
+            sourceRootID: context.originSource.id,
+            kind: .rootUnavailable
+        ))
+        #expect(await waitUntilPersonDossierCondition {
+            context.model.unavailableSourceIDs == [context.originSource.id]
+        })
+        removal.cancel()
+        await context.people.releaseBlockedSummaries()
+        await removal.value
+
+        #expect(context.model.unavailableSourceIDs == [context.originSource.id])
+    }
+
+    @Test @MainActor func cancelledPostCommitPersonRemovalReconcilesSourcesAndRetainsTypedSnapshot() async throws {
+        let context = try await makePersonLifecycleContext(selectedSource: .other)
+        context.scheduler.emit(DirectoryChange(
+            sourceRootID: context.otherSource.id,
+            kind: .rootUnavailable
+        ))
+        #expect(await waitUntilPersonDossierCondition {
+            context.model.unavailableSourceIDs == [context.otherSource.id]
+        })
+        await context.people.setSummarySteps([.result([personSummary(context.values.snapshot)])])
+        await context.people.setSnapshotSteps([.cancellation])
+
+        await context.model.removeSource(context.otherSource)
+
+        #expect(context.model.sources == [context.originSource])
+        #expect(context.model.documents == context.originDocuments)
+        #expect(context.model.unavailableSourceIDs.isEmpty)
+        #expect(context.model.dossierDetailState == .available(.personMatter(context.values.snapshot)))
+        #expect(context.model.lastErrorCode == nil)
+        #expect(!(try await context.fixture.sources.all()).contains(where: {
+            $0.id == context.otherSource.id
+        }))
+        #expect(!(await context.scheduler.isWatching(sourceID: context.otherSource.id)))
+    }
+
+    @Test @MainActor func removalCommitClosesDocumentSelectionAcrossDeleteAndWatcherStop() async throws {
+        let deleteGate = SourceRemovalCommitGate()
+        let stopGate = SourceRemovalCommitGate()
+        let context = try await makePersonLifecycleContext(
+            selectedSource: .other,
+            sourceRemovalGate: deleteGate,
+            watcherStopGate: stopGate
+        )
+        await context.people.setSummarySteps([.result([personSummary(context.values.snapshot)])])
+        await context.people.setSnapshotSteps([.result(context.values.snapshot)])
+        let removal = Task { await context.model.removeSource(context.otherSource) }
+        await deleteGate.waitUntilBlocked(.delete)
+        await context.model.selectDocument(id: context.values.payment.id)
+        #expect(context.model.selectedSourceID == context.otherSource.id)
+        #expect(context.model.documents == context.otherDocuments)
+        #expect(context.model.selectedDocumentID == nil)
+
+        await deleteGate.release(.delete)
+        await stopGate.waitUntilBlocked(.watcherStop)
+        await context.model.selectDocument(id: context.values.payment.id)
+        #expect(context.model.selectedSourceID == context.otherSource.id)
+        #expect(context.model.documents == context.otherDocuments)
+        #expect(context.model.selectedDocumentID == nil)
+
+        await stopGate.release(.watcherStop)
+        await removal.value
+
+        #expect(context.model.sources == [context.originSource])
+        #expect(context.model.documents == context.originDocuments)
+        #expect(!(try await context.fixture.sources.all()).contains(where: {
+            $0.id == context.otherSource.id
+        }))
+        #expect(!(await context.scheduler.isWatching(sourceID: context.otherSource.id)))
+    }
+
+    @Test @MainActor func removalRefreshRetainsCommitContextWhileTypedSnapshotIsBlocked() async throws {
+        let context = try await makePersonLifecycleContext(selectedSource: .other)
+        await context.people.setSummarySteps([.result([personSummary(context.values.snapshot)])])
+        await context.people.setSnapshotSteps([
+            .blocked(.success(context.values.snapshot)),
+        ])
+        let removal = Task { await context.model.removeSource(context.otherSource) }
+        await context.people.waitUntilBlockedSnapshotStarts()
+        // The irreversible commit has already reconciled source/document
+        // presentation before this nested typed-snapshot await.
+        await context.model.selectDocument(id: context.values.payment.id)
+        #expect(context.model.selectedSourceID == context.originSource.id)
+        #expect(context.model.documents == context.originDocuments)
+        #expect(context.model.selectedDocumentID == nil)
+
+        await context.people.releaseBlockedSnapshots()
+        await removal.value
+
+        #expect(context.model.sources == [context.originSource])
+        #expect(context.model.documents == context.originDocuments)
+        #expect(context.model.dossierDetailState == .available(
+            .personMatter(context.values.snapshot)
+        ))
+    }
+
+    @Test @MainActor func committedRemovalPreservesRetainedWatcherABATransitionDuringRefresh() async throws {
+        let context = try await makePersonLifecycleContext(selectedSource: .other)
+        await context.people.setSummarySteps([.result([personSummary(context.values.snapshot)])])
+        await context.people.setSnapshotSteps([
+            .blocked(.success(context.values.snapshot)),
+        ])
+
+        let removal = Task { await context.model.removeSource(context.otherSource) }
+        await context.people.waitUntilBlockedSnapshotStarts()
+        context.scheduler.emit(DirectoryChange(
+            sourceRootID: context.originSource.id,
+            kind: .rootUnavailable
+        ))
+        #expect(await waitUntilPersonDossierCondition {
+            context.model.unavailableSourceIDs == [context.originSource.id]
+        })
+        context.scheduler.emit(DirectoryChange(
+            sourceRootID: context.originSource.id,
+            kind: .rootAvailable
+        ))
+        #expect(await waitUntilPersonDossierCondition {
+            context.model.unavailableSourceIDs.isEmpty
+        })
+        context.scheduler.emit(DirectoryChange(
+            sourceRootID: context.originSource.id,
+            kind: .rootUnavailable
+        ))
+        #expect(await waitUntilPersonDossierCondition {
+            context.model.unavailableSourceIDs == [context.originSource.id]
+        })
+
+        await context.people.releaseBlockedSnapshots()
+        await removal.value
+
+        #expect(context.model.unavailableSourceIDs == [context.originSource.id])
+        #expect(context.model.sources == [context.originSource])
+    }
+
+    @Test @MainActor func notFoundRemovalFallbackClearsInitiallyUnavailableRemovedSource() async throws {
+        let context = try await makePersonLifecycleContext(selectedSource: .other)
+        context.scheduler.emit(DirectoryChange(
+            sourceRootID: context.otherSource.id,
+            kind: .rootUnavailable
+        ))
+        #expect(await waitUntilPersonDossierCondition {
+            context.model.unavailableSourceIDs == [context.otherSource.id]
+        })
+        await context.people.setSummarySteps([.result([personSummary(context.values.snapshot)])])
+        await context.people.setSnapshotSteps([.dossierFailure(.dossierNotFound)])
+
+        await context.model.removeSource(context.otherSource)
+
+        #expect(context.model.sources == [context.originSource])
+        #expect(context.model.unavailableSourceIDs.isEmpty)
+        #expect(!(try await context.fixture.sources.all()).contains(where: {
+            $0.id == context.otherSource.id
+        }))
+        #expect(!(await context.scheduler.isWatching(sourceID: context.otherSource.id)))
+    }
+
+    @Test @MainActor func staleRemovalCannotReplaceDocumentABAPresentation() async throws {
+        let context = try await makePersonLifecycleContext(selectedSource: .other)
+        await context.model.selectDocument(id: context.values.payment.id)
+        let expected = personLifecyclePresentation(context.model)
+        await context.people.setSummarySteps([
+            .blocked(.success([personSummary(context.values.snapshot)])),
+        ])
+
+        let removal = Task { await context.model.removeSource(context.originSource) }
+        await context.people.waitUntilBlockedSummaryStarts()
+        await context.model.selectDocument(id: context.values.suggestion.id)
+        await context.model.selectDocument(id: context.values.payment.id)
+        await context.people.releaseBlockedSummaries()
+        await removal.value
+
+        #expect(personLifecyclePresentation(context.model) == expected)
+        #expect(try await context.fixture.sources.all().contains(where: {
+            $0.id == context.originSource.id
+        }))
+    }
+
+    @Test @MainActor func staleRemovalFailureCannotPublishAfterDocumentABA() async throws {
+        let recorder = PersonDossierDiagnosticRecorder()
+        let context = try await makePersonLifecycleContext(
+            selectedSource: .other,
+            reportRuntimeFailure: { recorder.record($0) }
+        )
+        await context.model.selectDocument(id: context.values.payment.id)
+        let expected = personLifecyclePresentation(context.model)
+        await context.people.setSummarySteps([.blocked(.failure(.loadFailed))])
+
+        let removal = Task { await context.model.removeSource(context.originSource) }
+        await context.people.waitUntilBlockedSummaryStarts()
+        await context.model.selectDocument(id: context.values.suggestion.id)
+        await context.model.selectDocument(id: context.values.payment.id)
+        await context.people.releaseBlockedSummaries()
+        await removal.value
+
+        #expect(personLifecyclePresentation(context.model) == expected)
+        #expect(recorder.diagnostics.isEmpty)
+        #expect(try await context.fixture.sources.all().contains(where: {
+            $0.id == context.originSource.id
+        }))
+    }
+
+    @Test @MainActor func cancelledCostsSummaryReloadKeepsNonPersonReloadDiagnosticWithPeopleInstalled() async throws {
+        let recorder = PersonDossierDiagnosticRecorder()
+        let context = try await makePersonLifecycleContext(
+            selectedSource: .other,
+            reportRuntimeFailure: { recorder.record($0) }
+        )
+        let previous = personLifecyclePresentation(context.model)
+        await context.costs.setSummarySteps([
+            .blocked(.success([costSummary(context.costSnapshot)])),
+        ])
+
+        let reload = Task { @MainActor in
+            await #expect(throws: CancellationError.self) { try await context.model.reload() }
+        }
+        await context.costs.waitUntilBlockedSummaryStarts()
+        reload.cancel()
+        await context.costs.releaseBlockedSummaries()
+        _ = await reload.value
+
+        #expect(personLifecyclePresentation(context.model) == previous)
+        #expect(recorder.diagnostics.map(\.category) == [.reload])
+    }
+
+    @Test @MainActor func cancelledCostsSummaryRemovalKeepsNonPersonDocumentLoadDiagnosticWithPeopleInstalled() async throws {
+        let recorder = PersonDossierDiagnosticRecorder()
+        let context = try await makePersonLifecycleContext(
+            selectedSource: .other,
+            reportRuntimeFailure: { recorder.record($0) }
+        )
+        let previous = personLifecyclePresentation(context.model)
+        await context.costs.setSummarySteps([
+            .blocked(.success([costSummary(context.costSnapshot)])),
+        ])
+
+        let removal = Task { await context.model.removeSource(context.otherSource) }
+        await context.costs.waitUntilBlockedSummaryStarts()
+        removal.cancel()
+        await context.costs.releaseBlockedSummaries()
+        await removal.value
+
+        #expect(personLifecyclePresentation(context.model) == previous.replacing(errorCode: "documentLoadFailure"))
+        #expect(recorder.diagnostics.map(\.category) == [.documentLoad])
+    }
+
+    @Test @MainActor func cancelledPersonSummaryReloadLateFailureRemainsSilent() async throws {
+        let recorder = PersonDossierDiagnosticRecorder()
+        let context = try await makePersonLifecycleContext(
+            selectedSource: .other,
+            reportRuntimeFailure: { recorder.record($0) }
+        )
+        let previous = personLifecyclePresentation(context.model)
+        await context.people.setSummarySteps([.blocked(.failure(.loadFailed))])
+
+        let reload = Task { @MainActor in
+            await #expect(throws: CancellationError.self) { try await context.model.reload() }
+        }
+        await context.people.waitUntilBlockedSummaryStarts()
+        reload.cancel()
+        await context.people.releaseBlockedSummaries()
+        _ = await reload.value
+
+        #expect(personLifecyclePresentation(context.model) == previous)
+        #expect(recorder.diagnostics.isEmpty)
+    }
+
+    @Test @MainActor func cancelledPersonSummaryRemovalLateFailureRemainsSilent() async throws {
+        let recorder = PersonDossierDiagnosticRecorder()
+        let context = try await makePersonLifecycleContext(
+            selectedSource: .other,
+            reportRuntimeFailure: { recorder.record($0) }
+        )
+        let previous = personLifecyclePresentation(context.model)
+        await context.people.setSummarySteps([.blocked(.failure(.loadFailed))])
+
+        let removal = Task { await context.model.removeSource(context.otherSource) }
+        await context.people.waitUntilBlockedSummaryStarts()
+        removal.cancel()
+        await context.people.releaseBlockedSummaries()
+        await removal.value
+
+        #expect(personLifecyclePresentation(context.model) == previous)
+        #expect(recorder.diagnostics.isEmpty)
     }
 
     @Test @MainActor func sameSourceDirectPersonMemberNavigationKeepsExactWorkspace() async throws {
@@ -1462,6 +2033,21 @@ struct PersonDossierAppModelTests {
 
     @Test @MainActor func personDocumentABARaceRejectsStaleNavigationCompletion() async throws {
         let context = try await makeNavigationContext()
+        let staleDNA = try #require(context.values.dnaByDocument[context.values.direct.id])
+        let currentDNA = try DocumentDNA(
+            documentID: staleDNA.documentID,
+            schemaVersion: staleDNA.schemaVersion,
+            analyzerIdentifier: staleDNA.analyzerIdentifier,
+            analyzerVersion: "current-A",
+            inputContentHash: staleDNA.inputContentHash,
+            inputExtractionVersion: staleDNA.inputExtractionVersion,
+            findings: staleDNA.findings,
+            analyzedAt: staleDNA.analyzedAt
+        )
+        await context.dnaSnapshots.setSnapshots(
+            [currentDNA, staleDNA],
+            documentID: context.values.direct.id
+        )
         await context.documents.setSteps([
             .blocked(.success(context.originSourceDocuments)),
         ], sourceID: context.originSource.id)
@@ -1478,9 +2064,7 @@ struct PersonDossierAppModelTests {
         await stale.value
 
         #expect(context.model.selectedDocumentID == context.values.direct.id)
-        #expect(context.model.documentDNADetailState == .available(
-            context.values.dnaByDocument[context.values.direct.id]!
-        ))
+        #expect(context.model.documentDNADetailState == .available(currentDNA))
     }
 
     @Test @MainActor func personDossierABARaceRejectsStaleNavigationCompletion() async throws {
@@ -2123,6 +2707,8 @@ private extension PersonDossierAppModelTests {
     @MainActor
     func makePersonLifecycleContext(
         selectedSource: PersonDossierLifecycleSelectedSource = .origin,
+        sourceRemovalGate: SourceRemovalCommitGate? = nil,
+        watcherStopGate: SourceRemovalCommitGate? = nil,
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) async throws -> PersonDossierLifecycleContext {
         let fixture = try PersonDossierAppModelFixture()
@@ -2175,6 +2761,24 @@ private extension PersonDossierAppModelTests {
         )
         let costs = ScriptedPersonDossierCostsLoader()
         let scheduler = PersonDossierWatchScheduler()
+        let sourceRemovalOperation: (@Sendable (UUID) async throws -> Void)?
+        if let sourceRemovalGate {
+            sourceRemovalOperation = { sourceID in
+                await sourceRemovalGate.block(.delete)
+                try await fixture.sources.remove(id: sourceID)
+            }
+        } else {
+            sourceRemovalOperation = nil
+        }
+        let watcherStopOperation: (@Sendable (UUID) async -> Void)?
+        if let watcherStopGate {
+            watcherStopOperation = { sourceID in
+                await watcherStopGate.block(.watcherStop)
+                await scheduler.stop(sourceID: sourceID)
+            }
+        } else {
+            watcherStopOperation = nil
+        }
         let model = makeModel(
             fixture,
             costsLoader: costs,
@@ -2187,6 +2791,8 @@ private extension PersonDossierAppModelTests {
             documentLoader: { sourceID in
                 try await documents.load(sourceID: sourceID)
             },
+            sourceRemovalOperation: sourceRemovalOperation,
+            watcherStopOperation: watcherStopOperation,
             reportRuntimeFailure: reportRuntimeFailure
         )
         try await model.reload()
@@ -2554,6 +3160,8 @@ private extension PersonDossierAppModelTests {
         invoicePaymentCandidates: (any InvoicePaymentCandidateLoading)? = nil,
         watchScheduler: (any SourceWatchScheduling)? = nil,
         documentLoader: (@Sendable (UUID) async throws -> [DocumentRecord])? = nil,
+        sourceRemovalOperation: (@Sendable (UUID) async throws -> Void)? = nil,
+        watcherStopOperation: (@Sendable (UUID) async -> Void)? = nil,
         reportRuntimeFailure: @escaping @MainActor @Sendable (AppRuntimeDiagnostic) -> Void = { _ in }
     ) -> AppModel {
         if let watchScheduler {
@@ -2573,6 +3181,8 @@ private extension PersonDossierAppModelTests {
                 watchScheduler: watchScheduler,
                 sourceResolver: { _ in fixture.directory },
                 documentLoader: documentLoader,
+                sourceRemovalOperation: sourceRemovalOperation,
+                watcherStopOperation: watcherStopOperation,
                 reportRuntimeFailure: reportRuntimeFailure
             )
         }
@@ -2740,6 +3350,7 @@ private extension PersonDossierAppModelTests {
             openedSnapshot: openedSnapshot,
             mutatedSnapshot: mutatedSnapshot,
             documents: documents,
+            dnaSnapshots: dnaSnapshots,
             service: people,
             costsService: dossierLoader,
             model: model
@@ -2894,6 +3505,7 @@ private struct PersonDossierNavigationContext {
     let openedSnapshot: PersonDossierSnapshot
     let mutatedSnapshot: PersonDossierSnapshot
     let documents: ScriptedPersonDossierDocumentLoader
+    let dnaSnapshots: ScriptedPersonDossierDNALoader
     let service: ScriptedPersonDossierLoader
     let costsService: ScriptedPersonDossierCostsLoader
     let model: AppModel
@@ -3062,8 +3674,9 @@ enum PersonDossierSummaryBoundary: CaseIterable, Sendable {
     case choice
 }
 
+@MainActor
 private func waitUntilPersonDossierCondition(
-    _ condition: @escaping @Sendable () async -> Bool
+    _ condition: @escaping @MainActor @Sendable () async -> Bool
 ) async -> Bool {
     for _ in 0..<1_000 {
         if await condition() {

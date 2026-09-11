@@ -64,6 +64,7 @@ struct PersonDossierNoopIngester: PendingIngesting {
 actor PersonDossierWatchScheduler: SourceWatchScheduling {
     nonisolated let changes: AsyncStream<DirectoryChange>
     nonisolated let rescanCompletions: AsyncStream<UUID>
+    nonisolated private let changesContinuation: AsyncStream<DirectoryChange>.Continuation
     nonisolated private let rescanContinuation: AsyncStream<UUID>.Continuation
     private var activeSourceIDs = Set<UUID>()
 
@@ -72,6 +73,7 @@ actor PersonDossierWatchScheduler: SourceWatchScheduling {
         let rescanPair = AsyncStream<UUID>.makeStream()
         changes = changesPair.stream
         rescanCompletions = rescanPair.stream
+        changesContinuation = changesPair.continuation
         rescanContinuation = rescanPair.continuation
     }
 
@@ -93,6 +95,57 @@ actor PersonDossierWatchScheduler: SourceWatchScheduling {
 
     nonisolated func completeRescan(sourceID: UUID) {
         rescanContinuation.yield(sourceID)
+    }
+
+    nonisolated func emit(_ change: DirectoryChange) {
+        changesContinuation.yield(change)
+    }
+}
+
+/// A deliberately tiny seam for races at AppModel's irreversible removal
+/// boundary. The production composition leaves the corresponding AppModel
+/// hooks nil; tests use this actor to block exactly deletion or watcher stop.
+actor SourceRemovalCommitGate {
+    enum Boundary: Sendable {
+        case delete
+        case watcherStop
+    }
+
+    private var arrived = Set<String>()
+    private var arrivalWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+    private var releaseWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+
+    func block(_ boundary: Boundary) async {
+        let key = key(for: boundary)
+        arrived.insert(key)
+        for waiter in arrivalWaiters.removeValue(forKey: key) ?? [] {
+            waiter.resume()
+        }
+        await withCheckedContinuation { continuation in
+            releaseWaiters[key, default: []].append(continuation)
+        }
+    }
+
+    func waitUntilBlocked(_ boundary: Boundary) async {
+        let key = key(for: boundary)
+        guard !arrived.contains(key) else { return }
+        await withCheckedContinuation { continuation in
+            arrivalWaiters[key, default: []].append(continuation)
+        }
+    }
+
+    func release(_ boundary: Boundary) {
+        let key = key(for: boundary)
+        for waiter in releaseWaiters.removeValue(forKey: key) ?? [] {
+            waiter.resume()
+        }
+    }
+
+    private func key(for boundary: Boundary) -> String {
+        switch boundary {
+        case .delete: "delete"
+        case .watcherStop: "watcherStop"
+        }
     }
 }
 
@@ -139,7 +192,7 @@ actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
         case result([PersonDossierSummary])
         case failure
         case cancellation
-        case blocked([PersonDossierSummary])
+        case blocked(Result<[PersonDossierSummary], PersonDossierAppModelTestError>)
     }
 
     enum SnapshotStep: Sendable {
@@ -147,6 +200,7 @@ actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
         case failure
         case cancellation
         case blocked(Result<PersonDossierSnapshot, PersonDossierAppModelTestError>)
+        case blockedCancellation
         case dossierFailure(DossierRepositoryError)
     }
 
@@ -231,7 +285,7 @@ actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
         case .result(let summaries): return summaries
         case .failure: throw PersonDossierAppModelTestError.loadFailed
         case .cancellation: throw CancellationError()
-        case .blocked(let summaries):
+        case .blocked(let result):
             blockedSummaryCount += 1
             let readyWaiters = summaryStartWaiters.filter {
                 $0.targetCount <= blockedSummaryCount
@@ -241,7 +295,7 @@ actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
             }
             readyWaiters.forEach { $0.continuation.resume() }
             await withCheckedContinuation { summaryReleaseWaiters.append($0) }
-            return summaries
+            return try result.get()
         }
     }
 
@@ -382,6 +436,11 @@ actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
         snapshotReleaseWaiters.removeAll()
     }
 
+    func releaseMostRecentBlockedSnapshot() {
+        guard let waiter = snapshotReleaseWaiters.popLast() else { return }
+        waiter.resume()
+    }
+
     func waitUntilBlockedMutationStarts(count: Int = 1) async {
         guard blockedMutationCount >= count else {
             await withCheckedContinuation {
@@ -421,6 +480,17 @@ actor ScriptedPersonDossierLoader: PersonDossierLoading, PersonDossierMutating {
             readyWaiters.forEach { $0.continuation.resume() }
             await withCheckedContinuation { snapshotReleaseWaiters.append($0) }
             return try result.get()
+        case .blockedCancellation:
+            blockedSnapshotCount += 1
+            let readyWaiters = snapshotStartWaiters.filter {
+                $0.targetCount <= blockedSnapshotCount
+            }
+            snapshotStartWaiters.removeAll {
+                $0.targetCount <= blockedSnapshotCount
+            }
+            readyWaiters.forEach { $0.continuation.resume() }
+            await withCheckedContinuation { snapshotReleaseWaiters.append($0) }
+            throw CancellationError()
         case .dossierFailure(let error):
             throw error
         }
@@ -467,6 +537,10 @@ actor ScriptedPersonDossierDNALoader: DocumentDNASnapshotLoading {
 
     init(snapshotsByDocument: [UUID: [DocumentDNA]]) {
         self.snapshotsByDocument = snapshotsByDocument
+    }
+
+    func setSnapshots(_ snapshots: [DocumentDNA], documentID: UUID) {
+        snapshotsByDocument[documentID] = snapshots
     }
 
     func currentSnapshot(documentID: UUID) async throws -> DocumentDNA? {
@@ -564,6 +638,7 @@ actor ScriptedPersonDossierCostsLoader: DossierLoading, DossierMutating {
     enum SummaryStep: Sendable {
         case result([DossierSummary])
         case failure
+        case blocked(Result<[DossierSummary], PersonDossierAppModelTestError>)
     }
 
     enum SnapshotStep: Sendable {
@@ -579,6 +654,12 @@ actor ScriptedPersonDossierCostsLoader: DossierLoading, DossierMutating {
     private var summarySteps: [SummaryStep]
     private var snapshotSteps: [SnapshotStep]
     private var openSteps: [OpenStep]
+    private var blockedSummaryCount = 0
+    private var summaryStartWaiters: [(
+        targetCount: Int,
+        continuation: CheckedContinuation<Void, Never>
+    )] = []
+    private var summaryReleaseWaiters: [CheckedContinuation<Void, Never>] = []
     private(set) var snapshotIDs: [UUID] = []
     private(set) var summaryInvocationCount = 0
 
@@ -599,11 +680,32 @@ actor ScriptedPersonDossierCostsLoader: DossierLoading, DossierMutating {
         switch step {
         case .result(let summaries): return summaries
         case .failure: throw PersonDossierAppModelTestError.loadFailed
+        case .blocked(let result):
+            blockedSummaryCount += 1
+            let readyWaiters = summaryStartWaiters.filter {
+                $0.targetCount <= blockedSummaryCount
+            }
+            summaryStartWaiters.removeAll {
+                $0.targetCount <= blockedSummaryCount
+            }
+            readyWaiters.forEach { $0.continuation.resume() }
+            await withCheckedContinuation { summaryReleaseWaiters.append($0) }
+            return try result.get()
         }
     }
 
     func setSummarySteps(_ steps: [SummaryStep]) {
         summarySteps = steps
+    }
+
+    func waitUntilBlockedSummaryStarts(count: Int = 1) async {
+        guard blockedSummaryCount < count else { return }
+        await withCheckedContinuation { summaryStartWaiters.append((count, $0)) }
+    }
+
+    func releaseBlockedSummaries() {
+        summaryReleaseWaiters.forEach { $0.resume() }
+        summaryReleaseWaiters.removeAll()
     }
 
     func entryDisposition(for documentID: UUID) async throws -> DossierEntryDisposition {
