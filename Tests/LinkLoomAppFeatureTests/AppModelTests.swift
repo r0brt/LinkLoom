@@ -267,7 +267,7 @@ struct AppModelTests {
         await context.model.openOrCreateDossierForSelectedDocument()
 
         #expect(context.model.workspaceSelection == .dossier(snapshot.dossier.id))
-        #expect(context.model.dossierDetailState == .available(snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(snapshot)))
         #expect(context.model.dossiers == [try summary(for: snapshot)])
         #expect(context.model.dossierChoices.isEmpty)
         #expect(context.model.dossierMutationState == .idle)
@@ -312,7 +312,7 @@ struct AppModelTests {
         await context.model.chooseDossier(id: selected.id)
 
         #expect(context.model.workspaceSelection == .dossier(selected.id))
-        #expect(context.model.dossierDetailState == .available(selectedSnapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(selectedSnapshot)))
         #expect(context.model.dossierChoices.isEmpty)
         #expect(context.model.dossiers.contains(selected))
     }
@@ -322,7 +322,7 @@ struct AppModelTests {
         let dossierID = UUID()
         await context.service.setSnapshotSteps([.failure])
         let workspace = context.model.workspaceSelection
-        let previous = context.model.dossierDetailState.snapshot
+        let previous = context.model.dossierDetailState.workspaceSnapshot
 
         await context.model.selectDossier(id: dossierID)
 
@@ -345,7 +345,7 @@ struct AppModelTests {
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
         #expect(context.model.dossierDetailState == .failed(
             dossierID: requestedID,
-            previous: context.snapshot
+            previous: .costsAndPayments(context.snapshot)
         ))
         #expect(context.model.lastErrorCode == "dossierLoadFailure")
     }
@@ -363,7 +363,7 @@ struct AppModelTests {
         await selection.value
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
         #expect(context.model.lastErrorCode == nil)
     }
 
@@ -432,7 +432,7 @@ struct AppModelTests {
         await sourceSelection.value
 
         #expect(model.workspaceSelection == .dossier(snapshot.dossier.id))
-        #expect(model.dossierDetailState == .available(snapshot))
+        #expect(model.dossierDetailState == .available(.costsAndPayments(snapshot)))
     }
 
     @Test @MainActor func duplicateOpenIsSuppressedWhileFirstRequestIsInFlight() async throws {
@@ -632,6 +632,42 @@ struct AppModelTests {
         #expect(context.model.documentDNADetailState == .available(context.paymentDNA))
     }
 
+    @Test @MainActor func costsMemberNavigationClearsEntryDispositionBeforeBlockedLoadCompletes() async throws {
+        let context = try await DossierNavigationContext.make(
+            crossSource: true,
+            paymentStatusBehavior: .blockedThenReady
+        )
+        #expect(context.model.dossierEntryState == .available(
+            documentID: context.invoice.id,
+            disposition: .create
+        ))
+
+        let navigation = Task {
+            await context.model.selectDossierMember(documentID: context.payment.id)
+        }
+        await context.statuses.waitUntilBlockedLoadStarts()
+
+        #expect(context.model.dossierEntryState == .none)
+        await context.statuses.releaseBlockedLoad()
+        await navigation.value
+    }
+
+    @Test @MainActor func failedCostsMemberNavigationClearsPriorEntryDisposition() async throws {
+        let context = try await DossierNavigationContext.make(
+            crossSource: true,
+            paymentStatusBehavior: .failure
+        )
+        #expect(context.model.dossierEntryState == .available(
+            documentID: context.invoice.id,
+            disposition: .create
+        ))
+
+        await context.model.selectDossierMember(documentID: context.payment.id)
+
+        #expect(context.model.dossierEntryState == .none)
+        #expect(context.model.lastErrorCode == "documentLoadFailure")
+    }
+
     @Test @MainActor func counterpartFromDossierMemberRetainsDossierWorkspace() async throws {
         let context = try await DossierNavigationContext.make(crossSource: true)
         await context.model.selectDossierMember(documentID: context.payment.id)
@@ -642,6 +678,9 @@ struct AppModelTests {
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
         #expect(context.model.selectedDocumentID == context.invoice.id)
+        #expect(context.model.dossierDetailState == .available(
+            .costsAndPayments(context.snapshot)
+        ))
     }
 
     @Test @MainActor func excludeForwardsExactSupportAndReplacesCompleteSnapshot() async throws {
@@ -659,7 +698,7 @@ struct AppModelTests {
                 expectedSupport: try #require(member.support)
             ),
         ])
-        #expect(context.model.dossierDetailState == .available(corrected))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(corrected)))
         #expect(context.model.dossierMutationState == .idle)
     }
 
@@ -681,7 +720,7 @@ struct AppModelTests {
                 expectedRevisionID: correction.exclusion.revisionID
             ),
         ])
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
     }
 
     @Test @MainActor func resetFailurePreservesSnapshotAndPublishesSafeError() async throws {
@@ -695,7 +734,7 @@ struct AppModelTests {
 
         await context.model.resetDossierCorrection(correction)
 
-        #expect(context.model.dossierDetailState == .available(corrected))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(corrected)))
         #expect(context.model.lastErrorCode == "dossierMutationFailure")
     }
 
@@ -710,7 +749,7 @@ struct AppModelTests {
 
         await context.model.resetDossierCorrection(correction)
 
-        #expect(context.model.dossierDetailState == .available(corrected))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(corrected)))
         #expect(context.model.lastErrorCode == nil)
     }
 
@@ -739,7 +778,7 @@ struct AppModelTests {
 
         await context.model.excludeDossierMember(member)
 
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
         #expect(context.model.lastErrorCode == "dossierMutationFailure")
         #expect(
             context.model.lastErrorMessage
@@ -754,7 +793,7 @@ struct AppModelTests {
 
         await context.model.excludeDossierMember(member)
 
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
         #expect(context.model.lastErrorCode == nil)
     }
 
@@ -788,7 +827,7 @@ struct AppModelTests {
         await mutation.value
 
         #expect(context.model.workspaceSelection == .dossier(other.dossier.id))
-        #expect(context.model.dossierDetailState == .available(other))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(other)))
     }
 
     @Test @MainActor func staleCorrectionCannotReplaceReopenedDossierABA() async throws {
@@ -806,7 +845,7 @@ struct AppModelTests {
         await mutation.value
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
     }
 
     @Test @MainActor func manualScanRefreshesActiveDossier() async throws {
@@ -817,7 +856,7 @@ struct AppModelTests {
         await context.model.scanSelectedSource()
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
-        #expect(context.model.dossierDetailState == .available(refreshed))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(refreshed)))
     }
 
     @Test @MainActor func otherSourceWatcherCompletionRefreshesActiveDossier() async throws {
@@ -827,7 +866,7 @@ struct AppModelTests {
 
         context.scheduler.completeRescan(sourceID: context.paymentSource.id)
         await waitUntil {
-            context.model.dossierDetailState == .available(refreshed)
+            context.model.dossierDetailState == .available(.costsAndPayments(refreshed))
         }
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
@@ -854,7 +893,7 @@ struct AppModelTests {
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
         #expect(context.model.selectedDocumentID == context.invoice.id)
-        #expect(context.model.dossierDetailState == .available(corrected))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(corrected)))
     }
 
     @Test @MainActor func failedWatcherRefreshKeepsSnapshotAndPublishesLoadFailure() async throws {
@@ -869,7 +908,7 @@ struct AppModelTests {
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
         #expect(context.model.dossierDetailState == .failed(
             dossierID: context.snapshot.dossier.id,
-            previous: context.snapshot
+            previous: .costsAndPayments(context.snapshot)
         ))
     }
 
@@ -910,7 +949,9 @@ struct AppModelTests {
         await model.selectDossier(id: context.snapshot.dossier.id)
         scheduler.completeRescan(sourceID: context.paymentSource.id)
         await sourceLoader.releaseFirstLoad()
-        await waitUntil { model.dossierDetailState == .available(refreshedOriginal) }
+        await waitUntil {
+            model.dossierDetailState == .available(.costsAndPayments(refreshedOriginal))
+        }
 
         #expect(model.workspaceSelection == .dossier(context.snapshot.dossier.id))
         #expect(model.lastErrorCode == nil)
@@ -961,7 +1002,7 @@ struct AppModelTests {
         await refresh.value
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
         #expect(context.model.lastErrorCode == nil)
     }
 
@@ -981,7 +1022,7 @@ struct AppModelTests {
         await refresh.value
 
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
-        #expect(context.model.dossierDetailState == .available(corrected))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(corrected)))
         #expect(context.model.lastErrorCode == nil)
     }
 
@@ -998,7 +1039,7 @@ struct AppModelTests {
         await context.service.releaseBlockedOperation()
         await refresh.value
 
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
         #expect(context.model.dossierChoices == [choice])
     }
 
@@ -1015,7 +1056,7 @@ struct AppModelTests {
         await context.service.releaseBlockedOperation()
         await refresh.value
 
-        #expect(context.model.dossierDetailState == .available(context.snapshot))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
         #expect(context.model.lastErrorCode == "dossierMutationFailure")
     }
 
@@ -1034,7 +1075,9 @@ struct AppModelTests {
 
         await context.model.openOrCreateDossierForSelectedDocument()
         await sourceLoader.releaseFirstLoad()
-        await waitUntil { context.model.dossierDetailState == .available(refreshed) }
+        await waitUntil {
+            context.model.dossierDetailState == .available(.costsAndPayments(refreshed))
+        }
 
         #expect(context.model.dossierChoices == [choice])
         #expect(context.model.lastErrorCode == nil)
@@ -1056,7 +1099,9 @@ struct AppModelTests {
 
         await context.model.excludeDossierMember(member)
         await sourceLoader.releaseFirstLoad()
-        await waitUntil { context.model.dossierDetailState == .available(refreshed) }
+        await waitUntil {
+            context.model.dossierDetailState == .available(.costsAndPayments(refreshed))
+        }
 
         #expect(context.model.lastErrorCode == "dossierMutationFailure")
         await context.model.stopWatching()
@@ -1106,8 +1151,68 @@ struct AppModelTests {
 
         #expect(context.model.sources == [context.invoiceSource])
         #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
-        #expect(context.model.dossierDetailState == .available(refreshed))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(refreshed)))
         #expect(context.model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func successfulActiveCostsRemovalRetryClearsDocumentLoadFailure() async throws {
+        let context = try await DossierNavigationContext.make(crossSource: true)
+        await context.statuses.setSteps([.failure], sourceID: context.invoiceSource.id)
+
+        await context.model.removeSource(context.paymentSource)
+        #expect(context.model.lastErrorCode == "documentLoadFailure")
+
+        await context.statuses.setSteps([
+            .statuses([.init(documentID: context.invoice.id, phase: .ready)]),
+        ], sourceID: context.invoiceSource.id)
+        await context.service.setSnapshotSteps([.result(context.snapshot)])
+        await context.model.removeSource(context.paymentSource)
+
+        #expect(context.model.lastErrorCode == nil)
+        #expect(!context.model.sources.contains(where: { $0.id == context.paymentSource.id }))
+    }
+
+    @Test @MainActor func olderActiveCostsRemovalCannotClearNewerDocumentLoadFailure() async throws {
+        let context = try await DossierNavigationContext.make(crossSource: true)
+        await context.service.setSnapshotSteps([
+            .blocked(.success(context.snapshot)),
+        ])
+
+        let removal = Task { await context.model.removeSource(context.paymentSource) }
+        await context.service.waitUntilBlockedOperationStarts()
+        #expect(context.model.sources == [context.invoiceSource])
+        #expect(context.model.documents == [context.invoice])
+
+        await context.statuses.setSteps([.failure], sourceID: context.invoiceSource.id)
+        await context.model.selectSource(id: context.invoiceSource.id)
+        #expect(context.model.lastErrorCode == "documentLoadFailure")
+        #expect(context.model.sources == [context.invoiceSource])
+        #expect(context.model.documents == [context.invoice])
+
+        await context.service.releaseBlockedOperation()
+        await removal.value
+
+        #expect(context.model.lastErrorCode == "documentLoadFailure")
+        #expect(context.model.sources == [context.invoiceSource])
+        #expect(context.model.documents == [context.invoice])
+    }
+
+    @Test @MainActor func cancelledActiveCostsRemovalCannotClearNewerDocumentLoadFailure() async throws {
+        let context = try await DossierNavigationContext.make(crossSource: true)
+        await context.service.setSnapshotSteps([.blockedCancellation])
+
+        let removal = Task { await context.model.removeSource(context.paymentSource) }
+        await context.service.waitUntilBlockedOperationStarts()
+        await context.statuses.setSteps([.failure], sourceID: context.invoiceSource.id)
+        await context.model.selectSource(id: context.invoiceSource.id)
+        #expect(context.model.lastErrorCode == "documentLoadFailure")
+
+        await context.service.releaseBlockedOperation()
+        await removal.value
+
+        #expect(context.model.lastErrorCode == "documentLoadFailure")
+        #expect(context.model.sources == [context.invoiceSource])
+        #expect(context.model.documents == [context.invoice])
     }
 
     @Test @MainActor func removingSourceReloadsDossierSummariesWithoutGhosts() async throws {
@@ -1127,7 +1232,927 @@ struct AppModelTests {
         #expect(context.model.sources == [context.paymentSource])
         #expect(context.model.dossiers == [retainedSummary])
         #expect(context.model.workspaceSelection == .dossier(retained.dossier.id))
-        #expect(context.model.dossierDetailState == .available(retained))
+        #expect(context.model.dossierDetailState == .available(.costsAndPayments(retained)))
+    }
+
+    @Test @MainActor func removingSourceFiltersPreDeleteCascadedCostsSummary() async throws {
+        let context = try await DossierNavigationContext.make(crossSource: true)
+        let retained = try summary(for: context.snapshot)
+        let cascaded = try testDossierSummary(anchor: context.payment)
+        await context.service.setSummaries([retained, cascaded])
+        try await context.model.reload()
+        await context.model.selectDossier(id: context.snapshot.dossier.id)
+        await context.service.setSnapshotSteps([.result(context.snapshot)])
+
+        await context.model.removeSource(context.paymentSource)
+
+        #expect(context.model.dossiers == [retained])
+        #expect(!context.model.dossiers.contains(where: { $0.id == cascaded.id }))
+    }
+
+    @Test @MainActor func throwingDeleteKeepsPresentationAndReportsSourceRemoveFailure() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "invoice.pdf")
+        try await fixture.documents.save(document)
+        let scheduler = FakeSourceWatchScheduler()
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler,
+            sourceResolver: { _ in fixture.directory },
+            sourceRemovalOperation: { _ in throw AppModelTestError.scanFailed },
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+
+        await model.removeSource(source)
+
+        #expect(model.sources == [source])
+        #expect(model.documents == [document])
+        #expect((try await fixture.sources.all()).contains(where: { $0.id == source.id }))
+        #expect(await scheduler.isWatching(sourceID: source.id))
+        #expect(model.lastErrorCode == "sourceRemoveFailure")
+        #expect(diagnostics.values.map(\.category) == [.sourceRemove])
+    }
+
+    @Test @MainActor func removalCommitClosesCostsCounterpartNavigationAtDeleteAndStop() async throws {
+        let deleteGate = SourceRemovalCommitGate()
+        let stopGate = SourceRemovalCommitGate()
+        let context = try await DossierNavigationContext.make(
+            crossSource: true,
+            sourceRemovalGate: deleteGate,
+            watcherStopGate: stopGate
+        )
+        let expectedDocumentID = context.model.selectedDocumentID
+        let removal = Task { await context.model.removeSource(context.paymentSource) }
+        await deleteGate.waitUntilBlocked(.delete)
+        await context.model.showInvoicePaymentCounterpart(
+            candidate: context.annotatedCandidate.candidate
+        )
+        #expect(context.model.selectedDocumentID == expectedDocumentID)
+
+        await deleteGate.release(.delete)
+        await stopGate.waitUntilBlocked(.watcherStop)
+        await context.model.showInvoicePaymentCounterpart(
+            candidate: context.annotatedCandidate.candidate
+        )
+        #expect(context.model.selectedDocumentID == expectedDocumentID)
+
+        await stopGate.release(.watcherStop)
+        await removal.value
+    }
+
+    @Test @MainActor func irreversibleRemovalSuppressesCompletionOfBlockedDocumentSelection() async throws {
+        for boundary in [SourceRemovalCommitGate.Boundary.delete, .watcherStop] {
+            for outcomeName in ["success", "failure", "cancellation"] {
+                let deleteGate = SourceRemovalCommitGate()
+                let stopGate = SourceRemovalCommitGate()
+                let context = try await DossierNavigationContext.make(
+                    crossSource: true,
+                    sourceRemovalGate: deleteGate,
+                    watcherStopGate: stopGate
+                )
+                let step: ScriptedDocumentDNASnapshotLoader.Step = switch outcomeName {
+                case "success": .blocked(.success(context.invoiceDNA))
+                case "failure": .blocked(.failure(.documentDNASnapshotLoadFailed))
+                default: .blockedCancellation
+                }
+                await context.dnaSnapshots.setSteps([step], documentID: context.invoice.id)
+
+                let selection = Task { await context.model.selectDocument(id: context.invoice.id) }
+                await context.dnaSnapshots.waitUntilBlockedLoadStarts()
+                let removal = Task { await context.model.removeSource(context.paymentSource) }
+                switch boundary {
+                case .delete:
+                    await deleteGate.waitUntilBlocked(.delete)
+                case .watcherStop:
+                    await deleteGate.waitUntilBlocked(.delete)
+                    await deleteGate.release(.delete)
+                    await stopGate.waitUntilBlocked(.watcherStop)
+                }
+                await context.dnaSnapshots.releaseBlockedLoad()
+                await selection.value
+
+                #expect(context.model.selectedDocumentID == context.invoice.id)
+                #expect(context.model.documentDNADetailState == .loading(documentID: context.invoice.id))
+                #expect(context.model.lastErrorCode == nil)
+
+                if boundary == .delete {
+                    await deleteGate.release(.delete)
+                    await stopGate.waitUntilBlocked(.watcherStop)
+                }
+                await stopGate.release(.watcherStop)
+                await removal.value
+            }
+        }
+    }
+
+    @Test @MainActor func irreversibleRemovalSuppressesCompletionOfBlockedCostsCounterpartNavigation() async throws {
+        for boundary in [SourceRemovalCommitGate.Boundary.delete, .watcherStop] {
+            for outcomeName in ["success", "failure"] {
+                let deleteGate = SourceRemovalCommitGate()
+                let stopGate = SourceRemovalCommitGate()
+                let context = try await DossierNavigationContext.make(
+                    crossSource: true,
+                    sourceRemovalGate: deleteGate,
+                    watcherStopGate: stopGate
+                )
+                let step: ScriptedDocumentDNASnapshotLoader.Step = switch outcomeName {
+                case "success": .blocked(.success(context.paymentDNA))
+                default: .blocked(.failure(.documentDNASnapshotLoadFailed))
+                }
+                await context.dnaSnapshots.setSteps([step], documentID: context.payment.id)
+
+                let navigation = Task {
+                    await context.model.showInvoicePaymentCounterpart(
+                        candidate: context.annotatedCandidate.candidate
+                    )
+                }
+                await context.dnaSnapshots.waitUntilBlockedLoadStarts()
+                let removal = Task { await context.model.removeSource(context.paymentSource) }
+                switch boundary {
+                case .delete:
+                    await deleteGate.waitUntilBlocked(.delete)
+                case .watcherStop:
+                    await deleteGate.waitUntilBlocked(.delete)
+                    await deleteGate.release(.delete)
+                    await stopGate.waitUntilBlocked(.watcherStop)
+                }
+                await context.dnaSnapshots.releaseBlockedLoad()
+                await navigation.value
+
+                #expect(context.model.selectedDocumentID == context.invoice.id)
+                #expect(context.model.documentDNADetailState == .available(context.invoiceDNA))
+                #expect(context.model.lastErrorCode == nil)
+
+                if boundary == .delete {
+                    await deleteGate.release(.delete)
+                    await stopGate.waitUntilBlocked(.watcherStop)
+                }
+                await stopGate.release(.watcherStop)
+                await removal.value
+            }
+        }
+    }
+
+    @Test @MainActor func irreversibleRemovalSuppressesBlockedDocumentCandidateCompletion() async throws {
+        for boundary in [SourceRemovalCommitGate.Boundary.delete, .watcherStop] {
+            for outcomeName in ["success", "cancellation", "failure", "lateCancelledFailure"] {
+                let deleteGate = SourceRemovalCommitGate()
+                let stopGate = SourceRemovalCommitGate()
+                let context = try await DossierNavigationContext.make(
+                    crossSource: true,
+                    sourceRemovalGate: deleteGate,
+                    watcherStopGate: stopGate
+                )
+                let step: ScriptedInvoicePaymentCandidateLoader.Step = switch outcomeName {
+                case "success": .blocked(.success([context.annotatedCandidate]))
+                case "cancellation": .blockedCancellation
+                default: .blocked(.failure(.invoicePaymentCandidateLoadFailed))
+                }
+                await context.candidates.setSteps([step], documentID: context.invoice.id)
+
+                let selection = Task { await context.model.selectDocument(id: context.invoice.id) }
+                await context.candidates.waitUntilBlockedLoadStarts()
+                let removal = Task { await context.model.removeSource(context.paymentSource) }
+                switch boundary {
+                case .delete:
+                    await deleteGate.waitUntilBlocked(.delete)
+                case .watcherStop:
+                    await deleteGate.waitUntilBlocked(.delete)
+                    await deleteGate.release(.delete)
+                    await stopGate.waitUntilBlocked(.watcherStop)
+                }
+                if outcomeName == "lateCancelledFailure" {
+                    selection.cancel()
+                }
+                await context.candidates.releaseBlockedLoad()
+                await selection.value
+
+                #expect(
+                    context.model.invoicePaymentCandidateState
+                        == .loading(documentID: context.invoice.id)
+                )
+                #expect(context.model.lastErrorCode == nil)
+
+                if boundary == .delete {
+                    await deleteGate.release(.delete)
+                    await stopGate.waitUntilBlocked(.watcherStop)
+                }
+                await stopGate.release(.watcherStop)
+                await removal.value
+            }
+        }
+    }
+
+    @Test @MainActor func irreversibleRemovalSuppressesBlockedDocumentEntryCompletion() async throws {
+        for boundary in [SourceRemovalCommitGate.Boundary.delete, .watcherStop] {
+            for outcomeName in ["success", "cancellation", "failure", "lateCancelledFailure"] {
+                let deleteGate = SourceRemovalCommitGate()
+                let stopGate = SourceRemovalCommitGate()
+                let context = try await DossierNavigationContext.make(
+                    crossSource: true,
+                    sourceRemovalGate: deleteGate,
+                    watcherStopGate: stopGate
+                )
+                let step: ScriptedDossierService.EntryStep = switch outcomeName {
+                case "success": .blocked(.success(.create))
+                case "cancellation": .blockedCancellation
+                default: .blocked(.failure(.dossierLoadFailed))
+                }
+                await context.service.setEntrySteps([step])
+
+                let selection = Task { await context.model.selectDocument(id: context.invoice.id) }
+                await context.service.waitUntilBlockedEntryStarts()
+                let removal = Task { await context.model.removeSource(context.paymentSource) }
+                switch boundary {
+                case .delete:
+                    await deleteGate.waitUntilBlocked(.delete)
+                case .watcherStop:
+                    await deleteGate.waitUntilBlocked(.delete)
+                    await deleteGate.release(.delete)
+                    await stopGate.waitUntilBlocked(.watcherStop)
+                }
+                if outcomeName == "lateCancelledFailure" {
+                    selection.cancel()
+                }
+                await context.service.releaseBlockedEntry()
+                await selection.value
+
+                #expect(context.model.dossierEntryState == .loading(documentID: context.invoice.id))
+                #expect(context.model.lastErrorCode == nil)
+
+                if boundary == .delete {
+                    await deleteGate.release(.delete)
+                    await stopGate.waitUntilBlocked(.watcherStop)
+                }
+                await stopGate.release(.watcherStop)
+                await removal.value
+            }
+        }
+    }
+
+    @Test @MainActor func irreversibleRemovalSuppressesBlockedCostsCounterpartEntryCompletion() async throws {
+        for boundary in [SourceRemovalCommitGate.Boundary.delete, .watcherStop] {
+            for outcomeName in ["success", "cancellation", "failure", "lateCancelledFailure"] {
+                let deleteGate = SourceRemovalCommitGate()
+                let stopGate = SourceRemovalCommitGate()
+                let context = try await DossierNavigationContext.make(
+                    crossSource: true,
+                    sourceRemovalGate: deleteGate,
+                    watcherStopGate: stopGate
+                )
+                let step: ScriptedDossierService.EntryStep = switch outcomeName {
+                case "success": .blocked(.success(.create))
+                case "cancellation": .blockedCancellation
+                default: .blocked(.failure(.dossierLoadFailed))
+                }
+                await context.service.setEntrySteps([step])
+
+                let navigation = Task {
+                    await context.model.showInvoicePaymentCounterpart(
+                        candidate: context.annotatedCandidate.candidate
+                    )
+                }
+                await context.service.waitUntilBlockedEntryStarts()
+                let removal = Task { await context.model.removeSource(context.paymentSource) }
+                switch boundary {
+                case .delete:
+                    await deleteGate.waitUntilBlocked(.delete)
+                case .watcherStop:
+                    await deleteGate.waitUntilBlocked(.delete)
+                    await deleteGate.release(.delete)
+                    await stopGate.waitUntilBlocked(.watcherStop)
+                }
+                if outcomeName == "lateCancelledFailure" {
+                    navigation.cancel()
+                }
+                await context.service.releaseBlockedEntry()
+                await navigation.value
+
+                #expect(context.model.dossierEntryState == .loading(documentID: context.payment.id))
+                #expect(context.model.lastErrorCode == nil)
+
+                if boundary == .delete {
+                    await deleteGate.release(.delete)
+                    await stopGate.waitUntilBlocked(.watcherStop)
+                }
+                await stopGate.release(.watcherStop)
+                await removal.value
+            }
+        }
+    }
+
+    @Test @MainActor func throwingDeleteRestoresEveryBlockedNavigationPhaseWithoutNavigationDiagnostic() async throws {
+        for phase in ["initialDNA", "candidate", "entry", "counterpartEntry"] {
+            let diagnostics = RuntimeDiagnosticRecorder()
+            let context = try await DossierNavigationContext.make(
+                crossSource: true,
+                throwingSourceRemoval: true,
+                diagnostics: diagnostics
+            )
+            let navigation: Task<Void, Never>
+            switch phase {
+            case "initialDNA":
+                await context.dnaSnapshots.setSteps(
+                    [.blocked(.success(context.invoiceDNA))],
+                    documentID: context.invoice.id
+                )
+                navigation = Task { await context.model.selectDocument(id: context.invoice.id) }
+                await context.dnaSnapshots.waitUntilBlockedLoadStarts()
+            case "candidate":
+                await context.candidates.setSteps(
+                    [.blocked(.success([context.annotatedCandidate]))],
+                    documentID: context.invoice.id
+                )
+                navigation = Task { await context.model.selectDocument(id: context.invoice.id) }
+                await context.candidates.waitUntilBlockedLoadStarts()
+            case "entry":
+                await context.service.setEntrySteps([.blocked(.success(.create))])
+                navigation = Task { await context.model.selectDocument(id: context.invoice.id) }
+                await context.service.waitUntilBlockedEntryStarts()
+            default:
+                await context.service.setEntrySteps([.blocked(.success(.create))])
+                navigation = Task {
+                    await context.model.showInvoicePaymentCounterpart(
+                        candidate: context.annotatedCandidate.candidate
+                    )
+                }
+                await context.service.waitUntilBlockedEntryStarts()
+            }
+
+            await context.model.removeSource(context.paymentSource)
+
+            switch phase {
+            case "initialDNA":
+                await context.dnaSnapshots.releaseBlockedLoad()
+            case "candidate":
+                await context.candidates.releaseBlockedLoad()
+            default:
+                await context.service.releaseBlockedEntry()
+            }
+            await navigation.value
+
+            #expect(context.model.selectedSourceID == context.invoiceSource.id)
+            #expect(context.model.selectedDocumentID == context.invoice.id)
+            #expect(context.model.documents == [context.invoice])
+            #expect(context.model.documentDNADetailState == .available(context.invoiceDNA))
+            #expect(
+                context.model.invoicePaymentCandidateState
+                    == .available(
+                        documentID: context.invoice.id,
+                        candidates: [context.annotatedCandidate]
+                    )
+            )
+            #expect(
+                context.model.dossierEntryState
+                    == .available(documentID: context.invoice.id, disposition: .create)
+            )
+            #expect(context.model.sources.contains(context.paymentSource))
+            #expect((try await context.fixture.sources.all()).contains(context.paymentSource))
+            #expect(await context.scheduler.isWatching(sourceID: context.paymentSource.id))
+            #expect(context.model.lastErrorCode == "sourceRemoveFailure")
+            #expect(diagnostics.values.map(\.category) == [.sourceRemove])
+        }
+    }
+
+    @Test @MainActor func throwingDeleteRestoresSourceWorkspaceAfterBlockedCounterpartEntry() async throws {
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let context = try await DossierNavigationContext.make(
+            crossSource: true,
+            throwingSourceRemoval: true,
+            diagnostics: diagnostics
+        )
+        await context.model.selectSource(id: context.invoiceSource.id)
+        await context.model.selectDocument(id: context.invoice.id)
+        #expect(context.model.workspaceSelection == .source(context.invoiceSource.id))
+
+        await context.service.setEntrySteps([.blocked(.success(.create))])
+        let navigation = Task {
+            await context.model.showInvoicePaymentCounterpart(
+                candidate: context.annotatedCandidate.candidate
+            )
+        }
+        await context.service.waitUntilBlockedEntryStarts()
+        #expect(context.model.workspaceSelection == .source(context.paymentSource.id))
+
+        await context.model.removeSource(context.paymentSource)
+        await context.service.releaseBlockedEntry()
+        await navigation.value
+
+        #expect(context.model.workspaceSelection == .source(context.invoiceSource.id))
+        #expect(context.model.selectedSourceID == context.invoiceSource.id)
+        #expect(context.model.selectedDocumentID == context.invoice.id)
+        #expect(context.model.documents == [context.invoice])
+        #expect(context.model.documentDNADetailState == .available(context.invoiceDNA))
+        #expect(
+            context.model.invoicePaymentCandidateState
+                == .available(
+                    documentID: context.invoice.id,
+                    candidates: [context.annotatedCandidate]
+                )
+        )
+        #expect(
+            context.model.dossierEntryState
+                == .available(documentID: context.invoice.id, disposition: .create)
+        )
+        #expect(context.model.sources.contains(context.paymentSource))
+        #expect((try await context.fixture.sources.all()).contains(context.paymentSource))
+        #expect(await context.scheduler.isWatching(sourceID: context.paymentSource.id))
+        #expect(context.model.lastErrorCode == "sourceRemoveFailure")
+        #expect(diagnostics.values.map(\.category) == [.sourceRemove])
+    }
+
+    @Test @MainActor func throwingDeleteRecoversNavigationAfterStopWatchingInvalidatesOuterGeneration() async throws {
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let deleteGate = SourceRemovalCommitGate()
+        let context = try await DossierNavigationContext.make(
+            crossSource: true,
+            sourceRemovalGate: deleteGate,
+            throwingSourceRemoval: true,
+            diagnostics: diagnostics
+        )
+        await context.candidates.setSteps(
+            [.blocked(.success([context.annotatedCandidate]))],
+            documentID: context.invoice.id
+        )
+        let selection = Task { await context.model.selectDocument(id: context.invoice.id) }
+        await context.candidates.waitUntilBlockedLoadStarts()
+        let removal = Task { await context.model.removeSource(context.paymentSource) }
+        await deleteGate.waitUntilBlocked(.delete)
+        await context.candidates.releaseBlockedLoad()
+        await selection.value
+        await context.model.stopWatching()
+        await deleteGate.release(.delete)
+        await removal.value
+
+        #expect(context.model.selectedSourceID == context.invoiceSource.id)
+        #expect(context.model.selectedDocumentID == context.invoice.id)
+        #expect(context.model.documentDNADetailState == .available(context.invoiceDNA))
+        #expect(
+            context.model.invoicePaymentCandidateState
+                == .available(
+                    documentID: context.invoice.id,
+                    candidates: [context.annotatedCandidate]
+                )
+        )
+        #expect(context.model.dossierEntryState == .available(documentID: context.invoice.id, disposition: .create))
+        #expect((try await context.fixture.sources.all()).contains(context.paymentSource))
+        let paymentIsWatching = await context.scheduler.isWatching(sourceID: context.paymentSource.id)
+        #expect(!paymentIsWatching)
+        #expect(context.model.lastErrorCode == "sourceRemoveFailure")
+        #expect(diagnostics.values.map(\.category) == [.sourceRemove])
+    }
+
+    @Test @MainActor func newerReloadDiagnosticSuppressesThrowingDeleteDiagnostic() async throws {
+        let fixture = try AppModelFixture()
+        let retained = try await fixture.addSource(named: "Retained")
+        let removed = try await fixture.addSource(named: "Removed")
+        let deleteGate = SourceRemovalCommitGate()
+        let summaries = ThreePhaseDossierSummaryLoader(failsThirdSummary: true)
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dossierLoader: summaries,
+            watchScheduler: scheduler,
+            sourceResolver: { _ in fixture.directory },
+            sourceRemovalOperation: { _ in
+                await deleteGate.block(.delete)
+                throw AppModelTestError.scanFailed
+            },
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        let removal = Task { await model.removeSource(removed) }
+        await deleteGate.waitUntilBlocked(.delete)
+        await #expect(throws: AppModelTestError.self) { try await model.reload() }
+        await deleteGate.release(.delete)
+        await removal.value
+
+        #expect(model.sources.contains(retained))
+        #expect(model.sources.contains(removed))
+        #expect(diagnostics.values.map(\.category) == [.reload])
+    }
+
+    @Test @MainActor func newerWatcherStartDiagnosticSuppressesThrowingDeleteDiagnostic() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let deleteGate = SourceRemovalCommitGate()
+        let scheduler = FakeSourceWatchScheduler()
+        let resolver = ToggleSourceResolver(url: fixture.directory)
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler,
+            sourceResolver: { source in try resolver.resolve(source) },
+            sourceRemovalOperation: { _ in
+                await deleteGate.block(.delete)
+                throw AppModelTestError.scanFailed
+            },
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        await model.stopWatching()
+
+        let removal = Task { await model.removeSource(source) }
+        await deleteGate.waitUntilBlocked(.delete)
+        resolver.fail()
+        try await model.reload()
+        #expect(diagnostics.values.map(\.category) == [.watcherStart])
+
+        await deleteGate.release(.delete)
+        await removal.value
+        #expect(diagnostics.values.map(\.category) == [.watcherStart])
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func completedRemovalDurablySuppressesBlockedRetainedSourceCandidateCompletion() async throws {
+        let context = try await DossierNavigationContext.make(crossSource: true)
+        let refreshed = try snapshotWithoutInferredMembers(from: context.snapshot)
+        await context.service.setSnapshotSteps([.result(refreshed)])
+        await context.candidates.setSteps(
+            [.blocked(.success([]))],
+            documentID: context.invoice.id
+        )
+        let selection = Task { await context.model.selectDocument(id: context.invoice.id) }
+        await context.candidates.waitUntilBlockedLoadStarts()
+
+        await context.model.removeSource(context.paymentSource)
+        #expect(context.model.sources == [context.invoiceSource])
+        #expect(context.model.selectedSourceID == context.invoiceSource.id)
+        #expect(context.model.selectedDocumentID == nil)
+        #expect(context.model.documentDNADetailState == .none)
+        #expect(context.model.invoicePaymentCandidateState == .none)
+        #expect(context.model.dossierEntryState == .none)
+
+        await context.candidates.releaseBlockedLoad()
+        await selection.value
+
+        #expect(context.model.invoicePaymentCandidateState == .none)
+        #expect(context.model.dossierEntryState == .none)
+        #expect(context.model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func successfulRemovalClosesBlockedCounterpartOwnerBeforeLateCompletion() async throws {
+        let deleteGate = SourceRemovalCommitGate()
+        let stopGate = SourceRemovalCommitGate()
+        let context = try await DossierNavigationContext.make(
+            crossSource: true,
+            sourceRemovalGate: deleteGate,
+            watcherStopGate: stopGate
+        )
+        let refreshed = try snapshotWithoutInferredMembers(from: context.snapshot)
+        await context.service.setSnapshotSteps([.result(refreshed)])
+        await context.dnaSnapshots.setSteps(
+            [.blocked(.success(context.paymentDNA))],
+            documentID: context.payment.id
+        )
+        let navigation = Task {
+            await context.model.showInvoicePaymentCounterpart(
+                candidate: context.annotatedCandidate.candidate
+            )
+        }
+        await context.dnaSnapshots.waitUntilBlockedLoadStarts()
+        #expect(context.model.invoicePaymentCounterpartNavigatingCandidate == context.annotatedCandidate.candidate)
+
+        let removal = Task { await context.model.removeSource(context.paymentSource) }
+        await deleteGate.waitUntilBlocked(.delete)
+        await deleteGate.release(.delete)
+        await stopGate.waitUntilBlocked(.watcherStop)
+        await stopGate.release(.watcherStop)
+        await removal.value
+
+        #expect(context.model.invoicePaymentCounterpartNavigatingCandidate == nil)
+        #expect(context.model.invoicePaymentCandidateState == .none)
+        await context.dnaSnapshots.releaseBlockedLoad()
+        await navigation.value
+        #expect(context.model.invoicePaymentCounterpartNavigatingCandidate == nil)
+        #expect(context.model.invoicePaymentCandidateState == .none)
+        #expect(context.model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func sourceCommitClosesBlockedCounterpartOwnerBeforeWatcherStopPublication() async throws {
+        for succeeds in [true, false] {
+            let deleteGate = SourceRemovalCommitGate()
+            let stopGate = SourceRemovalCommitGate()
+            let context = try await DossierNavigationContext.make(
+                crossSource: true,
+                sourceRemovalGate: deleteGate,
+                watcherStopGate: stopGate
+            )
+            let step: ScriptedDocumentDNASnapshotLoader.Step = succeeds
+                ? .blocked(.success(context.paymentDNA))
+                : .blocked(.failure(.documentDNASnapshotLoadFailed))
+            await context.dnaSnapshots.setSteps([step], documentID: context.payment.id)
+            let navigation = Task {
+                await context.model.showInvoicePaymentCounterpart(
+                    candidate: context.annotatedCandidate.candidate
+                )
+            }
+            await context.dnaSnapshots.waitUntilBlockedLoadStarts()
+            #expect(context.model.invoicePaymentCounterpartNavigatingCandidate == context.annotatedCandidate.candidate)
+
+            let removal = Task { await context.model.removeSource(context.paymentSource) }
+            await deleteGate.waitUntilBlocked(.delete)
+            await deleteGate.release(.delete)
+            await stopGate.waitUntilBlocked(.watcherStop)
+            #expect(context.model.invoicePaymentCounterpartNavigatingCandidate == nil)
+
+            await context.dnaSnapshots.releaseBlockedLoad()
+            await navigation.value
+            #expect(context.model.invoicePaymentCounterpartNavigatingCandidate == nil)
+            #expect(context.model.lastErrorCode == nil)
+            await stopGate.release(.watcherStop)
+            await removal.value
+        }
+    }
+
+    @Test @MainActor func successfulRemovalSuppressesDecisionStartsAtDeleteAndWatcherStop() async throws {
+        let deleteGate = SourceRemovalCommitGate()
+        let stopGate = SourceRemovalCommitGate()
+        let updater = ScriptedInvoicePaymentDecisionUpdater(steps: [.success])
+        let context = try await DossierNavigationContext.make(
+            crossSource: true,
+            sourceRemovalGate: deleteGate,
+            watcherStopGate: stopGate,
+            invoicePaymentDecisions: updater
+        )
+        let refreshed = try snapshotWithoutInferredMembers(from: context.snapshot)
+        await context.service.setSnapshotSteps([.result(refreshed)])
+
+        let removal = Task { await context.model.removeSource(context.paymentSource) }
+        await deleteGate.waitUntilBlocked(.delete)
+        await context.model.updateInvoicePaymentDecision(
+            candidate: context.annotatedCandidate.candidate,
+            command: .set(.excluded)
+        )
+        #expect(await updater.invocations.isEmpty)
+
+        await deleteGate.release(.delete)
+        await stopGate.waitUntilBlocked(.watcherStop)
+        await context.model.updateInvoicePaymentDecision(
+            candidate: context.annotatedCandidate.candidate,
+            command: .set(.excluded)
+        )
+        #expect(await updater.invocations.isEmpty)
+
+        await stopGate.release(.watcherStop)
+        await removal.value
+        #expect(!context.model.isInvoicePaymentDecisionUpdateInFlight)
+        #expect(context.model.invoicePaymentDecisionUpdatingCandidate == nil)
+        #expect(context.model.invoicePaymentCandidateState == .none)
+    }
+
+    @Test @MainActor func successfulRemovalClosesBlockedDecisionOwnerAndSuppressesLateOutcomes() async throws {
+        let outcomes: [Result<Void, AppModelTestError>] = [
+            .success(()),
+            .failure(.invoicePaymentDecisionUpdateFailed),
+        ]
+        for outcome in outcomes {
+            let deleteGate = SourceRemovalCommitGate()
+            let stopGate = SourceRemovalCommitGate()
+            let updater = ScriptedInvoicePaymentDecisionUpdater(steps: [.blocked(outcome)])
+            let diagnostics = RuntimeDiagnosticRecorder()
+            let context = try await DossierNavigationContext.make(
+                crossSource: true,
+                sourceRemovalGate: deleteGate,
+                watcherStopGate: stopGate,
+                diagnostics: diagnostics,
+                invoicePaymentDecisions: updater
+            )
+            let refreshed = try snapshotWithoutInferredMembers(from: context.snapshot)
+            await context.service.setSnapshotSteps([.result(refreshed)])
+
+            let update = Task {
+                await context.model.updateInvoicePaymentDecision(
+                    candidate: context.annotatedCandidate.candidate,
+                    command: .set(.excluded)
+                )
+            }
+            await updater.waitUntilBlockedUpdateStarts()
+            #expect(context.model.isInvoicePaymentDecisionUpdateInFlight)
+            #expect(context.model.invoicePaymentDecisionUpdatingCandidate == context.annotatedCandidate.candidate)
+
+            let removal = Task { await context.model.removeSource(context.paymentSource) }
+            await deleteGate.waitUntilBlocked(.delete)
+            await deleteGate.release(.delete)
+            await stopGate.waitUntilBlocked(.watcherStop)
+            await stopGate.release(.watcherStop)
+            await removal.value
+
+            #expect(!context.model.isInvoicePaymentDecisionUpdateInFlight)
+            #expect(context.model.invoicePaymentDecisionUpdatingCandidate == nil)
+            #expect(context.model.invoicePaymentCandidateState == .none)
+            await updater.releaseBlockedUpdate()
+            await update.value
+            #expect(context.model.invoicePaymentCandidateState == .none)
+            #expect(context.model.lastErrorCode == nil)
+            #expect(diagnostics.values.isEmpty)
+        }
+    }
+
+    @Test @MainActor func oldDecisionDeferCannotClearNewOwnerAfterUnrelatedSourceCommit() async throws {
+        let updater = ScriptedInvoicePaymentDecisionUpdater(steps: [
+            .blocked(.success(())),
+            .blocked(.success(())),
+        ])
+        let context = try await DossierNavigationContext.make(
+            crossSource: true,
+            invoicePaymentDecisions: updater
+        )
+        let first = Task {
+            await context.model.updateInvoicePaymentDecision(
+                candidate: context.annotatedCandidate.candidate,
+                command: .set(.confirmed)
+            )
+        }
+        await updater.waitUntilBlockedUpdateStarts()
+
+        let unrelated = try await context.fixture.addSource(named: "Archive")
+        await context.model.removeSource(unrelated)
+        #expect(!context.model.isInvoicePaymentDecisionUpdateInFlight)
+        await context.candidates.setSteps(
+            [.candidates([context.annotatedCandidate])],
+            documentID: context.invoice.id
+        )
+        await context.model.selectDocument(id: context.invoice.id)
+
+        let second = Task {
+            await context.model.updateInvoicePaymentDecision(
+                candidate: context.annotatedCandidate.candidate,
+                command: .set(.excluded)
+            )
+        }
+        await updater.waitUntilBlockedUpdateStarts()
+        #expect(context.model.isInvoicePaymentDecisionUpdateInFlight)
+        #expect(context.model.invoicePaymentDecisionUpdatingCandidate == context.annotatedCandidate.candidate)
+
+        await updater.releaseNextBlockedUpdate()
+        await first.value
+        #expect(context.model.isInvoicePaymentDecisionUpdateInFlight)
+        #expect(context.model.invoicePaymentDecisionUpdatingCandidate == context.annotatedCandidate.candidate)
+
+        await updater.releaseNextBlockedUpdate()
+        await second.value
+        #expect(!context.model.isInvoicePaymentDecisionUpdateInFlight)
+        #expect(context.model.invoicePaymentDecisionUpdatingCandidate == nil)
+    }
+
+    @Test @MainActor func successfulRemovalSuppressesLateCounterpartOrdinaryError() async throws {
+        let deleteGate = SourceRemovalCommitGate()
+        let stopGate = SourceRemovalCommitGate()
+        let context = try await DossierNavigationContext.make(
+            crossSource: true,
+            sourceRemovalGate: deleteGate,
+            watcherStopGate: stopGate
+        )
+        let refreshed = try snapshotWithoutInferredMembers(from: context.snapshot)
+        await context.service.setSnapshotSteps([.result(refreshed)])
+        await context.dnaSnapshots.setSteps(
+            [.blocked(.failure(.documentDNASnapshotLoadFailed))],
+            documentID: context.payment.id
+        )
+        let navigation = Task {
+            await context.model.showInvoicePaymentCounterpart(
+                candidate: context.annotatedCandidate.candidate
+            )
+        }
+        await context.dnaSnapshots.waitUntilBlockedLoadStarts()
+        let removal = Task { await context.model.removeSource(context.paymentSource) }
+        await deleteGate.waitUntilBlocked(.delete)
+        await deleteGate.release(.delete)
+        await stopGate.waitUntilBlocked(.watcherStop)
+        await stopGate.release(.watcherStop)
+        await removal.value
+        await context.dnaSnapshots.releaseBlockedLoad()
+        await navigation.value
+
+        #expect(context.model.invoicePaymentCounterpartNavigatingCandidate == nil)
+        #expect(context.model.invoicePaymentCandidateState == .none)
+        #expect(context.model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func blockedPreDeleteReloadCannotResurrectDeletedSourceOrWatcher() async throws {
+        let fixture = try AppModelFixture()
+        let retained = try await fixture.addSource(named: "Retained")
+        let removed = try await fixture.addSource(named: "Removed")
+        let summaries = ThreePhaseDossierSummaryLoader()
+        let deleteGate = SourceRemovalCommitGate()
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dossierLoader: summaries,
+            watchScheduler: scheduler,
+            sourceResolver: { _ in fixture.directory },
+            sourceRemovalOperation: { sourceID in
+                await deleteGate.block(.delete)
+                try await fixture.sources.remove(id: sourceID)
+            }
+        )
+        try await model.reload()
+        #expect(await scheduler.isWatching(sourceID: removed.id))
+
+        let removal = Task { await model.removeSource(removed) }
+        await deleteGate.waitUntilBlocked(.delete)
+        let reload = Task { try? await model.reload() }
+        await summaries.waitUntilThirdSummaryStarts()
+        await deleteGate.release(.delete)
+        await removal.value
+        await summaries.releaseThirdSummary()
+        await reload.value
+
+        #expect(model.sources == [retained])
+        #expect(model.dossiers.isEmpty)
+        #expect(model.personDossiers.isEmpty)
+        let removedIsWatching = await scheduler.isWatching(sourceID: removed.id)
+        #expect(!removedIsWatching)
+    }
+
+    @Test @MainActor func reloadWatcherStartAfterPublicationCompensatesForRemovedSource() async throws {
+        let fixture = try AppModelFixture()
+        let retained = try await fixture.addSource(named: "Retained")
+        let removed = try await fixture.addSource(named: "Removed")
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler,
+            sourceResolver: { _ in fixture.directory }
+        )
+        try await model.reload()
+        await model.stopWatching()
+        await scheduler.blockStart(sourceID: removed.id)
+
+        let reload = Task { try? await model.reload() }
+        await scheduler.waitUntilStartBegins()
+        await model.removeSource(removed)
+        await scheduler.releaseStart()
+        await reload.value
+
+        #expect(model.sources == [retained])
+        let removedIsWatching = await scheduler.isWatching(sourceID: removed.id)
+        #expect(!removedIsWatching)
+    }
+
+    @Test @MainActor func staleOuterGenerationSuppressesActiveScanSuccessFailureAndFallbackPublications() async throws {
+        for outcomeName in ["success", "failure", "fallback"] {
+            let context = try await DossierNavigationContext.make(crossSource: true)
+            let outcome: ScriptedDossierService.SnapshotStep = switch outcomeName {
+            case "success": .blocked(.success(context.snapshot))
+            case "failure": .blocked(.failure(.dossierLoadFailed))
+            default: .blockedDossierFailure(.dossierNotFound)
+            }
+            await context.service.setSnapshotSteps([outcome])
+            let scan = Task { await context.model.scanSelectedSource() }
+            await context.service.waitUntilBlockedOperationStarts()
+            await context.model.stopWatching()
+            await context.service.releaseBlockedOperation()
+            await scan.value
+            #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
+            #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
+            #expect(context.model.lastErrorCode == nil)
+        }
+    }
+
+    @Test @MainActor func staleOuterGenerationSuppressesActiveRemovalSuccessFailureAndFallbackPublications() async throws {
+        for outcomeName in ["success", "failure", "fallback"] {
+            let context = try await DossierNavigationContext.make(crossSource: true)
+            let outcome: ScriptedDossierService.SnapshotStep = switch outcomeName {
+            case "success": .blocked(.success(context.snapshot))
+            case "failure": .blocked(.failure(.dossierLoadFailed))
+            default: .blockedDossierFailure(.dossierNotFound)
+            }
+            await context.service.setSnapshotSteps([outcome])
+            let removal = Task { await context.model.removeSource(context.paymentSource) }
+            await context.service.waitUntilBlockedOperationStarts()
+            await context.model.stopWatching()
+            await context.service.releaseBlockedOperation()
+            await removal.value
+            #expect(context.model.workspaceSelection == .dossier(context.snapshot.dossier.id))
+            #expect(context.model.dossierDetailState == .available(.costsAndPayments(context.snapshot)))
+            #expect(context.model.lastErrorCode == nil)
+        }
     }
 
     @Test @MainActor func scanPublishesProgressAndReloadsDocuments() async throws {
@@ -1154,6 +2179,91 @@ struct AppModelTests {
         #expect(observedStates == [.idle, .scanning, .extracting, .idle])
         #expect(model.documents == [expectedDocument])
         #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func staleScanCannotReplaceDocumentABAPresentation() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let first = fixture.document(sourceRootID: source.id, path: "first.pdf")
+        let second = fixture.document(sourceRootID: source.id, path: "second.pdf")
+        try await fixture.documents.save(first)
+        try await fixture.documents.save(second)
+        let firstDNA = try testDocumentDNA(document: first)
+        let secondDNA = try testDocumentDNA(document: second)
+        let scanner = BlockingCatalogScanner()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: scanner,
+            ingestion: FakePendingIngester(),
+            dnaStatuses: MutableDocumentDNAStatusLoader(statusesBySource: [source.id: [
+                .init(documentID: first.id, phase: .ready),
+                .init(documentID: second.id, phase: .ready),
+            ]]),
+            dnaSnapshots: ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                first.id: [.snapshot(firstDNA), .snapshot(firstDNA)],
+                second.id: [.snapshot(secondDNA)],
+            ])
+        )
+        try await model.reload()
+        await model.selectDocument(id: first.id)
+        let expected = (model.selectedDocumentID, model.documentDNADetailState)
+
+        let scan = Task { await model.scanSelectedSource() }
+        await scanner.waitUntilScanStarts()
+        await model.selectDocument(id: second.id)
+        await model.selectDocument(id: first.id)
+        await scanner.releaseScan()
+        await scan.value
+
+        #expect(model.selectedDocumentID == expected.0)
+        #expect(model.documentDNADetailState == expected.1)
+        #expect(model.lastErrorCode == nil)
+    }
+
+    @Test @MainActor func staleScanFailureCannotPublishAfterDocumentABA() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let first = fixture.document(sourceRootID: source.id, path: "first.pdf")
+        let second = fixture.document(sourceRootID: source.id, path: "second.pdf")
+        try await fixture.documents.save(first)
+        try await fixture.documents.save(second)
+        let firstDNA = try testDocumentDNA(document: first)
+        let secondDNA = try testDocumentDNA(document: second)
+        let scanner = BlockingFailingCatalogScanner()
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: scanner,
+            ingestion: FakePendingIngester(),
+            dnaStatuses: MutableDocumentDNAStatusLoader(statusesBySource: [source.id: [
+                .init(documentID: first.id, phase: .ready),
+                .init(documentID: second.id, phase: .ready),
+            ]]),
+            dnaSnapshots: ScriptedDocumentDNASnapshotLoader(stepsByDocument: [
+                first.id: [.snapshot(firstDNA), .snapshot(firstDNA)],
+                second.id: [.snapshot(secondDNA)],
+            ]),
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        await model.selectDocument(id: first.id)
+        let expected = (model.selectedDocumentID, model.documentDNADetailState)
+
+        let scan = Task { await model.scanSelectedSource() }
+        await scanner.waitUntilScanStarts()
+        await model.selectDocument(id: second.id)
+        await model.selectDocument(id: first.id)
+        await scanner.releaseScan()
+        await scan.value
+
+        #expect(model.selectedDocumentID == expected.0)
+        #expect(model.documentDNADetailState == expected.1)
+        #expect(model.lastErrorCode == nil)
+        #expect(diagnostics.values.isEmpty)
     }
 
     @Test @MainActor func scanFailureAppearsWithoutRemovingExistingDocuments() async throws {
@@ -1211,6 +2321,128 @@ struct AppModelTests {
         #expect(model.documents == [existingDocument])
         #expect(diagnostics.values.map(\.category) == [.ingestion])
         #expect(diagnostics.values.map(\.reason) == [.sourceAccess])
+    }
+
+    @Test @MainActor func cancelledScannerRetainsPresentationAndReportsFrozenScanFailure() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "existing.pdf")
+        try await fixture.documents.save(document)
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let scanner = BlockingCancellationPhase()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: scanner,
+            ingestion: FakePendingIngester(),
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        let previous = (model.selectedSourceID, model.documents)
+
+        let scan = Task { await model.scanSelectedSource() }
+        await scanner.waitUntilPhaseStarts()
+        scan.cancel()
+        await scanner.releasePhase()
+        await scan.value
+
+        #expect((model.selectedSourceID, model.documents) == previous)
+        #expect(model.scanState == .idle)
+        #expect(model.lastErrorCode == "scanFailure")
+        #expect(diagnostics.values.map(\.category) == [.scan])
+    }
+
+    @Test @MainActor func cancelledIngesterRetainsPresentationAndReportsFrozenIngestionFailure() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "existing.pdf")
+        try await fixture.documents.save(document)
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let ingester = BlockingCancellationPhase()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: ingester,
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        let previous = (model.selectedSourceID, model.documents)
+
+        let scan = Task { await model.scanSelectedSource() }
+        await ingester.waitUntilPhaseStarts()
+        scan.cancel()
+        await ingester.releasePhase()
+        await scan.value
+
+        #expect((model.selectedSourceID, model.documents) == previous)
+        #expect(model.scanState == .idle)
+        #expect(model.lastErrorCode == "scanFailure")
+        #expect(diagnostics.values.map(\.category) == [.ingestion])
+    }
+
+    @Test @MainActor func cancelledSuccessfulScannerDoesNotStartIngestionAndReportsScanFailure() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "existing.pdf")
+        try await fixture.documents.save(document)
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let scanner = BlockingSuccessfulPhase()
+        let ingester = InvocationRecordingIngester()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: scanner,
+            ingestion: ingester,
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        let previous = (model.selectedSourceID, model.documents)
+
+        let scan = Task { await model.scanSelectedSource() }
+        await scanner.waitUntilPhaseStarts()
+        scan.cancel()
+        await scanner.releasePhase()
+        await scan.value
+
+        #expect((model.selectedSourceID, model.documents) == previous)
+        #expect(await ingester.invocationCount == 0)
+        #expect(model.scanState == .idle)
+        #expect(model.lastErrorCode == "scanFailure")
+        #expect(diagnostics.values.map(\.category) == [.scan])
+    }
+
+    @Test @MainActor func cancelledSuccessfulIngesterDoesNotRefreshAndReportsIngestionFailure() async throws {
+        let fixture = try AppModelFixture()
+        let source = try await fixture.addSource(named: "Archive")
+        let document = fixture.document(sourceRootID: source.id, path: "existing.pdf")
+        try await fixture.documents.save(document)
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let ingester = BlockingSuccessfulPhase()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: ingester,
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        let previous = (model.selectedSourceID, model.documents)
+
+        let scan = Task { await model.scanSelectedSource() }
+        await ingester.waitUntilPhaseStarts()
+        scan.cancel()
+        await ingester.releasePhase()
+        await scan.value
+
+        #expect((model.selectedSourceID, model.documents) == previous)
+        #expect(model.scanState == .idle)
+        #expect(model.lastErrorCode == "scanFailure")
+        #expect(diagnostics.values.map(\.category) == [.ingestion])
     }
 
     @Test @MainActor func addingSourcePersistsAndSelectsIt() async throws {
@@ -1599,6 +2831,7 @@ struct AppModelTests {
 
         #expect(model.selectedSourceID == paymentSource.id)
         #expect(model.workspaceSelection == .source(paymentSource.id))
+        #expect(model.dossierDetailState == .none)
         #expect(model.documents == [payment])
         #expect(model.selectedDocumentID == payment.id)
         #expect(model.documentDNADetailState == .available(paymentSnapshot))
@@ -3446,7 +4679,7 @@ struct AppModelTests {
         }
     }
 
-    @Test @MainActor func removingSelectedSourceClearsPresentationBeforeFallbackLoad() async throws {
+    @Test @MainActor func removingSelectedSourceStagesFallbackPresentationAtomically() async throws {
         let results: [Result<[DocumentDNAAnalysisStatus], AppModelTestError>] = [
             .success([]), .failure(.documentDNAStatusLoadFailed),
         ]
@@ -3471,9 +4704,9 @@ struct AppModelTests {
             let remove = Task { await model.removeSource(pair.first) }
             await dnaStatuses.waitUntilBlockedLoadStarts()
 
-            #expect(model.selectedSourceID == nil)
-            #expect(model.documents.isEmpty)
-            #expect(model.documentDNAAnalysisPhases.isEmpty)
+            #expect(model.selectedSourceID == pair.first.id)
+            #expect(model.documents == [pair.firstDocument])
+            #expect(model.documentDNAAnalysisPhases == [firstReady.documentID: firstReady.phase])
             await dnaStatuses.releaseBlockedLoad()
             await remove.value
 
@@ -3482,9 +4715,11 @@ struct AppModelTests {
                 #expect(model.documents == [pair.secondDocument])
                 #expect(model.documentDNAAnalysisPhases == [secondReady.documentID: secondReady.phase])
             } else {
-                #expect(model.selectedSourceID == nil)
-                #expect(model.documents.isEmpty)
-                #expect(model.documentDNAAnalysisPhases.isEmpty)
+                #expect(model.selectedSourceID == pair.first.id)
+                #expect(model.documents == [pair.firstDocument])
+                #expect(model.documentDNAAnalysisPhases == [
+                    firstReady.documentID: firstReady.phase,
+                ])
                 #expect(model.lastErrorCode == "documentLoadFailure")
             }
         }
@@ -3563,7 +4798,7 @@ struct AppModelTests {
         }
     }
 
-    @Test @MainActor func reloadPropagatesCancellationError() async throws {
+    @Test @MainActor func reloadPropagatesNonPersonCancellationWithDiagnostic() async throws {
         let fixture = try AppModelFixture()
         let source = try await fixture.addSource(named: "Archive")
         let dnaStatuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [
@@ -3585,6 +4820,32 @@ struct AppModelTests {
             try await model.reload()
         }
         #expect(diagnostics.values.map(\.category) == [.reload])
+    }
+
+    @Test @MainActor func removeSourcePropagatesNonPersonCancellationWithDocumentLoadDiagnostic() async throws {
+        let fixture = try AppModelFixture()
+        let retained = try await fixture.addSource(named: "Retained")
+        let removed = try await fixture.addSource(named: "Removed")
+        let dnaStatuses = ScriptedDocumentDNAStatusLoader(stepsBySource: [
+            retained.id: [.statuses([]), .statuses([]), .cancellation],
+        ])
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            dnaStatuses: dnaStatuses,
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        await model.selectSource(id: retained.id)
+
+        await model.removeSource(removed)
+
+        #expect(model.lastErrorCode == "documentLoadFailure")
+        #expect(diagnostics.values.map(\.category) == [.documentLoad])
     }
 
     @Test @MainActor func overlappingScanDoesNotStartTwiceOrPublishIdleEarly() async throws {
@@ -3797,7 +5058,7 @@ struct AppModelTests {
         await model.refreshSelectedDossier()
 
         #expect(await service.snapshotInvocationCount == invocationCount)
-        #expect(model.dossierDetailState == .available(snapshot))
+        #expect(model.dossierDetailState == .available(.costsAndPayments(snapshot)))
         sourceAccess.releaseBookmarkCreation()
         await add.value
     }
@@ -3960,6 +5221,113 @@ struct AppModelTests {
         #expect(model.unavailableSourceIDs == [unavailable.id])
         #expect(await scheduler.startedSourceRecords == [available])
         #expect(try await fixture.sources.all() == [unavailable, available])
+    }
+
+    @Test @MainActor func staleRenewalFailureAfterRemovalCannotPublishAvailabilityOrDiagnostic() async throws {
+        let fixture = try AppModelFixture()
+        let access = AppStaleBookmarkSourceAccess(blockAccess: true)
+        let sourceURL = fixture.directory.appendingPathComponent("Archive", isDirectory: true)
+        let source = try await fixture.sources.add(
+            url: sourceURL,
+            sourceAccess: access,
+            now: Date(timeIntervalSince1970: 100)
+        )
+        access.markStale(source.bookmarkData, resolvingTo: sourceURL)
+        let scheduler = FakeSourceWatchScheduler()
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: access,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler,
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+
+        let reload = Task { try? await model.reload() }
+        await access.waitUntilAccessCount(1)
+        await model.removeSource(source)
+        access.failResolution(of: source.bookmarkData)
+        await access.releaseAccess()
+        await reload.value
+
+        #expect(model.sources.isEmpty)
+        #expect(model.unavailableSourceIDs.isEmpty)
+        #expect(await scheduler.startedSourceRecords.isEmpty)
+        #expect(!(await scheduler.isWatching(sourceID: source.id)))
+        #expect(diagnostics.values.isEmpty)
+    }
+
+    @Test @MainActor func preStartMembershipChangePreventsRetainedWatcherStart() async throws {
+        let fixture = try AppModelFixture()
+        let access = AppStaleBookmarkSourceAccess(blockAccess: true)
+        let removed = try await fixture.sources.add(
+            url: fixture.directory.appendingPathComponent("A", isDirectory: true),
+            sourceAccess: access,
+            now: Date(timeIntervalSince1970: 100)
+        )
+        let retainedURL = fixture.directory.appendingPathComponent("B", isDirectory: true)
+        let retained = try await fixture.sources.add(
+            url: retainedURL,
+            sourceAccess: access,
+            now: Date(timeIntervalSince1970: 200)
+        )
+        access.markStale(retained.bookmarkData, resolvingTo: retainedURL)
+        let scheduler = FakeSourceWatchScheduler()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: access,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler
+        )
+
+        let reload = Task { try? await model.reload() }
+        await access.waitUntilAccessCount(1)
+        await model.removeSource(removed)
+        await access.releaseAccess()
+        await reload.value
+
+        #expect(model.sources == [retained])
+        #expect(model.unavailableSourceIDs.isEmpty)
+        #expect(await scheduler.startedSourceRecords == [removed])
+        #expect(!(await scheduler.isWatching(sourceID: retained.id)))
+    }
+
+    @Test @MainActor func staleAvailabilityProbeForRetainedSourceForcesFreshWatcherStart() async throws {
+        let fixture = try AppModelFixture()
+        let retained = try await fixture.addSource(named: "B")
+        let removed = try await fixture.addSource(named: "A")
+        let scheduler = FakeSourceWatchScheduler()
+        let diagnostics = RuntimeDiagnosticRecorder()
+        let model = AppModel(
+            sources: fixture.sources,
+            documents: fixture.documents,
+            sourceAccess: fixture.sourceAccess,
+            catalog: FakeCatalogScanner(),
+            ingestion: FakePendingIngester(),
+            watchScheduler: scheduler,
+            sourceResolver: { _ in fixture.directory },
+            reportRuntimeFailure: { diagnostics.record($0) }
+        )
+        try await model.reload()
+        await model.stopWatching()
+        await scheduler.blockNextAvailabilityProbe()
+
+        let reload = Task { try? await model.reload() }
+        await scheduler.waitUntilAvailabilityProbeStarts()
+        await model.removeSource(removed)
+        await scheduler.releaseAvailabilityProbe()
+        await reload.value
+        try await model.reload()
+
+        #expect(model.sources == [retained])
+        #expect(model.unavailableSourceIDs.isEmpty)
+        #expect(await scheduler.isWatching(sourceID: retained.id))
+        #expect(await scheduler.startedSourceRecords.filter { $0.id == retained.id }.count == 3)
+        #expect(diagnostics.values.isEmpty)
     }
 
     @Test @MainActor func rootLifecycleEventsUpdateOnlySourceAvailabilityState() async throws {
@@ -4709,6 +6077,9 @@ private actor FakeSourceWatchScheduler: SourceWatchScheduling {
     private var activeSourceIDs = Set<UUID>()
     private let rootUnavailableDuringStart: Bool
     private var availabilityProbeCount = 0
+    private var blockedStartSourceID: UUID?
+    private var blockedStartContinuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
     private var shouldBlockNextAvailabilityProbe = false
     private var blockedAvailabilityProbeContinuation: CheckedContinuation<Void, Never>?
     private var availabilityProbeStartWaiters: [CheckedContinuation<Void, Never>] = []
@@ -4724,6 +6095,12 @@ private actor FakeSourceWatchScheduler: SourceWatchScheduling {
     }
 
     func start(source: SourceRootRecord, url: URL) async {
+        if blockedStartSourceID == source.id {
+            startWaiters.forEach { $0.resume() }
+            startWaiters.removeAll()
+            await withCheckedContinuation { blockedStartContinuation = $0 }
+            blockedStartSourceID = nil
+        }
         startedSources.append(WatchedSource(sourceID: source.id, path: url.path))
         startedSourceRecords.append(source)
         activeSourceIDs.insert(source.id)
@@ -4753,6 +6130,20 @@ private actor FakeSourceWatchScheduler: SourceWatchScheduling {
 
     func blockNextAvailabilityProbe() {
         shouldBlockNextAvailabilityProbe = true
+    }
+
+    func blockStart(sourceID: UUID) {
+        blockedStartSourceID = sourceID
+    }
+
+    func waitUntilStartBegins() async {
+        guard blockedStartContinuation == nil else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func releaseStart() {
+        blockedStartContinuation?.resume()
+        blockedStartContinuation = nil
     }
 
     func waitUntilAvailabilityProbeStarts() async {
@@ -4819,6 +6210,135 @@ private actor BlockingCatalogScanner: CatalogScanning {
     func releaseScan() {
         continuation?.resume()
         continuation = nil
+    }
+}
+
+private actor BlockingFailingCatalogScanner: CatalogScanning {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func scan(source: SourceRootRecord) async throws {
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        await withCheckedContinuation { continuation = $0 }
+        throw AppModelTestError.scanFailed
+    }
+
+    func waitUntilScanStarts() async {
+        guard continuation == nil else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func releaseScan() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
+private actor BlockingCancellationPhase: CatalogScanning, PendingIngesting {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func scan(source: SourceRootRecord) async throws {
+        try await blockThenCancel()
+    }
+
+    func processPending(source: SourceRootRecord) async throws {
+        try await blockThenCancel()
+    }
+
+    func waitUntilPhaseStarts() async {
+        guard continuation == nil else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func releasePhase() {
+        continuation?.resume()
+        continuation = nil
+    }
+
+    private func blockThenCancel() async throws {
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        await withCheckedContinuation { continuation = $0 }
+        throw CancellationError()
+    }
+}
+
+private actor BlockingSuccessfulPhase: CatalogScanning, PendingIngesting {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func scan(source: SourceRootRecord) async throws {
+        await block()
+    }
+
+    func processPending(source: SourceRootRecord) async throws {
+        await block()
+    }
+
+    func waitUntilPhaseStarts() async {
+        guard continuation == nil else { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func releasePhase() {
+        continuation?.resume()
+        continuation = nil
+    }
+
+    private func block() async {
+        startWaiters.forEach { $0.resume() }
+        startWaiters.removeAll()
+        await withCheckedContinuation { continuation = $0 }
+    }
+}
+
+private actor InvocationRecordingIngester: PendingIngesting {
+    private(set) var invocationCount = 0
+
+    func processPending(source: SourceRootRecord) async throws {
+        invocationCount += 1
+    }
+}
+
+private actor ThreePhaseDossierSummaryLoader: DossierLoading {
+    private let failsThirdSummary: Bool
+    private var callCount = 0
+    private var thirdContinuation: CheckedContinuation<Void, Never>?
+    private var thirdStartWaiters: [CheckedContinuation<Void, Never>] = []
+
+    init(failsThirdSummary: Bool = false) {
+        self.failsThirdSummary = failsThirdSummary
+    }
+
+    func summaries() async throws -> [DossierSummary] {
+        callCount += 1
+        if callCount == 3 {
+            if failsThirdSummary {
+                throw AppModelTestError.dossierLoadFailed
+            }
+            thirdStartWaiters.forEach { $0.resume() }
+            thirdStartWaiters.removeAll()
+            await withCheckedContinuation { thirdContinuation = $0 }
+        }
+        return []
+    }
+
+    func entryDisposition(for documentID: UUID) async throws -> DossierEntryDisposition { .create }
+
+    func snapshot(id: UUID) async throws -> DossierSnapshot {
+        throw AppModelTestError.dossierLoadFailed
+    }
+
+    func waitUntilThirdSummaryStarts() async {
+        guard callCount < 3 else { return }
+        await withCheckedContinuation { thirdStartWaiters.append($0) }
+    }
+
+    func releaseThirdSummary() {
+        thirdContinuation?.resume()
+        thirdContinuation = nil
     }
 }
 
@@ -5488,6 +7008,10 @@ private actor ScriptedDocumentDNAStatusLoader: DocumentDNAStatusLoading {
         releaseWaiters.forEach { $0.resume() }
         releaseWaiters.removeAll()
     }
+
+    func setSteps(_ steps: [Step], sourceID: UUID) {
+        stepsBySource[sourceID] = steps
+    }
 }
 
 private actor ScriptedDocumentDNASnapshotLoader: DocumentDNASnapshotLoading {
@@ -5496,6 +7020,7 @@ private actor ScriptedDocumentDNASnapshotLoader: DocumentDNASnapshotLoading {
         case failure
         case cancellation
         case blocked(Result<DocumentDNA?, AppModelTestError>)
+        case blockedCancellation
     }
 
     private var stepsByDocument: [UUID: [Step]]
@@ -5524,6 +7049,12 @@ private actor ScriptedDocumentDNASnapshotLoader: DocumentDNASnapshotLoading {
             startWaiters.removeAll()
             await withCheckedContinuation { releaseWaiters.append($0) }
             return try result.get()
+        case .blockedCancellation:
+            blockedLoadStarted = true
+            startWaiters.forEach { $0.resume() }
+            startWaiters.removeAll()
+            await withCheckedContinuation { releaseWaiters.append($0) }
+            throw CancellationError()
         }
     }
 
@@ -5536,6 +7067,10 @@ private actor ScriptedDocumentDNASnapshotLoader: DocumentDNASnapshotLoading {
         releaseWaiters.forEach { $0.resume() }
         releaseWaiters.removeAll()
     }
+
+    func setSteps(_ steps: [Step], documentID: UUID) {
+        stepsByDocument[documentID] = steps
+    }
 }
 
 private actor ScriptedInvoicePaymentCandidateLoader: InvoicePaymentCandidateLoading {
@@ -5543,6 +7078,7 @@ private actor ScriptedInvoicePaymentCandidateLoader: InvoicePaymentCandidateLoad
         case candidates([InvoicePaymentCandidateWithDecision])
         case failure
         case blocked(Result<[InvoicePaymentCandidateWithDecision], AppModelTestError>)
+        case blockedCancellation
     }
 
     private var stepsByDocument: [UUID: [Step]]
@@ -5571,6 +7107,12 @@ private actor ScriptedInvoicePaymentCandidateLoader: InvoicePaymentCandidateLoad
             startWaiters.removeAll()
             await withCheckedContinuation { releaseWaiters.append($0) }
             return try result.get()
+        case .blockedCancellation:
+            blockedLoadStarted = true
+            startWaiters.forEach { $0.resume() }
+            startWaiters.removeAll()
+            await withCheckedContinuation { releaseWaiters.append($0) }
+            throw CancellationError()
         }
     }
 
@@ -5582,6 +7124,10 @@ private actor ScriptedInvoicePaymentCandidateLoader: InvoicePaymentCandidateLoad
     func releaseBlockedLoad() {
         releaseWaiters.forEach { $0.resume() }
         releaseWaiters.removeAll()
+    }
+
+    func setSteps(_ steps: [Step], documentID: UUID) {
+        stepsByDocument[documentID] = steps
     }
 }
 
@@ -5638,6 +7184,11 @@ private actor ScriptedInvoicePaymentDecisionUpdater: InvoicePaymentDecisionUpdat
     func releaseBlockedUpdate() {
         releaseWaiters.forEach { $0.resume() }
         releaseWaiters.removeAll()
+    }
+
+    func releaseNextBlockedUpdate() {
+        guard !releaseWaiters.isEmpty else { return }
+        releaseWaiters.removeFirst().resume()
     }
 }
 
@@ -5782,6 +7333,8 @@ private struct DossierNavigationContext {
     let annotatedCandidate: InvoicePaymentCandidateWithDecision
     let snapshot: DossierSnapshot
     let statuses: ScriptedDocumentDNAStatusLoader
+    let dnaSnapshots: ScriptedDocumentDNASnapshotLoader
+    let candidates: ScriptedInvoicePaymentCandidateLoader
     let service: ScriptedDossierService
     let scheduler: FakeSourceWatchScheduler
     let blockingWatcherSourceLoader: CancellationResistantFirstSourceLoader?
@@ -5790,7 +7343,12 @@ private struct DossierNavigationContext {
     static func make(
         crossSource: Bool,
         paymentStatusBehavior: DossierMemberStatusBehavior = .ready,
-        blockFirstWatcherSourceLoad: Bool = false
+        blockFirstWatcherSourceLoad: Bool = false,
+        sourceRemovalGate: SourceRemovalCommitGate? = nil,
+        watcherStopGate: SourceRemovalCommitGate? = nil,
+        throwingSourceRemoval: Bool = false,
+        diagnostics: RuntimeDiagnosticRecorder? = nil,
+        invoicePaymentDecisions: InvoicePaymentDecisionUpdating? = nil
     ) async throws -> Self {
         let fixture = try AppModelFixture()
         let invoiceSource = try await fixture.addSource(named: "Invoices")
@@ -5876,6 +7434,31 @@ private struct DossierNavigationContext {
         ])
         let service = ScriptedDossierService()
         let scheduler = FakeSourceWatchScheduler()
+        let sourceRemovalOperation: (@Sendable (UUID) async throws -> Void)?
+        if throwingSourceRemoval {
+            sourceRemovalOperation = { _ in
+                if let sourceRemovalGate {
+                    await sourceRemovalGate.block(.delete)
+                }
+                throw AppModelTestError.scanFailed
+            }
+        } else if let sourceRemovalGate {
+            sourceRemovalOperation = { sourceID in
+                await sourceRemovalGate.block(.delete)
+                try await fixture.sources.remove(id: sourceID)
+            }
+        } else {
+            sourceRemovalOperation = nil
+        }
+        let watcherStopOperation: (@Sendable (UUID) async -> Void)?
+        if let watcherStopGate {
+            watcherStopOperation = { sourceID in
+                await watcherStopGate.block(.watcherStop)
+                await scheduler.stop(sourceID: sourceID)
+            }
+        } else {
+            watcherStopOperation = nil
+        }
         let blockingWatcherSourceLoader = blockFirstWatcherSourceLoad
             ? CancellationResistantFirstSourceLoader(
                 snapshot: crossSource ? [invoiceSource, paymentSource] : [invoiceSource]
@@ -5894,11 +7477,15 @@ private struct DossierNavigationContext {
                 dnaStatuses: statuses,
                 dnaSnapshots: dnaSnapshots,
                 invoicePaymentCandidates: candidates,
+                invoicePaymentDecisions: invoicePaymentDecisions,
                 dossierLoader: service,
                 dossierMutator: service,
                 watchScheduler: scheduler,
                 sourceResolver: { _ in fixture.directory },
-                sourceLoader: { await blockingWatcherSourceLoader.load() }
+                sourceLoader: { await blockingWatcherSourceLoader.load() },
+                sourceRemovalOperation: sourceRemovalOperation,
+                watcherStopOperation: watcherStopOperation,
+                reportRuntimeFailure: { diagnostics?.record($0) }
             )
         } else {
             model = AppModel(
@@ -5910,9 +7497,14 @@ private struct DossierNavigationContext {
                 dnaStatuses: statuses,
                 dnaSnapshots: dnaSnapshots,
                 invoicePaymentCandidates: candidates,
+                invoicePaymentDecisions: invoicePaymentDecisions,
                 dossierLoader: service,
                 dossierMutator: service,
-                watchScheduler: scheduler
+                watchScheduler: scheduler,
+                sourceResolver: { _ in fixture.directory },
+                sourceRemovalOperation: sourceRemovalOperation,
+                watcherStopOperation: watcherStopOperation,
+                reportRuntimeFailure: { diagnostics?.record($0) }
             )
         }
         try await model.reload()
@@ -5930,6 +7522,8 @@ private struct DossierNavigationContext {
             annotatedCandidate: annotatedCandidate,
             snapshot: snapshot,
             statuses: statuses,
+            dnaSnapshots: dnaSnapshots,
+            candidates: candidates,
             service: service,
             scheduler: scheduler,
             blockingWatcherSourceLoader: blockingWatcherSourceLoader,
@@ -5951,6 +7545,7 @@ private actor ScriptedDossierService: DossierLoading, DossierMutating {
         case failure
         case cancellation
         case blocked(Result<DossierSnapshot, AppModelTestError>)
+        case blockedCancellation
         case blockedDossierFailure(DossierRepositoryError)
         case dossierFailure(DossierRepositoryError)
     }
@@ -5960,6 +7555,14 @@ private actor ScriptedDossierService: DossierLoading, DossierMutating {
         case failure
         case cancellation
         case blocked(Result<DossierSnapshot, AppModelTestError>)
+    }
+
+    enum EntryStep: Sendable {
+        case disposition(DossierEntryDisposition)
+        case failure
+        case cancellation
+        case blocked(Result<DossierEntryDisposition, AppModelTestError>)
+        case blockedCancellation
     }
 
     struct ExcludeInvocation: Sendable, Equatable {
@@ -5978,11 +7581,15 @@ private actor ScriptedDossierService: DossierLoading, DossierMutating {
     private var snapshotSteps: [SnapshotStep] = []
     private var excludeSteps: [MutationStep] = []
     private var resetSteps: [MutationStep] = []
+    private var entrySteps: [EntryStep] = []
     private var summariesValue: [DossierSummary] = []
     private(set) var snapshotInvocationCount = 0
     private var blockedOperationStarted = false
     private var operationStartWaiters: [CheckedContinuation<Void, Never>] = []
     private var operationReleaseWaiters: [CheckedContinuation<Void, Never>] = []
+    private var blockedEntryStarted = false
+    private var entryStartWaiters: [CheckedContinuation<Void, Never>] = []
+    private var entryReleaseWaiters: [CheckedContinuation<Void, Never>] = []
     private(set) var openInvocationCount = 0
     private(set) var excludeInvocations: [ExcludeInvocation] = []
     private(set) var resetInvocations: [ResetInvocation] = []
@@ -6007,10 +7614,28 @@ private actor ScriptedDossierService: DossierLoading, DossierMutating {
         resetSteps = steps
     }
 
+    func setEntrySteps(_ steps: [EntryStep]) {
+        entrySteps = steps
+    }
+
     func summaries() async throws -> [DossierSummary] { summariesValue }
 
     func entryDisposition(for documentID: UUID) async throws -> DossierEntryDisposition {
-        .create
+        let step = entrySteps.isEmpty ? .disposition(.create) : entrySteps.removeFirst()
+        switch step {
+        case .disposition(let disposition):
+            return disposition
+        case .failure:
+            throw AppModelTestError.dossierLoadFailed
+        case .cancellation:
+            throw CancellationError()
+        case .blocked(let result):
+            await blockEntry()
+            return try result.get()
+        case .blockedCancellation:
+            await blockEntry()
+            throw CancellationError()
+        }
     }
 
     func snapshot(id: UUID) async throws -> DossierSnapshot {
@@ -6026,6 +7651,9 @@ private actor ScriptedDossierService: DossierLoading, DossierMutating {
         case .blocked(let result):
             await blockOperation()
             return try result.get()
+        case .blockedCancellation:
+            await blockOperation()
+            throw CancellationError()
         case .blockedDossierFailure(let error):
             await blockOperation()
             throw error
@@ -6089,11 +7717,29 @@ private actor ScriptedDossierService: DossierLoading, DossierMutating {
         blockedOperationStarted = false
     }
 
+    func waitUntilBlockedEntryStarts() async {
+        guard !blockedEntryStarted else { return }
+        await withCheckedContinuation { entryStartWaiters.append($0) }
+    }
+
+    func releaseBlockedEntry() {
+        entryReleaseWaiters.forEach { $0.resume() }
+        entryReleaseWaiters.removeAll()
+        blockedEntryStarted = false
+    }
+
     private func blockOperation() async {
         blockedOperationStarted = true
         operationStartWaiters.forEach { $0.resume() }
         operationStartWaiters.removeAll()
         await withCheckedContinuation { operationReleaseWaiters.append($0) }
+    }
+
+    private func blockEntry() async {
+        blockedEntryStarted = true
+        entryStartWaiters.forEach { $0.resume() }
+        entryStartWaiters.removeAll()
+        await withCheckedContinuation { entryReleaseWaiters.append($0) }
     }
 
     private func run(_ step: MutationStep) async throws -> DossierSnapshot {
@@ -6378,6 +8024,29 @@ private final class AppStaleBookmarkSourceAccess: SourceAccessing, @unchecked Se
     ) async throws -> T {
         await accessGate?.waitUntilReleased()
         return try await operation(resolve(bookmark).url)
+    }
+}
+
+private final class ToggleSourceResolver: @unchecked Sendable {
+    private let lock = NSLock()
+    private let url: URL
+    private var shouldFail = false
+
+    init(url: URL) {
+        self.url = url
+    }
+
+    func fail() {
+        lock.withLock { shouldFail = true }
+    }
+
+    func resolve(_ source: SourceRootRecord) throws -> URL {
+        try lock.withLock {
+            guard !shouldFail else {
+                throw AppModelTestError.scanFailed
+            }
+            return url
+        }
     }
 }
 
