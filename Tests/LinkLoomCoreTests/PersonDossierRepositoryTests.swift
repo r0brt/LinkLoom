@@ -5,6 +5,33 @@ import Testing
 
 @Suite("Person dossier repository")
 struct PersonDossierRepositoryTests {
+    @Test func submillisecondOriginRemainsCurrentAfterCreateAndReload() async throws {
+        let fixture = try await PersonDossierFixture.make()
+        let person = try fixture.personFinding(qualifier: PersonDossierRole.resident.rawValue)
+        let analyzedAt = Date(timeIntervalSinceReferenceDate: 123_456_789.1234567)
+        let current = try await fixture.insertSnapshot(
+            path: "submillisecond-origin.pdf",
+            findings: [person],
+            documentType: .correspondence,
+            analyzedAt: analyzedAt
+        )
+        let repository = fixture.makeDossierRepository()
+        let result = try await repository.createOrOpenPersonDossier(
+            from: fixture.selection(current: current, finding: person)
+        )
+        guard case .opened(let created) = result else {
+            Issue.record("Expected a newly opened person dossier")
+            return
+        }
+        #expect(created.anchor.originDNAAnalyzedAt == analyzedAt)
+        #expect(created.origin.validity == .current)
+
+        let reloaded = try await fixture.makeDossierRepository()
+            .personDossierSnapshot(id: created.dossier.id)
+        #expect(reloaded.anchor.originDNAAnalyzedAt == analyzedAt)
+        #expect(reloaded.origin.validity == .current)
+    }
+
     @Test func loadsCompleteSnapshotWithBoundedIndexedReads() async throws {
         let values = try await PersistedPersonDossierScenario.make()
         let trace = PersonDossierRepositorySQLTrace()
