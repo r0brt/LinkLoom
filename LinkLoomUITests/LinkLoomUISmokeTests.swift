@@ -475,6 +475,20 @@ final class LinkLoomUISmokeTests: XCTestCase {
 
             let costsEntry = element("document-dna.costs-dossier", in: app)
             requireExists(costsEntry, timeout: 30, description: "costs dossier action")
+            let inspectorScroll = inspector.scrollViews.firstMatch
+            let splitterCount = app.splitters.count
+            XCTAssertGreaterThan(splitterCount, 0, "Document inspector splitter is unavailable")
+            requireFullyVisibleInInspector(
+                costsEntry,
+                scrollingIn: inspectorScroll,
+                splitter: app.splitters.element(boundBy: splitterCount - 1),
+                window: app.windows.firstMatch,
+                description: "costs dossier action"
+            )
+            XCTAssertTrue(
+                inspectorScroll.frame.contains(costsEntry.frame),
+                "Costs entry must be inside inspector viewport before clicking: entry=\(costsEntry.frame), viewport=\(inspectorScroll.frame), window=\(app.windows.firstMatch.frame)"
+            )
             costsEntry.click()
             requireExists(element("dossier.workspace", in: app), timeout: 20, description: "costs dossier workspace")
             XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
