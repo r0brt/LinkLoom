@@ -545,6 +545,24 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 element("dossier.person.anchor", in: app),
                 description: "person dossier anchor"
             )
+            let anchorElement = element("dossier.person.anchor", in: app)
+            let expectedAnchorLabel = "Elise Muster Rolle: Bewohnerin. Ursprungsnachweis aktuell Verfügbar"
+            let requiredChildIDs = [
+                "dossier.person.member.\(anchorID)",
+                "dossier.person.member.\(anchorID).reason.0",
+                "dossier.person.member.remove.\(insuranceID)",
+                "dossier.person.member.\(paymentID).counterpart",
+                "dossier.person.suggestion.\(authorizationID)",
+                "dossier.person.suggestion.accept.\(authorizationID)",
+                "dossier.person.suggestion.reject.\(authorizationID)",
+            ]
+            let missingChildIDs = requiredChildIDs.filter { !element($0, in: app).exists }
+            XCTAssertTrue(
+                anchorElement.elementType == .other
+                    && anchorElement.label == expectedAnchorLabel
+                    && missingChildIDs.isEmpty,
+                "Person accessibility contract: anchor type=\(anchorElement.elementType.rawValue), label=\(anchorElement.label), value=\(String(describing: anchorElement.value)); missing individual IDs=\(missingChildIDs)"
+            )
             requireLabel("Elise Muster Rolle: Bewohnerin. Ursprungsnachweis aktuell Verfügbar", for: element("dossier.person.anchor", in: app))
             requireExists(
                 element("dossier.person.direct-members", in: app),

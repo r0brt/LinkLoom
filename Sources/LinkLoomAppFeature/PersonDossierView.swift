@@ -118,7 +118,7 @@ public struct PersonDossierView: View {
                     .foregroundStyle(.secondary)
             }
         }
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel(presentation.accessibilityLabel)
         .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.anchor)
     }
@@ -143,6 +143,7 @@ public struct PersonDossierView: View {
                 }
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(identifier)
     }
 
@@ -173,6 +174,8 @@ public struct PersonDossierView: View {
                     Text(reason)
                         .font(.caption)
                         .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(reason)
                         .accessibilityIdentifier(presentation.reasonAccessibilityIdentifiers[ordinal])
                 }
             }
@@ -232,6 +235,7 @@ public struct PersonDossierView: View {
                 suggestionRow(suggestion, snapshot: snapshot)
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.suggestions)
     }
 
@@ -298,6 +302,7 @@ public struct PersonDossierView: View {
                 correctionRow(correction, snapshot: snapshot)
             }
         }
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.corrections)
     }
 
