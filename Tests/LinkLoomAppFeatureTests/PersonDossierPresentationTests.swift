@@ -455,6 +455,108 @@ struct PersonDossierPresentationTests {
     }
 }
 
+extension PersonDossierPresentationTests {
+    @Test func suggestionsExplainSecondaryRoleAndBirthDateConflictWithoutTechnicalMetadata() throws {
+        let values = try PersonDossierNavigationValues.make(originSourceID: UUID(), otherSourceID: UUID())
+        let suggestion = try #require(values.snapshot.suggestions.first)
+        let secondary = PersonDossierSuggestionPresentation(suggestion: suggestion, selectedSourceID: nil)
+        #expect(secondary.reason == "Der Name stimmt exakt, erscheint aber nur in der Rolle Bevollmächtigte.")
+        #expect(secondary.roleTitle == "Bevollmächtigte")
+        #expect(secondary.location == "Other archive · suggestion.pdf")
+        #expect(secondary.accessibilityLabel == "Other archive · suggestion.pdf. Dokumenttyp: Unbekannt. Verfügbar. Elise Muster, Rolle: Bevollmächtigte. Der Name stimmt exakt, erscheint aber nur in der Rolle Bevollmächtigte. Aufnehmen oder ablehnen.")
+
+        let birth = try finding(kind: .date, qualifier: "birthDate", display: "01.01.1940", normalized: "1940-01-01")
+        let anchorBirth = try PersonDossierBirthDate(displayValue: "02.02.1941", normalizedValue: "1941-02-02", evidence: birth.evidence)
+        let direct = try #require(values.snapshot.directMembers.first)
+        let person = try exactSupport(#require(direct.supports.first))
+        let support = try PersonDossierCandidateSupportIdentity(kind: .birthDateConflict, person: person, conflict: .hardBirthDateConflict(anchor: anchorBirth, candidate: birth))
+        let conflictRow = try PersonDossierSuggestion(document: direct.document, sourceDisplayName: direct.sourceDisplayName, documentType: direct.documentType, section: direct.section, kind: .birthDateConflict, conflict: support.conflict, currentSupports: [support], commandSupport: support)
+        let conflict = PersonDossierSuggestionPresentation(suggestion: conflictRow, selectedSourceID: direct.document.sourceRootID)
+        #expect(conflict.reason == "Der Name stimmt, aber dieses Dokument nennt ein anderes Geburtsdatum.")
+        #expect(conflict.location == "direct.pdf")
+        for label in [secondary.accessibilityLabel, conflict.accessibilityLabel] {
+            #expect(!label.contains("hash"))
+            #expect(!label.contains("1940"))
+            #expect(!label.contains(suggestion.id.uuidString))
+        }
+    }
+
+    @Test func correctionLabelsDistinguishConfirmationAndExclusion() throws {
+        let values = try PersonDossierNavigationValues.make(originSourceID: UUID(), otherSourceID: UUID())
+        let correction = try #require(values.snapshot.corrections.first)
+        let exclusion = PersonDossierCorrectionPresentation(correction: correction, selectedSourceID: correction.document.sourceRootID)
+        let confirmation = try DossierMembershipConfirmation(dossierID: values.snapshot.dossier.id, documentID: correction.id, revisionID: UUID(), confirmedAt: Date(), candidateKind: .secondaryRole, acceptedContentHash: correction.document.contentHash, acceptedExtractionVersion: "text-v1", acceptedDNASchemaVersion: 1, acceptedDNAAnalyzerIdentifier: "local-rules", acceptedDNAAnalyzerVersion: "1", acceptedDNAAnalyzedAt: Date(), acceptedRole: .authorizedPerson, acceptedNormalizedName: "elise muster")
+        let confirmed = PersonDossierCorrectionPresentation(correction: try PersonDossierCorrection(document: correction.document, sourceDisplayName: correction.sourceDisplayName, documentType: correction.documentType, decision: .confirmation(confirmation)), selectedSourceID: nil)
+        #expect(exclusion.resetTitle == "Ausschluss zurücksetzen")
+        #expect(exclusion.decisionTitle == "Von dir ausgeschlossen")
+        #expect(exclusion.accessibilityLabel == "correction.pdf. Dokumenttyp: Unbekannt. Verfügbar. Von dir ausgeschlossen. Ausschluss zurücksetzen.")
+        #expect(confirmed.resetTitle == "Aufnahme zurücksetzen")
+        #expect(confirmed.decisionTitle == "Von dir aufgenommen")
+        #expect(confirmed.accessibilityLabel == "Archive · correction.pdf. Dokumenttyp: Unbekannt. Verfügbar. Von dir aufgenommen. Aufnahme zurücksetzen.")
+    }
+
+    @Test func mutationOutcomesResolvePublishedRowsAndPrivacySafeAnnouncements() throws {
+        let values = try PersonDossierNavigationValues.make(originSourceID: UUID(), otherSourceID: UUID())
+        let snapshot = values.snapshot
+        #expect(PersonDossierMutationOutcome.accepted(values.direct.id, in: snapshot) == .init(focus: .member(values.direct.id), announcement: "Dokument aufgenommen."))
+        #expect(PersonDossierMutationOutcome.rejected(values.correction.id, in: snapshot) == .init(focus: .correction(values.correction.id), announcement: "Vorschlag abgelehnt."))
+        #expect(PersonDossierMutationOutcome.removed(values.correction.id, in: snapshot) == .init(focus: .correction(values.correction.id), announcement: "Dokument aus dem Dossier entfernt."))
+        #expect(PersonDossierMutationOutcome.reset(values.direct.id, in: snapshot) == .init(focus: .member(values.direct.id), announcement: "Korrektur zurückgesetzt."))
+        #expect(PersonDossierMutationOutcome.reset(values.payment.id, in: snapshot).focus == .member(values.payment.id))
+        #expect(PersonDossierMutationOutcome.reset(values.suggestion.id, in: snapshot).focus == .suggestion(values.suggestion.id))
+        let hidden = values.replacingSnapshot(directMembers: [], costsAndPayments: [], suggestions: [], corrections: [])
+        #expect(PersonDossierMutationOutcome.reset(values.correction.id, in: hidden).focus == .section(.corrections))
+        #expect(PersonDossierMutationOutcome.accepted(values.direct.id, in: hidden).focus == .section(.suggestions))
+        #expect(PersonDossierMutationOutcome.rejected(values.correction.id, in: hidden).focus == .section(.corrections))
+    }
+
+    @Test func mutationFeedbackRequiresSuccessfulChangedSnapshotInTheSameDossier() throws {
+        let values = try PersonDossierNavigationValues.make(originSourceID: UUID(), otherSourceID: UUID())
+        let previous = values.snapshot
+        let changed = values.replacingSnapshot(token: PersonDossierProjectionToken(dossierUpdatedAt: Date(), anchorUpdatedAt: previous.token.anchorUpdatedAt, originValidity: .current, documents: previous.token.documents, memberSupports: previous.token.memberSupports, suggestionSupports: previous.token.suggestionSupports, confirmationRevisionIDs: [UUID()], exclusionRevisionIDs: previous.token.exclusionRevisionIDs))
+        #expect(PersonDossierMutationOutcome.canPublish(after: previous, detail: .available(.personMatter(changed)), errorCode: nil, isCancelled: false))
+        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, detail: .available(.personMatter(previous)), errorCode: nil, isCancelled: false))
+        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, detail: .failed(dossierID: previous.dossier.id, previous: .personMatter(changed)), errorCode: nil, isCancelled: false))
+        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, detail: .available(.personMatter(changed)), errorCode: "dossierMutationStale", isCancelled: false))
+        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, detail: .available(.personMatter(changed)), errorCode: nil, isCancelled: true))
+        let other = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
+        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, detail: .available(.personMatter(other)), errorCode: nil, isCancelled: false))
+    }
+
+    @Test func mutationProgressMatchesBothDossierAndDocumentAndIdentifiersStayStable() {
+        let id = uuid("71000000-0000-0000-0000-0000000000AB")
+        let dossier = UUID()
+        for state: DossierMutationState in [.acceptingPerson(dossierID: dossier, documentID: id), .rejectingPerson(dossierID: dossier, documentID: id), .removingPerson(dossierID: dossier, documentID: id), .resettingPerson(dossierID: dossier, documentID: id)] {
+            #expect(PersonDossierMutationOutcome.isActive(state, dossierID: dossier, documentID: id))
+            #expect(!PersonDossierMutationOutcome.isActive(state, dossierID: UUID(), documentID: id))
+            #expect(!PersonDossierMutationOutcome.isActive(state, dossierID: dossier, documentID: UUID()))
+        }
+        #expect(!PersonDossierMutationOutcome.isActive(.idle, dossierID: dossier, documentID: id))
+        #expect(PersonDossierMutationOutcome.progressTarget(.acceptingPerson(dossierID: dossier, documentID: id), dossierID: dossier) == .suggestion(id))
+        #expect(PersonDossierMutationOutcome.progressTarget(.rejectingPerson(dossierID: dossier, documentID: id), dossierID: dossier) == .suggestion(id))
+        #expect(PersonDossierMutationOutcome.progressTarget(.removingPerson(dossierID: dossier, documentID: id), dossierID: dossier) == .member(id))
+        #expect(PersonDossierMutationOutcome.progressTarget(.resettingPerson(dossierID: dossier, documentID: id), dossierID: dossier) == .correction(id))
+        #expect(PersonDossierMutationOutcome.progressTarget(.resettingPerson(dossierID: dossier, documentID: id), dossierID: UUID()) == nil)
+        #expect(PersonDossierAccessibilityIdentifier.suggestions == "dossier.person.suggestions")
+        #expect(PersonDossierAccessibilityIdentifier.corrections == "dossier.person.corrections")
+        #expect(PersonDossierAccessibilityIdentifier.error == "dossier.person.error")
+        #expect(PersonDossierAccessibilityIdentifier.suggestion(id) == "dossier.person.suggestion.71000000-0000-0000-0000-0000000000ab")
+        #expect(PersonDossierAccessibilityIdentifier.acceptSuggestion(id) == "dossier.person.suggestion.accept.71000000-0000-0000-0000-0000000000ab")
+        #expect(PersonDossierAccessibilityIdentifier.rejectSuggestion(id) == "dossier.person.suggestion.reject.71000000-0000-0000-0000-0000000000ab")
+        #expect(PersonDossierAccessibilityIdentifier.correction(id) == "dossier.person.correction.71000000-0000-0000-0000-0000000000ab")
+        #expect(PersonDossierAccessibilityIdentifier.resetCorrection(id) == "dossier.person.correction.reset.71000000-0000-0000-0000-0000000000ab")
+    }
+
+    @Test func failedAndStaleMutationsExposeSafeFeedbackWhileKeepingTheCompleteSnapshot() throws {
+        let snapshot = try PersonDossierAppModelValues.make().snapshot
+        let detail = DossierDetailState.available(.personMatter(snapshot))
+        #expect(PersonDossierMutationOutcome.errorMessage(detail: detail, errorCode: "dossierMutationFailure") == "Die Dossier-Korrektur konnte nicht gespeichert werden. Bitte aktualisiere das Hauptdossier und versuche es erneut.")
+        #expect(PersonDossierMutationOutcome.errorMessage(detail: .failed(dossierID: snapshot.dossier.id, previous: .personMatter(snapshot)), errorCode: "dossierLoadFailure") == "Das Hauptdossier konnte nicht geladen werden. Bitte versuche es erneut.")
+        #expect(PersonDossierMutationOutcome.errorMessage(detail: detail, errorCode: nil) == nil)
+        #expect(PersonDossierMutationOutcome.errorMessage(detail: detail, errorCode: "/private/user-document-hash") == nil)
+    }
+}
+
 private extension PersonDossierPresentationTests {
     func uuid(_ value: String) -> UUID {
         UUID(uuidString: value)!

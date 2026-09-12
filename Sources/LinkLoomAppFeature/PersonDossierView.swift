@@ -1,8 +1,10 @@
+import AppKit
 import LinkLoomCore
 import SwiftUI
 
 public struct PersonDossierView: View {
     @ObservedObject var model: AppModel
+    @AccessibilityFocusState private var accessibilityFocus: PersonDossierFocusTarget?
 
     public init(model: AppModel) {
         self.model = model
@@ -12,6 +14,7 @@ public struct PersonDossierView: View {
         Group {
             if let snapshot = model.dossierDetailState.personSnapshot {
                 dossier(snapshot)
+                    .id(snapshot.dossier.id)
             } else {
                 emptyState
             }
@@ -41,15 +44,14 @@ public struct PersonDossierView: View {
         return ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 VStack(alignment: .leading, spacing: 8) {
-                    Text("Meine Mutter im Pflegeheim")
-                        .font(.largeTitle.bold())
+                    workspaceHeading
                     anchor(snapshot)
                 }
 
                 if isLoading {
                     ProgressView("Hauptdossier wird aktualisiert …")
                 }
-                if isFailed {
+                if errorMessage != nil {
                     errorState
                 }
 
@@ -70,9 +72,25 @@ public struct PersonDossierView: View {
                     documents: documents,
                     identifier: PersonDossierAccessibilityIdentifier.costs
                 )
+
+                suggestionSection(snapshot)
+                correctionSection(snapshot)
             }
             .padding()
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    @ViewBuilder
+    private var workspaceHeading: some View {
+        let heading = Text("Meine Mutter im Pflegeheim")
+            .font(.largeTitle.bold())
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityFocused($accessibilityFocus, equals: .workspace)
+        if #available(macOS 26, *) {
+            heading.accessibilityDefaultFocus($accessibilityFocus, .workspace)
+        } else {
+            heading.onAppear { accessibilityFocus = .workspace }
         }
     }
 
@@ -162,6 +180,7 @@ public struct PersonDossierView: View {
                 .buttonStyle(.plain)
                 .accessibilityLabel(presentation.documentSummaryAccessibilityLabel)
                 .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.member(member.id))
+                .accessibilityFocused($accessibilityFocus, equals: .member(member.id))
             }
 
             if let counterpartID = presentation.preferredCounterpartDocumentID {
@@ -177,23 +196,188 @@ public struct PersonDossierView: View {
 
             if member.id != snapshot.anchor.originDocumentID {
                 Button("Aus Dossier entfernen", role: .destructive) {
-                    Task { await model.removePersonDossierMember(member) }
+                    mutate(snapshot, outcome: { .removed(member.id, in: $0) }) {
+                        await model.removePersonDossierMember(member)
+                    }
                 }
                 .disabled(mutationIsInFlight)
+                .accessibilityLabel("Aus Dossier entfernen: \(presentation.location)")
                 .accessibilityIdentifier(
                     PersonDossierAccessibilityIdentifier.removeMember(member.id)
                 )
             }
+            mutationProgress(target: .member(member.id), snapshot: snapshot)
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
     }
 
+    private func suggestionSection(_ snapshot: PersonDossierSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Vorschläge")
+                .font(.title2.bold())
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityFocused($accessibilityFocus, equals: .section(.suggestions))
+            if snapshot.suggestions.isEmpty {
+                Text("Keine weiteren Vorschläge.").foregroundStyle(.secondary)
+            }
+            ForEach(snapshot.suggestions) { suggestion in
+                suggestionRow(suggestion, snapshot: snapshot)
+            }
+        }
+        .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.suggestions)
+    }
+
+    private func suggestionRow(_ suggestion: PersonDossierSuggestion, snapshot: PersonDossierSnapshot) -> some View {
+        let presentation = PersonDossierSuggestionPresentation(suggestion: suggestion, selectedSourceID: model.selectedSourceID)
+        return VStack(alignment: .leading, spacing: 10) {
+            Button {
+                Task { await model.selectPersonDossierDocument(documentID: suggestion.id) }
+            } label: {
+                VStack(alignment: .leading, spacing: 6) {
+                    rowSummary(location: presentation.location, type: presentation.documentTypeTitle, availability: presentation.availabilityTitle)
+                    Text("Rolle: \(presentation.roleTitle)").font(.caption.weight(.semibold))
+                    Text(presentation.reason).font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(presentation.accessibilityLabel)
+            .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.suggestion(suggestion.id))
+            .accessibilityFocused($accessibilityFocus, equals: .suggestion(suggestion.id))
+            ViewThatFits(in: .horizontal) {
+                HStack { suggestionActions(suggestion, snapshot: snapshot, location: presentation.location) }
+                VStack(alignment: .leading) { suggestionActions(suggestion, snapshot: snapshot, location: presentation.location) }
+            }
+            mutationProgress(target: .suggestion(suggestion.id), snapshot: snapshot)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private func suggestionActions(_ suggestion: PersonDossierSuggestion, snapshot: PersonDossierSnapshot, location: String) -> some View {
+        Button("Aufnehmen") {
+            mutate(snapshot, outcome: { .accepted(suggestion.id, in: $0) }) {
+                await model.acceptPersonDossierSuggestion(suggestion)
+            }
+        }
+        .disabled(mutationIsInFlight)
+        .accessibilityLabel("Aufnehmen: \(location)")
+        .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.acceptSuggestion(suggestion.id))
+        Button("Ablehnen", role: .destructive) {
+            mutate(snapshot, outcome: { .rejected(suggestion.id, in: $0) }) {
+                await model.rejectPersonDossierSuggestion(suggestion)
+            }
+        }
+        .disabled(mutationIsInFlight)
+        .accessibilityLabel("Ablehnen: \(location)")
+        .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.rejectSuggestion(suggestion.id))
+    }
+
+    private func correctionSection(_ snapshot: PersonDossierSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Korrekturen")
+                .font(.title2.bold())
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityFocused($accessibilityFocus, equals: .section(.corrections))
+            if snapshot.corrections.isEmpty {
+                Text("Noch keine Korrekturen.").foregroundStyle(.secondary)
+            }
+            ForEach(snapshot.corrections) { correction in
+                correctionRow(correction, snapshot: snapshot)
+            }
+        }
+        .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.corrections)
+    }
+
+    private func correctionRow(_ correction: PersonDossierCorrection, snapshot: PersonDossierSnapshot) -> some View {
+        let presentation = PersonDossierCorrectionPresentation(correction: correction, selectedSourceID: model.selectedSourceID)
+        return VStack(alignment: .leading, spacing: 10) {
+            Button {
+                Task { await model.selectPersonDossierDocument(documentID: correction.id) }
+            } label: {
+                VStack(alignment: .leading, spacing: 6) {
+                    rowSummary(location: presentation.location, type: presentation.documentTypeTitle, availability: presentation.availabilityTitle)
+                    Text(presentation.decisionTitle).font(.caption.weight(.semibold))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(presentation.accessibilityLabel)
+            .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.correction(correction.id))
+            .accessibilityFocused($accessibilityFocus, equals: .correction(correction.id))
+            Button(presentation.resetTitle) {
+                mutate(snapshot, outcome: { .reset(correction.id, in: $0) }) {
+                    await model.resetPersonDossierCorrection(correction)
+                }
+            }
+            .disabled(mutationIsInFlight)
+            .accessibilityLabel("\(presentation.resetTitle) für \(presentation.location)")
+            .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.resetCorrection(correction.id))
+            mutationProgress(target: .correction(correction.id), snapshot: snapshot)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    @ViewBuilder
+    private func rowSummary(location: String, type: String, availability: String) -> some View {
+        Text(location).font(.body.weight(.medium))
+            .fixedSize(horizontal: false, vertical: true)
+        Text("Dokumenttyp: \(type)").font(.caption).foregroundStyle(.secondary)
+        Text(availability).font(.caption).foregroundStyle(.secondary)
+    }
+
+    @ViewBuilder
+    private func mutationProgress(target: PersonDossierFocusTarget, snapshot: PersonDossierSnapshot) -> some View {
+        if PersonDossierMutationOutcome.progressTarget(model.dossierMutationState, dossierID: snapshot.dossier.id) == target {
+            ProgressView("Korrektur wird gespeichert …")
+                .font(.caption)
+        }
+    }
+
+    @MainActor
+    private func mutate(
+        _ previous: PersonDossierSnapshot,
+        outcome: @escaping (PersonDossierSnapshot) -> PersonDossierMutationOutcome,
+        operation: @escaping @MainActor () async -> Void
+    ) {
+        Task { @MainActor in
+            guard !Task.isCancelled, !mutationIsInFlight,
+                  model.workspaceSelection == .dossier(previous.dossier.id),
+                  model.dossierDetailState.personSnapshot?.token == previous.token else { return }
+            await operation()
+            guard PersonDossierMutationOutcome.canPublish(
+                after: previous,
+                detail: model.dossierDetailState,
+                errorCode: model.lastErrorCode,
+                isCancelled: Task.isCancelled
+            ), model.workspaceSelection == .dossier(previous.dossier.id),
+               let published = model.dossierDetailState.personSnapshot else { return }
+            let feedback = outcome(published)
+            accessibilityFocus = feedback.focus
+            NSAccessibility.post(
+                element: NSApp as Any,
+                notification: .announcementRequested,
+                userInfo: [
+                    .announcement: feedback.announcement,
+                    .priority: NSAccessibilityPriorityLevel.high.rawValue,
+                ]
+            )
+        }
+    }
+
     private var errorState: some View {
         VStack(alignment: .leading, spacing: 8) {
             Label(
-                model.lastErrorMessage
+                errorMessage
                     ?? "Das Hauptdossier konnte nicht geladen werden. Bitte versuche es erneut.",
                 systemImage: "exclamationmark.triangle"
             )
@@ -204,7 +388,7 @@ public struct PersonDossierView: View {
             .disabled(isLoading || mutationIsInFlight)
         }
         .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("dossier.person.error")
+        .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.error)
     }
 
     private func documentIndex(in snapshot: PersonDossierSnapshot) -> [UUID: DocumentRecord] {
@@ -222,7 +406,7 @@ public struct PersonDossierView: View {
         if case .loading = model.dossierDetailState { true } else { false }
     }
 
-    private var isFailed: Bool {
-        if case .failed = model.dossierDetailState { true } else { false }
+    private var errorMessage: String? {
+        PersonDossierMutationOutcome.errorMessage(detail: model.dossierDetailState, errorCode: model.lastErrorCode)
     }
 }

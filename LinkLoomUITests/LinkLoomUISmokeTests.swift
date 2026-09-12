@@ -445,7 +445,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
         let fixture = try SmokeFixture.personDossier()
         self.fixture = fixture
         let initialSnapshot = try fixture.snapshot()
-        let app = launch(fixture: fixture)
+        let app = launch(fixture: fixture, accessibilityText: true)
 
         try XCTContext.runActivity(named: "Create the costs dossier before opening a person dossier") { _ in
             let addButton = element("source.add", in: app)
@@ -477,6 +477,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireExists(costsEntry, timeout: 30, description: "costs dossier action")
             costsEntry.click()
             requireExists(element("dossier.workspace", in: app), timeout: 20, description: "costs dossier workspace")
+            XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
         }
 
         let probe = try SQLiteProbe(databaseURL: fixture.databaseURL)
@@ -485,6 +486,9 @@ final class LinkLoomUISmokeTests: XCTestCase {
         let ocrID = try probe.documentID(relativePath: "scan.png")
         let invoiceID = try probe.documentID(relativePath: "invoices/care-home-invoice.pdf")
         let paymentID = try probe.documentID(relativePath: "payments/payment-confirmation.pdf")
+        let authorizationID = try probe.documentID(relativePath: "power-of-attorney.pdf")
+        let conflictID = try probe.documentID(relativePath: "conflicting-insurance.pdf")
+        let costsDossierID = try probe.onlyDossierID(kind: "costsAndPayments")
 
         let personDossierID = try XCTContext.runActivity(
             named: "Create one person dossier from its primary anchor finding"
@@ -527,6 +531,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 element("dossier.person.anchor", in: app),
                 description: "person dossier anchor"
             )
+            requireLabel("Elise Muster Rolle: Bewohnerin. Ursprungsnachweis aktuell Verfügbar", for: element("dossier.person.anchor", in: app))
             requireExists(
                 element("dossier.person.direct-members", in: app),
                 description: "direct person dossier members"
@@ -561,9 +566,17 @@ final class LinkLoomUISmokeTests: XCTestCase {
                     "Organisation: Pflegeheim Sonnengarten ↔ Pflegeheim Sonnengarten",
                 ]),
             ]
+            let memberSummaries = [
+                anchorID: "anchor-care.pdf. Dokumenttyp: Medizin- oder Pflegedokument. Verfügbar. Direktes Dokument",
+                insuranceID: "insurance.pdf. Dokumenttyp: Versicherungsabrechnung. Verfügbar. Direktes Dokument",
+                ocrID: "scan.png. Dokumenttyp: Unbekannt. Verfügbar. Direktes Dokument",
+                invoiceID: "invoices/care-home-invoice.pdf. Dokumenttyp: Rechnung. Verfügbar. Kosten oder Zahlung",
+                paymentID: "payments/payment-confirmation.pdf. Dokumenttyp: Zahlungsbestätigung. Verfügbar. Kosten oder Zahlung",
+            ]
             for (documentID, reasons) in expectedReasons {
                 let member = element("dossier.person.member.\(documentID)", in: app)
                 requireExists(member, description: "person dossier member \(documentID)")
+                requireLabel(try XCTUnwrap(memberSummaries[documentID]) + ". " + reasons.joined(separator: " "), for: member)
                 for (ordinal, reason) in reasons.enumerated() {
                     let reasonElement = element(
                         "dossier.person.member.\(documentID).reason.\(ordinal)",
@@ -589,6 +602,19 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 scrollingIn: workspaceScrollView,
                 description: "payment member at 900-point width"
             )
+            for candidate in app.staticTexts.allElementsBoundByIndex.filter({
+                $0.identifier.contains(".reason.")
+            }) {
+                requireContained(candidate, scrollingIn: workspaceScrollView, in: app)
+            }
+            for documentID in [anchorID, insuranceID, ocrID, invoiceID, paymentID] {
+                requireContained(element("dossier.person.member.\(documentID)", in: app), scrollingIn: workspaceScrollView, in: app)
+            }
+            let longReason = element("dossier.person.member.\(paymentID).reason.0", in: app)
+            let shortReason = element("dossier.person.member.\(paymentID).reason.1", in: app)
+            XCTAssertGreaterThan(longReason.frame.height, shortReason.frame.height, "The relationship reason must wrap at accessibility text size")
+            requireContained(element("dossier.person.anchor", in: app), scrollingIn: workspaceScrollView, in: app)
+            attachPersonScreenshot("Initial person projection", in: app)
 
             let ocrMember = requirePersonDossierMember(
                 containing: "scan.png",
@@ -605,6 +631,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 )
             }
 
+            requireKeyboardReachable(ocrMember, in: app)
             ocrMember.click()
             requireExists(
                 element("document-dna.inspector", in: app),
@@ -618,6 +645,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
             let workspaceWithInspector = element("dossier.person.workspace", in: app)
             let workspaceWidthWithInspector = workspaceWithInspector.frame.width
             closeInspector(byReselecting: personRow, in: app)
+            XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
             requireExists(
                 element("dossier.person.workspace", in: app),
                 description: "person workspace after OCR navigation"
@@ -644,12 +672,14 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 description: "payment member inspector"
             )
             closeInspector(byReselecting: personRow, in: app)
+            XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
             let reloadedPayment = requirePersonDossierMember(
                 containing: "payments/payment-confirmation.pdf",
                 in: app
             )
             let counterpart = element("\(reloadedPayment.identifier).counterpart", in: app)
             requireExists(counterpart, description: "payment counterpart navigation")
+            requireKeyboardReachable(counterpart, in: app)
             counterpart.click()
             requireExists(
                 element("document-dna.inspector", in: app),
@@ -696,12 +726,132 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 description: "resolved same-name person dossier choice"
             )
 
-            let evidence = try SQLiteProbe(databaseURL: fixture.databaseURL).personDossierEvidence()
-            XCTAssertEqual(evidence.personAnchorCount, 1)
-            XCTAssertEqual(evidence.personDossierCount, 1)
+            XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
+        }
+
+        func mutate(_ identifier: String, in application: XCUIApplication) throws {
+            let button = element(identifier, in: application)
+            let scroll = requireDossierScrollView(containing: element("dossier.person.workspace", in: application), in: application)
+            requireContained(button, scrollingIn: scroll, in: application)
+            requireKeyboardReachable(button, in: application)
+            button.click()
+            XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
+        }
+        try XCTContext.runActivity(named: "Accept and reject suggestions, then remove and reset an automatic member") { _ in
+            let authorization = element("dossier.person.suggestion.\(authorizationID)", in: app)
+            requireExists(authorization, description: "secondary-role suggestion")
+            requireLabel("power-of-attorney.pdf. Dokumenttyp: Vollmacht. Verfügbar. Elise Muster, Rolle: Bevollmächtigte. Der Name stimmt exakt, erscheint aber nur in der Rolle Bevollmächtigte. Aufnehmen oder ablehnen.", for: authorization)
+            requireKeyboardReachable(authorization, in: app)
+            authorization.click()
+            requireExists(element("document-dna.inspector", in: app), description: "suggestion navigation")
+            closeInspector(byReselecting: element("dossier.row.\(personDossierID)", in: app), in: app)
+            XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
+            try mutate("dossier.person.suggestion.accept.\(authorizationID)", in: app)
+            requireDisappearance(authorization, timeout: 20, description: "accepted suggestion")
+            requireExists(element("dossier.person.member.\(authorizationID)", in: app), description: "accepted member")
+            requireExists(element("dossier.person.correction.\(authorizationID)", in: app), description: "confirmation correction")
+            let correction = element("dossier.person.correction.\(authorizationID)", in: app)
+            requireLabel("power-of-attorney.pdf. Dokumenttyp: Vollmacht. Verfügbar. Von dir aufgenommen. Aufnahme zurücksetzen.", for: correction)
+            requireKeyboardReachable(correction, in: app)
+            correction.click()
+            requireExists(element("document-dna.inspector", in: app), description: "correction navigation")
+            closeInspector(byReselecting: element("dossier.row.\(personDossierID)", in: app), in: app)
+            XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
+            requireLabel("Aufnahme zurücksetzen für power-of-attorney.pdf", for: element("dossier.person.correction.reset.\(authorizationID)", in: app))
+
+            let conflict = element("dossier.person.suggestion.\(conflictID)", in: app)
+            requireLabel("conflicting-insurance.pdf. Dokumenttyp: Versicherungsabrechnung. Verfügbar. Elise Muster, Rolle: Versicherte Person. Der Name stimmt, aber dieses Dokument nennt ein anderes Geburtsdatum. Aufnehmen oder ablehnen.", for: conflict)
+            try mutate("dossier.person.suggestion.reject.\(conflictID)", in: app)
+            requireDisappearance(conflict, timeout: 20, description: "rejected suggestion")
+            requireExists(element("dossier.person.correction.\(conflictID)", in: app), description: "exclusion correction")
+
+            try mutate("dossier.person.member.remove.\(insuranceID)", in: app)
+            requireDisappearance(element("dossier.person.member.\(insuranceID)", in: app), timeout: 20, description: "removed insurance member")
+            requireExists(element("dossier.person.correction.\(insuranceID)", in: app), description: "removed member correction")
+            requireLabel("Ausschluss zurücksetzen für insurance.pdf", for: element("dossier.person.correction.reset.\(insuranceID)", in: app))
+            try mutate("dossier.person.correction.reset.\(insuranceID)", in: app)
+            requireDisappearance(element("dossier.person.correction.\(insuranceID)", in: app), timeout: 20, description: "reset exclusion")
+            requireExists(element("dossier.person.member.\(insuranceID)", in: app), description: "restored automatic member")
+            requireCompletePersonProjection(in: app, members: [anchorID, insuranceID, ocrID, invoiceID, paymentID, authorizationID], corrections: [authorizationID, conflictID])
+            attachPersonScreenshot("Person decisions", in: app)
+            XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
         }
 
         terminateAndWait(app)
+        let persisted = try SQLiteProbe(databaseURL: fixture.databaseURL).personDossierEvidence()
+        XCTAssertEqual(persisted.sourceCount, 1)
+        XCTAssertEqual(persisted.documentCount, 8)
+        XCTAssertEqual(persisted.personAnchorCount, 1)
+        XCTAssertEqual(persisted.personAnchorEvidenceCount, 2)
+        XCTAssertEqual(persisted.personDossierCount, 1)
+        XCTAssertEqual(persisted.costsDossierCount, 1)
+        XCTAssertEqual(persisted.confirmationCount, 1)
+        XCTAssertEqual(persisted.exclusionCount, 1)
+        XCTAssertEqual(persisted.confirmedRelationshipCount, 1)
+        XCTAssertEqual(persisted.originDocumentStillCatalogued, 1)
+        XCTAssertEqual(try SQLiteProbe(databaseURL: fixture.databaseURL).personAnchorOriginDocumentID(), anchorID)
+        XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
+
+        let restarted = launch(fixture: fixture, accessibilityText: true)
+        let restoredRow = element("dossier.row.\(personDossierID)", in: restarted)
+        requireExists(restoredRow, timeout: 20, description: "person dossier after restart")
+        restoredRow.click()
+        requireCompletePersonProjection(in: restarted, members: [anchorID, insuranceID, ocrID, invoiceID, paymentID, authorizationID], corrections: [authorizationID, conflictID])
+        attachPersonScreenshot("Person projection after restart", in: restarted)
+        XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
+        terminateAndWait(restarted)
+
+        try SQLiteTestDatabaseMutator.makeDocumentDNAFailureRetryable(databaseURL: fixture.databaseURL, relativePath: "anchor-care.pdf")
+        XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
+        let reanalyzed = launch(fixture: fixture, accessibilityText: true)
+        let reanalyzedRow = element("dossier.row.\(personDossierID)", in: reanalyzed)
+        requireExists(reanalyzedRow, timeout: 20, description: "person dossier before reanalysis")
+        reanalyzedRow.click()
+        requireExists(reanalyzed.staticTexts["Ursprungsnachweis veraltet"].firstMatch, description: "stale origin before retry")
+        sourceRow(in: reanalyzed).click()
+        let origin = element("documents.table", in: reanalyzed).staticTexts["anchor-care.pdf"].firstMatch
+        requireExists(origin, description: "catalogued origin before retry")
+        origin.click()
+        let retry = reanalyzed.buttons["Erneut analysieren"].firstMatch
+        requireExists(retry, timeout: 20, description: "retry failed anchor DNA")
+        requireExists(reanalyzed.staticTexts["Document DNA nicht verfügbar"].firstMatch, description: "safe analysis failure title")
+        requireExists(reanalyzed.staticTexts["Das Originaldokument bleibt unverändert."].firstMatch, description: "safe analysis failure explanation")
+        XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
+        retry.click()
+        requireDisappearance(retry, timeout: 60, description: "completed anchor reanalysis")
+        closeInspector(byReselecting: reanalyzedRow, in: reanalyzed)
+        requireCompletePersonProjection(in: reanalyzed, members: [anchorID, insuranceID, ocrID, invoiceID, paymentID, authorizationID], corrections: [authorizationID, conflictID])
+        XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
+
+        sourceRow(in: reanalyzed).rightClick()
+        let removeSource = reanalyzed.menuItems["Quelle entfernen"]
+        requireExists(removeSource, description: "visible source removal")
+        removeSource.click()
+        requireDisappearance(sourceRow(in: reanalyzed), timeout: 20, description: "removed source")
+        requireDisappearance(element("dossier.row.\(costsDossierID)", in: reanalyzed), timeout: 20, description: "removed costs dossier")
+        requireExists(reanalyzedRow, description: "durable person dossier after source removal")
+        requireExists(element("dossier.person.workspace", in: reanalyzed), description: "durable person workspace")
+        requireExists(reanalyzed.staticTexts["Ursprungsnachweis nicht verfügbar"].firstMatch, description: "unavailable origin")
+        requireCompletePersonProjection(in: reanalyzed, members: [], corrections: [])
+        attachPersonScreenshot("Person projection with unavailable origin", in: reanalyzed)
+        terminateAndWait(reanalyzed)
+        let finalProbe = try SQLiteProbe(databaseURL: fixture.databaseURL)
+        let removed = try finalProbe.personDossierEvidence()
+        XCTAssertEqual(removed.sourceCount, 0)
+        XCTAssertEqual(removed.documentCount, 0)
+        XCTAssertEqual(removed.personAnchorCount, 1)
+        XCTAssertEqual(removed.personAnchorEvidenceCount, 2)
+        XCTAssertEqual(removed.personDossierCount, 1)
+        XCTAssertEqual(removed.costsDossierCount, 0)
+        XCTAssertEqual(removed.confirmationCount, 0)
+        XCTAssertEqual(removed.exclusionCount, 0)
+        XCTAssertEqual(removed.confirmedRelationshipCount, 0)
+        XCTAssertEqual(removed.originDocumentStillCatalogued, 0)
+        XCTAssertEqual(try finalProbe.personAnchorOriginDocumentID(), anchorID)
+        let catalog = try finalProbe.collectEvidence()
+        for count in [catalog.documentCount, catalog.extractionCount, catalog.extractedPageCount, catalog.ftsCount, catalog.dnaSnapshotCount, catalog.dnaFindingCount, catalog.dnaEvidenceCount, catalog.dnaAnalysisStateCount, catalog.invoicePaymentDecisionCount, catalog.dossierExclusionCount] {
+            XCTAssertEqual(count, 0)
+        }
         XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
     }
 
@@ -842,7 +992,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
     }
 
     @discardableResult
-    private func launch(fixture: SmokeFixture, failsStartupOnce: Bool = false) -> XCUIApplication {
+    private func launch(fixture: SmokeFixture, failsStartupOnce: Bool = false, accessibilityText: Bool = false) -> XCUIApplication {
         let application = XCUIApplication()
         application.launchArguments = [
             "--linkloom-ui-test-database", fixture.databaseURL.path,
@@ -851,6 +1001,9 @@ final class LinkLoomUISmokeTests: XCTestCase {
         ]
         if failsStartupOnce {
             application.launchArguments.append("--linkloom-ui-test-fail-startup-once")
+        }
+        if accessibilityText {
+            application.launchArguments.append("--linkloom-ui-test-accessibility-text")
         }
         application.launch()
         application.activate()
@@ -1016,6 +1169,52 @@ final class LinkLoomUISmokeTests: XCTestCase {
             window.frame.maxX,
             "\(description) extends beyond the window's right edge"
         )
+    }
+
+    private func attachPersonScreenshot(_ name: String, in app: XCUIApplication) {
+        let attachment = XCTAttachment(screenshot: app.windows.firstMatch.screenshot())
+        attachment.name = name
+        attachment.lifetime = .keepAlways
+        add(attachment)
+    }
+
+    private func requireCompletePersonProjection(in app: XCUIApplication, members: [String], corrections: [String]) {
+        let memberRows = app.buttons.matching(NSPredicate(format: "identifier MATCHES %@", "dossier\\.person\\.member\\.[0-9a-f-]{36}"))
+        let correctionRows = app.buttons.matching(NSPredicate(format: "identifier MATCHES %@", "dossier\\.person\\.correction\\.[0-9a-f-]{36}"))
+        let suggestionRows = app.buttons.matching(NSPredicate(format: "identifier MATCHES %@", "dossier\\.person\\.suggestion\\.[0-9a-f-]{36}"))
+        let expectedMembers = Set(members.map { "dossier.person.member.\($0)" })
+        let expectedCorrections = Set(corrections.map { "dossier.person.correction.\($0)" })
+        let expectation = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+            Set(memberRows.allElementsBoundByIndex.map { $0.identifier }) == expectedMembers
+                && Set(correctionRows.allElementsBoundByIndex.map { $0.identifier }) == expectedCorrections
+                && suggestionRows.count == 0
+        }, object: nil)
+        XCTAssertEqual(XCTWaiter.wait(for: [expectation], timeout: 60), .completed, "Incomplete person projection: \(app.debugDescription)")
+    }
+
+    private func requireKeyboardReachable(_ target: XCUIElement, in app: XCUIApplication) {
+        requireExists(target, description: "keyboard target \(target.identifier)")
+        let scroll = requireDossierScrollView(containing: element("dossier.person.workspace", in: app), in: app)
+        requireHittable(target, scrollingIn: scroll, description: "keyboard target \(target.identifier)")
+        let bound = app.buttons.allElementsBoundByIndex.filter { $0.isHittable }.count
+        let focused = NSPredicate(format: "hasKeyboardFocus == true")
+        for _ in 0..<max(1, bound) {
+            app.typeKey(.tab, modifierFlags: [])
+            let expectation = XCTNSPredicateExpectation(predicate: focused, object: target)
+            if XCTWaiter.wait(for: [expectation], timeout: 0.2) == .completed { return }
+        }
+        let attachment = XCTAttachment(string: app.debugDescription)
+        attachment.name = "Keyboard traversal failure"
+        attachment.lifetime = .keepAlways
+        add(attachment)
+        XCTFail("\(target.identifier) was not keyboard reachable in \(bound) visible buttons")
+    }
+
+    private func requireContained(_ target: XCUIElement, scrollingIn scroll: XCUIElement, in app: XCUIApplication) {
+        requireExists(target, description: "layout target \(target.identifier)")
+        scrollVerticallyUntilVisible(target, in: scroll, description: target.identifier)
+        XCTAssertTrue(app.windows.firstMatch.frame.contains(target.frame), "Outside window: \(target.identifier), \(target.frame)")
+        XCTAssertTrue(scroll.frame.contains(target.frame), "Outside viewport: \(target.identifier), \(target.frame)")
     }
 
     private func requireHittable(

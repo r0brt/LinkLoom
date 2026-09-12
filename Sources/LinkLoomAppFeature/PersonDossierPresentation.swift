@@ -181,6 +181,29 @@ enum PersonDossierAccessibilityIdentifier {
     static let anchor = "dossier.person.anchor"
     static let directMembers = "dossier.person.direct-members"
     static let costs = "dossier.person.costs"
+    static let suggestions = "dossier.person.suggestions"
+    static let corrections = "dossier.person.corrections"
+    static let error = "dossier.person.error"
+
+    static func suggestion(_ id: UUID) -> String {
+        "dossier.person.suggestion.\(persistedString(id))"
+    }
+
+    static func acceptSuggestion(_ id: UUID) -> String {
+        "dossier.person.suggestion.accept.\(persistedString(id))"
+    }
+
+    static func rejectSuggestion(_ id: UUID) -> String {
+        "dossier.person.suggestion.reject.\(persistedString(id))"
+    }
+
+    static func correction(_ id: UUID) -> String {
+        "dossier.person.correction.\(persistedString(id))"
+    }
+
+    static func resetCorrection(_ id: UUID) -> String {
+        "dossier.person.correction.reset.\(persistedString(id))"
+    }
 
     static func member(_ documentID: UUID) -> String {
         "dossier.person.member.\(persistedString(documentID))"
@@ -200,6 +223,157 @@ enum PersonDossierAccessibilityIdentifier {
 
     private static func persistedString(_ id: UUID) -> String {
         id.uuidString.lowercased()
+    }
+}
+
+struct PersonDossierSuggestionPresentation: Equatable {
+    let location: String
+    let documentTypeTitle: String
+    let availabilityTitle: String
+    let roleTitle: String
+    let reason: String
+    let accessibilityLabel: String
+
+    init(suggestion: PersonDossierSuggestion, selectedSourceID: UUID?) {
+        location = suggestion.document.sourceRootID == selectedSourceID
+            ? suggestion.document.relativePath
+            : "\(suggestion.sourceDisplayName) · \(suggestion.document.relativePath)"
+        documentTypeTitle = suggestion.documentType.map(DocumentDNADetailPresentation.title)
+            ?? "Nicht verfügbar"
+        availabilityTitle = DossierMemberPresentation.availabilityTitle(for: suggestion.document.availability)
+        roleTitle = PersonDossierPresentationTitle.role(for: suggestion.commandSupport.person.role)
+        reason = switch suggestion.kind {
+        case .secondaryRole:
+            "Der Name stimmt exakt, erscheint aber nur in der Rolle \(roleTitle)."
+        case .birthDateConflict:
+            "Der Name stimmt, aber dieses Dokument nennt ein anderes Geburtsdatum."
+        }
+        accessibilityLabel = "\(location). Dokumenttyp: \(documentTypeTitle). \(availabilityTitle). \(suggestion.commandSupport.person.finding.displayValue), Rolle: \(roleTitle). \(reason) Aufnehmen oder ablehnen."
+    }
+}
+
+struct PersonDossierCorrectionPresentation: Equatable {
+    let location: String
+    let documentTypeTitle: String
+    let availabilityTitle: String
+    let decisionTitle: String
+    let resetTitle: String
+    let accessibilityLabel: String
+
+    init(correction: PersonDossierCorrection, selectedSourceID: UUID?) {
+        location = correction.document.sourceRootID == selectedSourceID
+            ? correction.document.relativePath
+            : "\(correction.sourceDisplayName) · \(correction.document.relativePath)"
+        documentTypeTitle = correction.documentType.map(DocumentDNADetailPresentation.title)
+            ?? "Nicht verfügbar"
+        availabilityTitle = DossierMemberPresentation.availabilityTitle(for: correction.document.availability)
+        switch correction.decision {
+        case .confirmation:
+            decisionTitle = "Von dir aufgenommen"
+            resetTitle = "Aufnahme zurücksetzen"
+        case .exclusion:
+            decisionTitle = "Von dir ausgeschlossen"
+            resetTitle = "Ausschluss zurücksetzen"
+        }
+        accessibilityLabel = "\(location). Dokumenttyp: \(documentTypeTitle). \(availabilityTitle). \(decisionTitle). \(resetTitle)."
+    }
+}
+
+enum PersonDossierSectionFocus: Hashable {
+    case suggestions, corrections
+}
+
+enum PersonDossierFocusTarget: Hashable {
+    case workspace
+    case member(UUID)
+    case suggestion(UUID)
+    case correction(UUID)
+    case section(PersonDossierSectionFocus)
+}
+
+struct PersonDossierMutationOutcome: Equatable {
+    let focus: PersonDossierFocusTarget
+    let announcement: String
+
+    static func accepted(_ id: UUID, in snapshot: PersonDossierSnapshot) -> Self {
+        Self(focus: memberExists(id, in: snapshot) ? .member(id) : .section(.suggestions), announcement: "Dokument aufgenommen.")
+    }
+
+    static func rejected(_ id: UUID, in snapshot: PersonDossierSnapshot) -> Self {
+        Self(focus: correctionFocus(id, in: snapshot), announcement: "Vorschlag abgelehnt.")
+    }
+
+    static func removed(_ id: UUID, in snapshot: PersonDossierSnapshot) -> Self {
+        Self(focus: correctionFocus(id, in: snapshot), announcement: "Dokument aus dem Dossier entfernt.")
+    }
+
+    static func reset(_ id: UUID, in snapshot: PersonDossierSnapshot) -> Self {
+        let focus: PersonDossierFocusTarget
+        if memberExists(id, in: snapshot) {
+            focus = .member(id)
+        } else if snapshot.suggestions.contains(where: { $0.id == id }) {
+            focus = .suggestion(id)
+        } else {
+            focus = .section(.corrections)
+        }
+        return Self(focus: focus, announcement: "Korrektur zurückgesetzt.")
+    }
+
+    static func canPublish(
+        after previous: PersonDossierSnapshot,
+        detail: DossierDetailState,
+        errorCode: String?,
+        isCancelled: Bool
+    ) -> Bool {
+        guard !isCancelled, errorCode == nil,
+              case let .available(.personMatter(current)) = detail else { return false }
+        return current.dossier.id == previous.dossier.id && current.token != previous.token
+    }
+
+    static func errorMessage(detail: DossierDetailState, errorCode: String?) -> String? {
+        if errorCode == "dossierMutationFailure" {
+            return "Die Dossier-Korrektur konnte nicht gespeichert werden. Bitte aktualisiere das Hauptdossier und versuche es erneut."
+        }
+        if case .failed = detail {
+            return "Das Hauptdossier konnte nicht geladen werden. Bitte versuche es erneut."
+        }
+        return nil
+    }
+
+    static func isActive(_ state: DossierMutationState, dossierID: UUID, documentID: UUID) -> Bool {
+        switch state {
+        case let .acceptingPerson(dossier, document), let .rejectingPerson(dossier, document),
+             let .removingPerson(dossier, document), let .resettingPerson(dossier, document):
+            dossier == dossierID && document == documentID
+        default: false
+        }
+    }
+
+    static func progressTarget(_ state: DossierMutationState, dossierID: UUID) -> PersonDossierFocusTarget? {
+        let documentID: UUID
+        let target: PersonDossierFocusTarget
+        switch state {
+        case let .acceptingPerson(_, id), let .rejectingPerson(_, id):
+            documentID = id
+            target = .suggestion(id)
+        case let .removingPerson(_, id):
+            documentID = id
+            target = .member(id)
+        case let .resettingPerson(_, id):
+            documentID = id
+            target = .correction(id)
+        default:
+            return nil
+        }
+        return isActive(state, dossierID: dossierID, documentID: documentID) ? target : nil
+    }
+
+    private static func memberExists(_ id: UUID, in snapshot: PersonDossierSnapshot) -> Bool {
+        (snapshot.directMembers + snapshot.costsAndPayments).contains { $0.id == id }
+    }
+
+    private static func correctionFocus(_ id: UUID, in snapshot: PersonDossierSnapshot) -> PersonDossierFocusTarget {
+        snapshot.corrections.contains { $0.id == id } ? .correction(id) : .section(.corrections)
     }
 }
 
