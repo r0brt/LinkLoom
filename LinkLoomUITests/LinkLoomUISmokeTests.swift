@@ -574,10 +574,20 @@ final class LinkLoomUISmokeTests: XCTestCase {
             )
 
             let personRow = element("dossier.row.\(dossierID)", in: app)
-            requireExists(
-                personRow.staticTexts["Meine Mutter im Pflegeheim"].firstMatch,
-                description: "fixed person dossier sidebar title"
-            )
+            for (id, expectedLabel) in [
+                (costsDossierID, "Kosten und Zahlungen. invoices/care-home-invoice.pdf"),
+                (dossierID, "Meine Mutter im Pflegeheim. Elise Muster"),
+            ] {
+                let rows = app.descendants(matching: .any)
+                    .matching(identifier: "dossier.row.\(id)")
+                let descriptions = rows.allElementsBoundByIndex.map {
+                    "type=\($0.elementType.rawValue), label=\($0.label), value=\(String(describing: $0.value))"
+                }
+                XCTAssertTrue(
+                    rows.count == 1 && rows.firstMatch.label == expectedLabel,
+                    "Sidebar row must have one ID and its full semantic title/subtitle: expected=\(expectedLabel), count=\(rows.count), actual=\(descriptions)"
+                )
+            }
             let expectedReasons = [
                 (anchorID, [
                     "Der Name ‹Elise Muster› stimmt exakt mit dem Personenanker überein. Rolle: Bewohnerin.",
@@ -1099,8 +1109,8 @@ final class LinkLoomUISmokeTests: XCTestCase {
         let candidates = app.buttons.matching(
             NSCompoundPredicate(andPredicateWithSubpredicates: [
                 NSPredicate(format: "identifier BEGINSWITH %@", "dossier.person.member."),
-                NSPredicate(format: "identifier NOT CONTAINS %@", ".counterpart"),
-                NSPredicate(format: "identifier NOT CONTAINS %@", ".remove"),
+                NSPredicate(format: "NOT (identifier CONTAINS %@)", ".counterpart"),
+                NSPredicate(format: "NOT (identifier CONTAINS %@)", ".remove"),
             ])
         ).allElementsBoundByIndex
         guard let member = candidates.first(where: { $0.label.contains(path) }) else {

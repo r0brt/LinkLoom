@@ -23,6 +23,8 @@ public struct WorkspaceSidebar: View {
                             .foregroundStyle(.secondary)
                     }
                     .tag(AppWorkspaceSelection.dossier(item.id))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(item.dossier.displayName). \(item.subtitle)")
                     .accessibilityIdentifier(
                         DossierAccessibilityIdentifier.row(item.id)
                     )
