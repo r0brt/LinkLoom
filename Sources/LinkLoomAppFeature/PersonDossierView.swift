@@ -78,8 +78,7 @@ public struct PersonDossierView: View {
 
     private func anchor(_ snapshot: PersonDossierSnapshot) -> some View {
         let presentation = PersonDossierAnchorPresentation(
-            snapshot: snapshot,
-            selectedSourceID: model.selectedSourceID
+            snapshot: snapshot
         )
         return VStack(alignment: .leading, spacing: 4) {
             Text(presentation.displayName)
@@ -137,35 +136,29 @@ public struct PersonDossierView: View {
             Button {
                 Task { await model.selectPersonDossierDocument(documentID: member.id) }
             } label: {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(presentation.location)
-                        .font(.body.weight(.medium))
-                    Text("Dokumenttyp: \(presentation.documentTypeTitle)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(presentation.availabilityTitle)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text(presentation.membershipRoleTitle)
-                        .font(.caption.weight(.semibold))
-                    ForEach(Array(presentation.reasons.enumerated()), id: \.offset) { ordinal, reason in
-                        Text(reason)
-                            .font(.caption)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .accessibilityIdentifier(
-                                PersonDossierAccessibilityIdentifier.reason(
-                                    member.id,
-                                    ordinal: ordinal
-                                )
-                            )
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+                Text(presentation.location)
+                    .font(.body.weight(.medium))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel(presentation.accessibilityLabel)
             .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.member(member.id))
+
+            Text("Dokumenttyp: \(presentation.documentTypeTitle)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(presentation.availabilityTitle)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(presentation.membershipRoleTitle)
+                .font(.caption.weight(.semibold))
+            ForEach(Array(presentation.reasons.enumerated()), id: \.offset) { ordinal, reason in
+                Text(reason)
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier(presentation.reasonAccessibilityIdentifiers[ordinal])
+            }
 
             if let counterpartID = presentation.preferredCounterpartDocumentID {
                 Button("Gegenstück anzeigen") {

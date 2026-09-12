@@ -245,8 +245,7 @@ struct PersonDossierPresentationTests {
     @Test func anchorPresentationNamesCurrentStaleAndUnavailableOriginStates() throws {
         let values = try PersonDossierAppModelValues.make()
         let current = PersonDossierAnchorPresentation(
-            snapshot: values.snapshot,
-            selectedSourceID: values.document.sourceRootID
+            snapshot: values.snapshot
         )
         let staleSnapshot = values.snapshot.replacingOrigin(
             try PersonDossierOriginState(
@@ -266,17 +265,42 @@ struct PersonDossierPresentationTests {
         #expect(current.evidenceValidityTitle == "Ursprungsnachweis aktuell")
         #expect(current.sourceAvailabilityTitle == "Verfügbar")
         #expect(PersonDossierAnchorPresentation(
-            snapshot: staleSnapshot,
-            selectedSourceID: values.document.sourceRootID
+            snapshot: staleSnapshot
         ).evidenceValidityTitle == "Ursprungsnachweis veraltet")
         #expect(PersonDossierAnchorPresentation(
-            snapshot: unavailableSnapshot,
-            selectedSourceID: values.document.sourceRootID
+            snapshot: unavailableSnapshot
         ).evidenceValidityTitle == "Ursprungsnachweis nicht verfügbar")
         #expect(PersonDossierAnchorPresentation(
-            snapshot: unavailableSnapshot,
-            selectedSourceID: values.document.sourceRootID
+            snapshot: unavailableSnapshot
         ).sourceAvailabilityTitle == nil)
+    }
+
+    @Test func anchorPresentationMapsUnavailableAndMissingOriginDocumentsWithoutLeakingMetadata() throws {
+        let values = try PersonDossierAppModelValues.make()
+        var unavailableDocument = values.document
+        unavailableDocument.availability = .unavailable
+        var missingDocument = values.document
+        missingDocument.availability = .missing
+
+        let unavailable = PersonDossierAnchorPresentation(
+            snapshot: values.snapshot.replacingOrigin(try PersonDossierOriginState(
+                validity: .current,
+                document: unavailableDocument,
+                sourceDisplayName: "Archive"
+            ))
+        )
+        let missing = PersonDossierAnchorPresentation(
+            snapshot: values.snapshot.replacingOrigin(try PersonDossierOriginState(
+                validity: .current,
+                document: missingDocument,
+                sourceDisplayName: "Archive"
+            ))
+        )
+
+        #expect(unavailable.sourceAvailabilityTitle == "Vorübergehend nicht verfügbar")
+        #expect(missing.sourceAvailabilityTitle == "Fehlt")
+        #expect(!unavailable.accessibilityLabel.contains(values.document.contentHash))
+        #expect(!missing.accessibilityLabel.contains("1970"))
     }
 
     @Test func memberPresentationShowsLocationsAvailabilityAndOrderedReasons() throws {
@@ -308,6 +332,106 @@ struct PersonDossierPresentationTests {
         ])
         #expect(!directPresentation.reasons.joined().contains(direct.id.uuidString))
         #expect(!directPresentation.accessibilityLabel.contains(direct.id.uuidString))
+    }
+
+    @Test func memberPresentationRetainsManualAndPaymentReasonsInSupportOrderWithoutMetadataLeaks() throws {
+        let sourceID = uuid("71000000-0000-0000-0000-000000000040")
+        let values = try PersonDossierNavigationValues.make(
+            originSourceID: sourceID,
+            otherSourceID: uuid("71000000-0000-0000-0000-000000000041")
+        )
+        let suggestion = try #require(values.snapshot.suggestions.first)
+        let candidate = try #require(suggestion.currentSupports.first)
+        let confirmation = try DossierMembershipConfirmation(
+            dossierID: values.snapshot.dossier.id,
+            documentID: suggestion.document.id,
+            revisionID: uuid("71000000-0000-0000-0000-000000000042"),
+            confirmedAt: Date(timeIntervalSince1970: 900),
+            candidateKind: candidate.kind,
+            acceptedContentHash: candidate.person.contentHash,
+            acceptedExtractionVersion: candidate.person.extractionVersion,
+            acceptedDNASchemaVersion: candidate.person.dnaSchemaVersion,
+            acceptedDNAAnalyzerIdentifier: candidate.person.dnaAnalyzerIdentifier,
+            acceptedDNAAnalyzerVersion: candidate.person.dnaAnalyzerVersion,
+            acceptedDNAAnalyzedAt: candidate.person.dnaAnalyzedAt,
+            acceptedRole: candidate.person.role,
+            acceptedNormalizedName: candidate.person.normalizedName
+        )
+        let manual = try PersonDossierMember(
+            document: suggestion.document,
+            sourceDisplayName: suggestion.sourceDisplayName,
+            documentType: suggestion.documentType,
+            section: suggestion.section,
+            supports: [.manualConfirmation(
+                confirmation: confirmation,
+                currentCandidate: candidate
+            )],
+            isConfirmationAuthoritative: true,
+            preferredPaymentSupport: nil
+        )
+        let staleManual = try PersonDossierMember(
+            document: suggestion.document,
+            sourceDisplayName: suggestion.sourceDisplayName,
+            documentType: suggestion.documentType,
+            section: suggestion.section,
+            supports: [.manualConfirmation(
+                confirmation: confirmation,
+                currentCandidate: nil
+            )],
+            isConfirmationAuthoritative: true,
+            preferredPaymentSupport: nil
+        )
+        let invoice = try #require(values.snapshot.costsAndPayments.first {
+            $0.document.relativePath == "invoice.pdf"
+        })
+        let invoiceSupport = try #require(invoice.supports.first)
+        let payment = try paymentMember(
+            values: values,
+            invoice: invoice,
+            invoiceSupport: invoiceSupport
+        )
+        let documents = values.snapshot.allDocuments.merging([
+            payment.id: payment.document,
+        ]) { _, replacement in replacement }
+
+        let manualPresentation = PersonDossierMemberPresentation(
+            member: manual,
+            selectedSourceID: sourceID,
+            documents: documents
+        )
+        let staleManualPresentation = PersonDossierMemberPresentation(
+            member: staleManual,
+            selectedSourceID: sourceID,
+            documents: documents
+        )
+        let paymentPresentation = PersonDossierMemberPresentation(
+            member: payment,
+            selectedSourceID: sourceID,
+            documents: documents
+        )
+
+        #expect(manualPresentation.reasons == ["Von dir aus einem Vorschlag aufgenommen."])
+        #expect(staleManualPresentation.reasons == [
+            "Von dir aus einem Vorschlag aufgenommen.",
+            "Der ursprüngliche Vorschlagsnachweis ist nicht mehr aktuell.",
+        ])
+        #expect(paymentPresentation.reasons == [
+            "Zahlung über die Rechnung ‹invoice.pdf›. Der Name der Rechnung stimmt exakt mit dem Personenanker überein.",
+            "Referenz: RE-42 ↔ RE-42",
+            "Betrag und Währung: CHF 12.50 ↔ CHF 12.50",
+            "Organisation: Pflegeheim ↔ Pflegeheim",
+        ])
+        #expect(paymentPresentation.reasonAccessibilityIdentifiers == [
+            "dossier.person.member.71000000-0000-0000-0000-000000000043.reason.0",
+            "dossier.person.member.71000000-0000-0000-0000-000000000043.reason.1",
+            "dossier.person.member.71000000-0000-0000-0000-000000000043.reason.2",
+            "dossier.person.member.71000000-0000-0000-0000-000000000043.reason.3",
+        ])
+        for presentation in [manualPresentation, staleManualPresentation, paymentPresentation] {
+            #expect(!presentation.accessibilityLabel.contains("hash"))
+            #expect(!presentation.accessibilityLabel.contains("1970"))
+            #expect(!presentation.accessibilityLabel.contains(presentation.documentID.uuidString))
+        }
     }
 
     @Test func memberIdentifiersUseLowercasePersistedUUIDs() {
@@ -469,6 +593,99 @@ private extension PersonDossierPresentationTests {
                 updatedAt: timestamp
             ),
             anchor: anchor
+        )
+    }
+
+    func paymentMember(
+        values: PersonDossierNavigationValues,
+        invoice: PersonDossierMember,
+        invoiceSupport: PersonDossierMembershipSupport
+    ) throws -> PersonDossierMember {
+        let paymentDocument = DocumentRecord(
+            id: uuid("71000000-0000-0000-0000-000000000043"),
+            sourceRootID: invoice.document.sourceRootID,
+            relativePath: "payment.pdf",
+            contentHash: "payment-hash",
+            byteCount: 1,
+            modifiedAt: Date(timeIntervalSince1970: 900),
+            mediaType: .pdf,
+            status: .ready,
+            availability: .available,
+            pageCount: 1,
+            lastSeenAt: Date(timeIntervalSince1970: 900),
+            lastFingerprintAt: Date(timeIntervalSince1970: 900)
+        )
+        let relationship = DossierMembershipSupportIdentity(
+            decisionKey: try InvoicePaymentDecisionKey(
+                relationshipType: .paymentSettlesInvoice,
+                invoiceDocumentID: invoice.id,
+                paymentDocumentID: paymentDocument.id,
+                invoiceContentHash: invoice.document.contentHash,
+                paymentContentHash: paymentDocument.contentHash
+            ),
+            decisionUpdatedAt: Date(timeIntervalSince1970: 900),
+            invoiceDNAAnalyzedAt: Date(timeIntervalSince1970: 200),
+            paymentDNAAnalyzedAt: Date(timeIntervalSince1970: 900),
+            resolverVersion: "invoice-payment-v1"
+        )
+        let support = try PersonDossierPaymentSupportIdentity(
+            invoiceDocumentID: invoice.id,
+            invoiceMembershipBasis: .exactPerson([try exactSupport(invoiceSupport)]),
+            relationship: relationship,
+            signals: [
+                try paymentSignal(.referenceNumber, qualifier: "invoiceNumber", value: "RE-42"),
+                try paymentSignal(.monetaryAmount, qualifier: "CHF", value: "CHF 12.50"),
+                try paymentSignal(.organization, qualifier: "issuer", value: "Pflegeheim"),
+            ]
+        )
+        return try PersonDossierMember(
+            document: paymentDocument,
+            sourceDisplayName: "Archive",
+            documentType: .paymentConfirmation,
+            section: .costsAndPayments,
+            supports: [.confirmedPayment(support)],
+            isConfirmationAuthoritative: false,
+            preferredPaymentSupport: support
+        )
+    }
+
+    func exactSupport(
+        _ support: PersonDossierMembershipSupport
+    ) throws -> PersonDossierFindingSupportIdentity {
+        guard case let .exactPrimary(finding) = support else {
+            throw DossierValidationError.invalidRecord
+        }
+        return finding
+    }
+
+    func paymentSignal(
+        _ kind: InvoicePaymentCandidateSignalKind,
+        qualifier: String,
+        value: String
+    ) throws -> InvoicePaymentCandidateSignal {
+        let findingKind: DocumentDNAFindingKind = switch kind {
+        case .referenceNumber: .referenceNumber
+        case .monetaryAmount: .monetaryAmount
+        case .organization: .organization
+        }
+        let normalized = switch kind {
+        case .referenceNumber, .organization: value.lowercased()
+        case .monetaryAmount: "12.5"
+        }
+        return InvoicePaymentCandidateSignal(
+            kind: kind,
+            invoiceFinding: try finding(
+                kind: findingKind,
+                qualifier: qualifier,
+                display: value,
+                normalized: normalized
+            ),
+            paymentFinding: try finding(
+                kind: findingKind,
+                qualifier: qualifier,
+                display: value,
+                normalized: normalized
+            )
         )
     }
 }

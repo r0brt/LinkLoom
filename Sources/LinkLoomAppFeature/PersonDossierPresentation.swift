@@ -48,8 +48,6 @@ enum DossierWorkspaceViewKind: Equatable {
             return
         }
         switch detail.workspaceSnapshot {
-        case let .personMatter(snapshot)? where snapshot.dossier.id == dossierID:
-            self = .personMatter
         case let .personMatter(snapshot)?:
             self = snapshot.dossier.id == dossierID
                 || personSummaries.contains(where: { $0.id == dossierID })
@@ -76,7 +74,7 @@ struct PersonDossierAnchorPresentation: Equatable {
     let sourceAvailabilityTitle: String?
     let accessibilityLabel: String
 
-    init(snapshot: PersonDossierSnapshot, selectedSourceID _: UUID?) {
+    init(snapshot: PersonDossierSnapshot) {
         displayName = snapshot.anchor.displayName
         roleTitle = PersonDossierPresentationTitle.role(for: snapshot.anchor.primaryRole)
         evidenceValidityTitle = switch snapshot.origin.validity {
@@ -105,6 +103,7 @@ struct PersonDossierMemberPresentation: Equatable {
     let availabilityTitle: String
     let membershipRoleTitle: String
     let reasons: [String]
+    let reasonAccessibilityIdentifiers: [String]
     let preferredCounterpartDocumentID: UUID?
     let accessibilityLabel: String
 
@@ -128,6 +127,9 @@ struct PersonDossierMemberPresentation: Equatable {
         }
         reasons = member.supports.flatMap { support in
             Self.reasonTexts(for: support, documents: documents)
+        }
+        reasonAccessibilityIdentifiers = reasons.indices.map {
+            PersonDossierAccessibilityIdentifier.reason(member.id, ordinal: $0)
         }
         preferredCounterpartDocumentID = member.preferredPaymentSupport?.invoiceDocumentID
         accessibilityLabel = [

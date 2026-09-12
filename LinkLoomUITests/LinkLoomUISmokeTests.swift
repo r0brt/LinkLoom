@@ -447,7 +447,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
         let initialSnapshot = try fixture.snapshot()
         let app = launch(fixture: fixture)
 
-        XCTContext.runActivity(named: "Create the costs dossier before opening a person dossier") { _ in
+        try XCTContext.runActivity(named: "Create the costs dossier before opening a person dossier") { _ in
             let addButton = element("source.add", in: app)
             requireExists(addButton, timeout: 20, description: "source.add")
             addButton.click()
@@ -478,6 +478,13 @@ final class LinkLoomUISmokeTests: XCTestCase {
             costsEntry.click()
             requireExists(element("dossier.workspace", in: app), timeout: 20, description: "costs dossier workspace")
         }
+
+        let probe = try SQLiteProbe(databaseURL: fixture.databaseURL)
+        let anchorID = try probe.documentID(relativePath: "anchor-care.pdf")
+        let insuranceID = try probe.documentID(relativePath: "insurance.pdf")
+        let ocrID = try probe.documentID(relativePath: "scan.png")
+        let invoiceID = try probe.documentID(relativePath: "invoices/care-home-invoice.pdf")
+        let paymentID = try probe.documentID(relativePath: "payments/payment-confirmation.pdf")
 
         let personDossierID = try XCTContext.runActivity(
             named: "Create one person dossier from its primary anchor finding"
@@ -529,6 +536,60 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 description: "person dossier costs and payments"
             )
 
+            let personRow = element("dossier.row.\(dossierID)", in: app)
+            requireExists(
+                personRow.staticTexts["Meine Mutter im Pflegeheim"].firstMatch,
+                description: "fixed person dossier sidebar title"
+            )
+            let expectedReasons = [
+                (anchorID, [
+                    "Der Name ‹Elise Muster› stimmt exakt mit dem Personenanker überein. Rolle: Bewohnerin.",
+                ]),
+                (insuranceID, [
+                    "Der Name ‹Elise Muster› stimmt exakt mit dem Personenanker überein. Rolle: Versicherte Person.",
+                ]),
+                (ocrID, [
+                    "Der Name ‹Elise Muster› stimmt exakt mit dem Personenanker überein. Rolle: Bewohnerin.",
+                ]),
+                (invoiceID, [
+                    "Der Name ‹Elise Muster› stimmt exakt mit dem Personenanker überein. Rolle: Rechnungsempfängerin.",
+                ]),
+                (paymentID, [
+                    "Zahlung über die Rechnung ‹invoices/care-home-invoice.pdf›. Der Name der Rechnung stimmt exakt mit dem Personenanker überein.",
+                    "Referenz: PFLEGE-2026-001 ↔ PFLEGE-2026-001",
+                    "Betrag und Währung: CHF 1250 ↔ CHF 1250",
+                    "Organisation: Pflegeheim Sonnengarten ↔ Pflegeheim Sonnengarten",
+                ]),
+            ]
+            for (documentID, reasons) in expectedReasons {
+                let member = element("dossier.person.member.\(documentID)", in: app)
+                requireExists(member, description: "person dossier member \(documentID)")
+                for (ordinal, reason) in reasons.enumerated() {
+                    let reasonElement = element(
+                        "dossier.person.member.\(documentID).reason.\(ordinal)",
+                        in: app
+                    )
+                    requireLabel(
+                        reason,
+                        for: reasonElement,
+                        timeout: 20
+                    )
+                }
+            }
+
+            let window = app.windows.firstMatch
+            resizeWindow(window, toWidth: 900)
+            let workspaceBeforeInspector = element("dossier.person.workspace", in: app)
+            let workspaceScrollView = requireDossierScrollView(
+                containing: workspaceBeforeInspector,
+                in: app
+            )
+            requireHittable(
+                element("dossier.person.member.\(paymentID)", in: app),
+                scrollingIn: workspaceScrollView,
+                description: "payment member at 900-point width"
+            )
+
             let ocrMember = requirePersonDossierMember(
                 containing: "scan.png",
                 in: app
@@ -554,10 +615,26 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 app.staticTexts["Elise Muster"].firstMatch,
                 description: "exact OCR person evidence"
             )
-            element("dossier.row.\(dossierID)", in: app).click()
+            let workspaceWithInspector = element("dossier.person.workspace", in: app)
+            let workspaceWidthWithInspector = workspaceWithInspector.frame.width
+            closeInspector(byReselecting: personRow, in: app)
             requireExists(
                 element("dossier.person.workspace", in: app),
                 description: "person workspace after OCR navigation"
+            )
+            XCTAssertGreaterThan(
+                element("dossier.person.workspace", in: app).frame.width,
+                workspaceWidthWithInspector,
+                "Closing the inspector must return width to the person workspace"
+            )
+            let expandedWorkspaceScrollView = requireDossierScrollView(
+                containing: element("dossier.person.workspace", in: app),
+                in: app
+            )
+            requireHittable(
+                element("dossier.person.member.\(paymentID)", in: app),
+                scrollingIn: expandedWorkspaceScrollView,
+                description: "payment member after inspector dismissal"
             )
 
             paymentMember.click()
@@ -566,7 +643,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 timeout: 20,
                 description: "payment member inspector"
             )
-            element("dossier.row.\(dossierID)", in: app).click()
+            closeInspector(byReselecting: personRow, in: app)
             let reloadedPayment = requirePersonDossierMember(
                 containing: "payments/payment-confirmation.pdf",
                 in: app
@@ -583,7 +660,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 app.staticTexts["invoices/care-home-invoice.pdf"].firstMatch,
                 description: "invoice counterpart document"
             )
-            element("dossier.row.\(dossierID)", in: app).click()
+            closeInspector(byReselecting: personRow, in: app)
             requireExists(
                 element("dossier.person.workspace", in: app),
                 description: "person workspace after counterpart navigation"
@@ -792,6 +869,17 @@ final class LinkLoomUISmokeTests: XCTestCase {
         )
     }
 
+    private func resizeWindow(_ window: XCUIElement, toWidth width: CGFloat) {
+        requireExists(window, description: "application window for resize")
+        let resizeHandle = window.coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.99))
+        let delta = width - window.frame.width
+        resizeHandle.press(
+            forDuration: 0.1,
+            thenDragTo: resizeHandle.withOffset(CGVector(dx: delta, dy: 0))
+        )
+        XCTAssertEqual(window.frame.width, width, accuracy: 12, "window width")
+    }
+
     private func element(_ identifier: String, in app: XCUIApplication) -> XCUIElement {
         app.descendants(matching: .any).matching(identifier: identifier).firstMatch
     }
@@ -818,6 +906,32 @@ final class LinkLoomUISmokeTests: XCTestCase {
             return candidates.first ?? app.buttons.firstMatch
         }
         return member
+    }
+
+    private func requireDossierScrollView(
+        containing workspace: XCUIElement,
+        in app: XCUIApplication
+    ) -> XCUIElement {
+        let candidates = app.scrollViews.allElementsBoundByIndex
+        guard let scrollView = candidates.first(where: {
+            $0.frame.intersects(workspace.frame) && $0.frame.width >= 300
+        }) else {
+            XCTFail("Missing dossier scroll view. Hierarchy:\n\(app.debugDescription)")
+            return app.scrollViews.firstMatch
+        }
+        return scrollView
+    }
+
+    private func closeInspector(
+        byReselecting dossierRow: XCUIElement,
+        in app: XCUIApplication
+    ) {
+        dossierRow.click()
+        requireDisappearance(
+            element("document-dna.inspector", in: app),
+            timeout: 20,
+            description: "document inspector after dossier reselection"
+        )
     }
 
     private func requireExists(
