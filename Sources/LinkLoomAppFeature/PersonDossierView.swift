@@ -133,31 +133,35 @@ public struct PersonDossierView: View {
             documents: documents
         )
         return VStack(alignment: .leading, spacing: 10) {
-            Button {
-                Task { await model.selectPersonDossierDocument(documentID: member.id) }
-            } label: {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(presentation.location)
                     .font(.body.weight(.medium))
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(presentation.accessibilityLabel)
-            .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.member(member.id))
-
-            Text("Dokumenttyp: \(presentation.documentTypeTitle)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(presentation.availabilityTitle)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            Text(presentation.membershipRoleTitle)
-                .font(.caption.weight(.semibold))
-            ForEach(Array(presentation.reasons.enumerated()), id: \.offset) { ordinal, reason in
-                Text(reason)
+                Text("Dokumenttyp: \(presentation.documentTypeTitle)")
                     .font(.caption)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .accessibilityIdentifier(presentation.reasonAccessibilityIdentifiers[ordinal])
+                    .foregroundStyle(.secondary)
+                Text(presentation.availabilityTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text(presentation.membershipRoleTitle)
+                    .font(.caption.weight(.semibold))
+                ForEach(Array(presentation.reasons.enumerated()), id: \.offset) { ordinal, reason in
+                    Text(reason)
+                        .font(.caption)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityIdentifier(presentation.reasonAccessibilityIdentifiers[ordinal])
+                }
+            }
+            .allowsHitTesting(false)
+            .background {
+                Button {
+                    Task { await model.selectPersonDossierDocument(documentID: member.id) }
+                } label: {
+                    Color.clear.contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(presentation.documentSummaryAccessibilityLabel)
+                .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.member(member.id))
             }
 
             if let counterpartID = presentation.preferredCounterpartDocumentID {

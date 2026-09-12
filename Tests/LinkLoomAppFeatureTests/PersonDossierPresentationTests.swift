@@ -331,7 +331,7 @@ struct PersonDossierPresentationTests {
             "Der Name ‹Elise Muster› stimmt exakt mit dem Personenanker überein. Rolle: Bewohnerin.",
         ])
         #expect(!directPresentation.reasons.joined().contains(direct.id.uuidString))
-        #expect(!directPresentation.accessibilityLabel.contains(direct.id.uuidString))
+        #expect(!directPresentation.documentSummaryAccessibilityLabel.contains(direct.id.uuidString))
     }
 
     @Test func memberPresentationRetainsManualAndPaymentReasonsInSupportOrderWithoutMetadataLeaks() throws {
@@ -427,10 +427,17 @@ struct PersonDossierPresentationTests {
             "dossier.person.member.71000000-0000-0000-0000-000000000043.reason.2",
             "dossier.person.member.71000000-0000-0000-0000-000000000043.reason.3",
         ])
+        #expect(paymentPresentation.documentSummaryAccessibilityLabel == [
+            paymentPresentation.location,
+            "Dokumenttyp: \(paymentPresentation.documentTypeTitle)",
+            paymentPresentation.availabilityTitle,
+            paymentPresentation.membershipRoleTitle,
+            paymentPresentation.reasons.joined(separator: " "),
+        ].joined(separator: ". "))
         for presentation in [manualPresentation, staleManualPresentation, paymentPresentation] {
-            #expect(!presentation.accessibilityLabel.contains("hash"))
-            #expect(!presentation.accessibilityLabel.contains("1970"))
-            #expect(!presentation.accessibilityLabel.contains(presentation.documentID.uuidString))
+            #expect(!presentation.documentSummaryAccessibilityLabel.contains("hash"))
+            #expect(!presentation.documentSummaryAccessibilityLabel.contains("1970"))
+            #expect(!presentation.documentSummaryAccessibilityLabel.contains(presentation.documentID.uuidString))
         }
     }
 

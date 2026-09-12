@@ -105,7 +105,7 @@ struct PersonDossierMemberPresentation: Equatable {
     let reasons: [String]
     let reasonAccessibilityIdentifiers: [String]
     let preferredCounterpartDocumentID: UUID?
-    let accessibilityLabel: String
+    let documentSummaryAccessibilityLabel: String
 
     init(
         member: PersonDossierMember,
@@ -132,9 +132,9 @@ struct PersonDossierMemberPresentation: Equatable {
             PersonDossierAccessibilityIdentifier.reason(member.id, ordinal: $0)
         }
         preferredCounterpartDocumentID = member.preferredPaymentSupport?.invoiceDocumentID
-        accessibilityLabel = [
+        documentSummaryAccessibilityLabel = [
             location,
-            documentTypeTitle,
+            "Dokumenttyp: \(documentTypeTitle)",
             availabilityTitle,
             membershipRoleTitle,
             reasons.joined(separator: " "),
