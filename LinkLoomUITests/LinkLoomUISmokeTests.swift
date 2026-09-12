@@ -441,6 +441,97 @@ final class LinkLoomUISmokeTests: XCTestCase {
     }
 
     @MainActor
+    func testPersonDossierWorkflowPersistsAndPreservesSourceFiles() throws {
+        let fixture = try SmokeFixture.personDossier()
+        self.fixture = fixture
+        let initialSnapshot = try fixture.snapshot()
+        let app = launch(fixture: fixture)
+
+        XCTContext.runActivity(named: "Create the costs dossier before opening a person dossier") { _ in
+            let addButton = element("source.add", in: app)
+            requireExists(addButton, timeout: 20, description: "source.add")
+            addButton.click()
+            requireExists(sourceRow(in: app), timeout: 20, description: "source row")
+
+            let scan = element("scan.start", in: app)
+            requireExists(scan, timeout: 20, description: "scan.start")
+            scan.click()
+
+            let invoice = element("documents.table", in: app)
+                .staticTexts["invoices/care-home-invoice.pdf"]
+                .firstMatch
+            requireExists(invoice, timeout: 90, description: "care invoice")
+            invoice.click()
+
+            let inspector = element("document-dna.inspector", in: app)
+            requireExists(inspector, description: "Document DNA inspector")
+            let confirm = element("invoice-payment-candidates.0.confirm", in: app)
+            requireExists(confirm, timeout: 90, description: "payment candidate confirmation")
+            confirm.click()
+
+            let costsEntry = element("document-dna.costs-dossier", in: app)
+            requireExists(costsEntry, timeout: 30, description: "costs dossier action")
+            costsEntry.click()
+            requireExists(element("dossier.workspace", in: app), timeout: 20, description: "costs dossier workspace")
+        }
+
+        let personDossierID = try XCTContext.runActivity(
+            named: "Create one person dossier from its primary anchor finding"
+        ) { _ in
+            sourceRow(in: app).click()
+            let anchorCare = element("documents.table", in: app)
+                .staticTexts["anchor-care.pdf"]
+                .firstMatch
+            requireExists(anchorCare, timeout: 20, description: "person anchor document")
+            anchorCare.click()
+
+            let personEntry = element("document-dna.person-dossier.0", in: app)
+            requireExists(personEntry, timeout: 60, description: "person dossier entry action")
+            XCTAssertTrue(personEntry.label.contains("Elise Muster"))
+            XCTAssertTrue(personEntry.label.contains("Bewohnerin"))
+            personEntry.click()
+
+            let dossierID = try waitForOnlyDossierID(
+                fixture: fixture,
+                kind: "personMatter"
+            )
+            requireExists(
+                element("dossier.row.\(dossierID)", in: app),
+                timeout: 20,
+                description: "persisted person dossier row"
+            )
+            return dossierID
+        }
+
+        try XCTContext.runActivity(named: "Choose the existing same-name dossier explicitly") { _ in
+            sourceRow(in: app).click()
+            let invoice = element("documents.table", in: app)
+                .staticTexts["invoices/care-home-invoice.pdf"]
+                .firstMatch
+            requireExists(invoice, timeout: 20, description: "care invoice after person dossier creation")
+            invoice.click()
+
+            let entry = element("document-dna.person-dossier.0", in: app)
+            requireExists(entry, timeout: 30, description: "invoice person dossier entry action")
+            XCTAssertTrue(entry.label.contains("Hauptdossier erstellen"))
+            entry.click()
+
+            let existingChoice = element("person-dossier.choice.\(personDossierID)", in: app)
+            requireExists(existingChoice, timeout: 20, description: "offered same-name person dossier")
+            let createNewChoice = app.buttons["Neues Hauptdossier erstellen"].firstMatch
+            requireExists(createNewChoice, description: "new person dossier alternative")
+            existingChoice.click()
+
+            let evidence = try SQLiteProbe(databaseURL: fixture.databaseURL).personDossierEvidence()
+            XCTAssertEqual(evidence.personAnchorCount, 1)
+            XCTAssertEqual(evidence.personDossierCount, 1)
+        }
+
+        terminateAndWait(app)
+        XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
+    }
+
+    @MainActor
     func testStartupFailureCanRetry() throws {
         let fixture = try SmokeFixture()
         self.fixture = fixture
@@ -730,6 +821,28 @@ final class LinkLoomUISmokeTests: XCTestCase {
             scrollView.scroll(byDeltaX: 0, deltaY: deltaY)
         }
         XCTFail("\(description) did not become vertically visible after bounded scrolling")
+    }
+
+    private func waitForOnlyDossierID(
+        fixture: SmokeFixture,
+        kind: String,
+        timeout: TimeInterval = 20
+    ) throws -> String {
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastError: Error?
+        repeat {
+            do {
+                return try SQLiteProbe(databaseURL: fixture.databaseURL).onlyDossierID(kind: kind)
+            } catch {
+                lastError = error
+                RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+            }
+        } while Date() < deadline
+        throw lastError ?? NSError(
+            domain: "LinkLoomUITests",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "Timed out waiting for \(kind) dossier"]
+        )
     }
 
     private func terminateAndWait(_ app: XCUIApplication) {

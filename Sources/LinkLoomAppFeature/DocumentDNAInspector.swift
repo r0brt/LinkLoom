@@ -4,6 +4,7 @@ import SwiftUI
 struct DocumentDNAInspector: View {
     @ObservedObject var model: AppModel
     let document: DocumentRecord?
+    @State private var pendingPersonSelection: PersonDossierAnchorSelection?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -23,6 +24,12 @@ struct DocumentDNAInspector: View {
         .inspectorColumnWidth(min: 320, ideal: 380, max: 520)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("document-dna.inspector")
+        .onChange(of: document?.id) { _, _ in
+            pendingPersonSelection = nil
+        }
+        .onChange(of: documentDNAInputIdentity) { _, _ in
+            pendingPersonSelection = nil
+        }
     }
 
     @ViewBuilder
@@ -71,8 +78,15 @@ struct DocumentDNAInspector: View {
                 description: Text("Die Dokumentliste und das Original bleiben unverändert.")
             )
         case .available(let snapshot):
-            documentDNADetail(DocumentDNADetailPresentation(snapshot: snapshot))
+            documentDNADetail(snapshot)
         }
+    }
+
+    private var documentDNAInputIdentity: String? {
+        guard case .available(let snapshot) = model.documentDNADetailState else {
+            return nil
+        }
+        return "\(snapshot.documentID.uuidString.lowercased()):\(snapshot.inputContentHash)"
     }
 
     private var selectedDocumentDNAFailureCode: DocumentDNAAnalysisFailureCode? {
@@ -85,10 +99,16 @@ struct DocumentDNAInspector: View {
         return failureCode
     }
 
-    private func documentDNADetail(
-        _ presentation: DocumentDNADetailPresentation
-    ) -> some View {
-        ScrollView {
+    private func documentDNADetail(_ snapshot: DocumentDNA) -> some View {
+        let presentation = DocumentDNADetailPresentation(snapshot: snapshot)
+        let personEntries = document.map {
+            PersonDossierEntryPresentation.entries(
+                document: $0,
+                snapshot: snapshot,
+                summaries: model.personDossiers
+            )
+        } ?? []
+        return ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Dokumenttyp")
@@ -135,6 +155,10 @@ struct DocumentDNAInspector: View {
                                 fact.evidence,
                                 identifierPrefix: "document-dna.fact.\(index).evidence"
                             )
+                            personDossierEntryContent(
+                                matching: fact.sourceFindingIndex,
+                                entries: personEntries
+                            )
                         }
                         .padding(.vertical, 4)
                     }
@@ -144,6 +168,69 @@ struct DocumentDNAInspector: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    @ViewBuilder
+    private func personDossierEntryContent(
+        matching findingIndex: Int,
+        entries: [PersonDossierEntryPresentation]
+    ) -> some View {
+        ForEach(entries.filter { $0.findingIndex == findingIndex }) { entry in
+            let isOpening = isOpeningPersonDossier(for: entry)
+            VStack(alignment: .leading, spacing: 8) {
+                Button(entry.actionTitle) {
+                    pendingPersonSelection = entry.selection
+                    Task {
+                        await model.openOrCreatePersonDossier(from: entry.selection)
+                        if model.personDossierChoices.isEmpty {
+                            pendingPersonSelection = nil
+                        }
+                    }
+                }
+                .disabled(isAnyPersonDossierOpening)
+                .accessibilityIdentifier(entry.accessibilityIdentifier)
+                .accessibilityLabel(entry.accessibilityLabel)
+
+                if isOpening {
+                    ProgressView("Hauptdossier wird geöffnet …")
+                }
+
+                if pendingPersonSelection == entry.selection,
+                   !model.personDossierChoices.isEmpty
+                {
+                    Text("Hauptdossier auswählen")
+                        .font(.headline)
+                    ForEach(model.personDossierChoices) { summary in
+                        Button {
+                            Task { await model.choosePersonDossier(id: summary.id) }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(summary.dossier.displayName)
+                                Text(summary.anchor.displayName)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .accessibilityIdentifier("person-dossier.choice.\(summary.id.uuidString.lowercased())")
+                    }
+                    Button("Neues Hauptdossier erstellen") {
+                        Task { await model.createNewPersonDossier() }
+                    }
+                    .disabled(isAnyPersonDossierOpening)
+                }
+            }
+        }
+    }
+
+    private var isAnyPersonDossierOpening: Bool {
+        if case .openingPerson(let documentID) = model.dossierMutationState {
+            return documentID == document?.id
+        }
+        return false
+    }
+
+    private func isOpeningPersonDossier(for entry: PersonDossierEntryPresentation) -> Bool {
+        isAnyPersonDossierOpening && pendingPersonSelection == entry.selection
     }
 
     @ViewBuilder
