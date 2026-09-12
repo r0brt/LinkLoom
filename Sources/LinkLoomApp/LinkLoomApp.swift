@@ -161,12 +161,9 @@ struct LinkLoomApp: App {
             repository: dnaRepository,
             target: dnaTarget
         )
-        let dossierService = CurrentDossierService(
-            repository: DossierRepository(
-                dbWriter: database,
-                target: dnaTarget
-            )
-        )
+        let dossierRepository = DossierRepository(dbWriter: database, target: dnaTarget)
+        let dossierService = CurrentDossierService(repository: dossierRepository)
+        let personDossierService = CurrentPersonDossierService(repository: dossierRepository)
         let invoicePaymentDecisions = InvoicePaymentDecisionRepository(
             dbWriter: database
         )
@@ -213,6 +210,8 @@ struct LinkLoomApp: App {
             invoicePaymentDecisions: invoicePaymentDecisionUpdater,
             dossierLoader: dossierService,
             dossierMutator: dossierService,
+            personDossierLoader: personDossierService,
+            personDossierMutator: personDossierService,
             watchScheduler: watchScheduler,
             reportRuntimeFailure: { diagnostic in
                 Self.runtimeLogger.error(
@@ -535,6 +534,170 @@ struct CurrentDossierService: DossierLoading, DossierMutating {
     ) async throws -> DossierSnapshot {
         try Task.checkCancellation()
         return try await reset(dossierID, documentID, expectedRevisionID)
+    }
+}
+
+struct CurrentPersonDossierService: PersonDossierLoading, PersonDossierMutating {
+    private let loadSummaries: @Sendable () async throws -> [PersonDossierSummary]
+    private let loadSnapshot: @Sendable (UUID) async throws -> PersonDossierSnapshot
+    private let open: @Sendable (PersonDossierAnchorSelection) async throws
+        -> PersonDossierOpenResult
+    private let choose: @Sendable (
+        PersonDossierAnchorSelection, PersonDossierCreationChoice
+    ) async throws -> PersonDossierSnapshot
+    private let accept: @Sendable (
+        UUID, UUID, PersonDossierCandidateSupportIdentity, PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot
+    private let reject: @Sendable (
+        UUID, UUID, PersonDossierCandidateSupportIdentity, PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot
+    private let remove: @Sendable (
+        UUID, UUID, PersonDossierMembershipSupport, PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot
+    private let reset: @Sendable (
+        UUID, UUID, PersonDossierCorrectionDecision, PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot
+
+    init(repository: DossierRepository) {
+        loadSummaries = { try await repository.personDossierSummaries() }
+        loadSnapshot = { dossierID in
+            try await repository.personDossierSnapshot(id: dossierID)
+        }
+        open = { selection in
+            try await repository.createOrOpenPersonDossier(from: selection)
+        }
+        choose = { selection, choice in
+            try await repository.chooseOrCreatePersonDossier(
+                from: selection,
+                choice: choice
+            )
+        }
+        accept = { dossierID, documentID, support, token in
+            try await repository.acceptPersonSuggestion(
+                dossierID: dossierID,
+                documentID: documentID,
+                expectedSupport: support,
+                expectedToken: token
+            )
+        }
+        reject = { dossierID, documentID, support, token in
+            try await repository.rejectPersonSuggestion(
+                dossierID: dossierID,
+                documentID: documentID,
+                expectedSupport: support,
+                expectedToken: token
+            )
+        }
+        remove = { dossierID, documentID, support, token in
+            try await repository.removePersonMember(
+                dossierID: dossierID,
+                documentID: documentID,
+                expectedSupport: support,
+                expectedToken: token
+            )
+        }
+        reset = { dossierID, documentID, decision, token in
+            try await repository.resetPersonCorrection(
+                dossierID: dossierID,
+                documentID: documentID,
+                expectedDecision: decision,
+                expectedToken: token
+            )
+        }
+    }
+
+    init(
+        summaries: @escaping @Sendable () async throws -> [PersonDossierSummary],
+        snapshot: @escaping @Sendable (UUID) async throws -> PersonDossierSnapshot,
+        open: @escaping @Sendable (PersonDossierAnchorSelection) async throws
+            -> PersonDossierOpenResult,
+        choose: @escaping @Sendable (
+            PersonDossierAnchorSelection, PersonDossierCreationChoice
+        ) async throws -> PersonDossierSnapshot,
+        accept: @escaping @Sendable (
+            UUID, UUID, PersonDossierCandidateSupportIdentity, PersonDossierProjectionToken
+        ) async throws -> PersonDossierSnapshot,
+        reject: @escaping @Sendable (
+            UUID, UUID, PersonDossierCandidateSupportIdentity, PersonDossierProjectionToken
+        ) async throws -> PersonDossierSnapshot,
+        remove: @escaping @Sendable (
+            UUID, UUID, PersonDossierMembershipSupport, PersonDossierProjectionToken
+        ) async throws -> PersonDossierSnapshot,
+        reset: @escaping @Sendable (
+            UUID, UUID, PersonDossierCorrectionDecision, PersonDossierProjectionToken
+        ) async throws -> PersonDossierSnapshot
+    ) {
+        loadSummaries = summaries
+        loadSnapshot = snapshot
+        self.open = open
+        self.choose = choose
+        self.accept = accept
+        self.reject = reject
+        self.remove = remove
+        self.reset = reset
+    }
+
+    func personDossierSummaries() async throws -> [PersonDossierSummary] {
+        try await loadSummaries()
+    }
+
+    func personDossierSnapshot(id: UUID) async throws -> PersonDossierSnapshot {
+        try await loadSnapshot(id)
+    }
+
+    func createOrOpenPersonDossier(
+        from selection: PersonDossierAnchorSelection
+    ) async throws -> PersonDossierOpenResult {
+        try Task.checkCancellation()
+        return try await open(selection)
+    }
+
+    func chooseOrCreatePersonDossier(
+        from selection: PersonDossierAnchorSelection,
+        choice: PersonDossierCreationChoice
+    ) async throws -> PersonDossierSnapshot {
+        try Task.checkCancellation()
+        return try await choose(selection, choice)
+    }
+
+    func acceptPersonSuggestion(
+        dossierID: UUID,
+        documentID: UUID,
+        expectedSupport: PersonDossierCandidateSupportIdentity,
+        expectedToken: PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot {
+        try Task.checkCancellation()
+        return try await accept(dossierID, documentID, expectedSupport, expectedToken)
+    }
+
+    func rejectPersonSuggestion(
+        dossierID: UUID,
+        documentID: UUID,
+        expectedSupport: PersonDossierCandidateSupportIdentity,
+        expectedToken: PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot {
+        try Task.checkCancellation()
+        return try await reject(dossierID, documentID, expectedSupport, expectedToken)
+    }
+
+    func removePersonMember(
+        dossierID: UUID,
+        documentID: UUID,
+        expectedSupport: PersonDossierMembershipSupport,
+        expectedToken: PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot {
+        try Task.checkCancellation()
+        return try await remove(dossierID, documentID, expectedSupport, expectedToken)
+    }
+
+    func resetPersonCorrection(
+        dossierID: UUID,
+        documentID: UUID,
+        expectedDecision: PersonDossierCorrectionDecision,
+        expectedToken: PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot {
+        try Task.checkCancellation()
+        return try await reset(dossierID, documentID, expectedDecision, expectedToken)
     }
 }
 
