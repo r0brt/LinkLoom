@@ -18,6 +18,7 @@ struct UITestLaunchConfigurationTests {
         #expect(configuration.sourceURL?.path == "/tmp/LinkLoomSmoke/source")
         #expect(configuration.disablesWatcher)
         #expect(configuration.failsStartupOnce)
+        #expect(!configuration.usesAccessibilityTextSize)
     }
 
     @Test func noRecognizedArgumentsUsesProductionDefaults() throws {
@@ -30,6 +31,22 @@ struct UITestLaunchConfigurationTests {
         #expect(configuration.sourceURL == nil)
         #expect(!configuration.disablesWatcher)
         #expect(!configuration.failsStartupOnce)
+        #expect(!configuration.usesAccessibilityTextSize)
+    }
+
+    @Test func enablesAccessibilityTextSizeWithItsExplicitArgument() throws {
+        let configuration = try UITestLaunchConfiguration(arguments: [
+            "LinkLoom", "--linkloom-ui-test-accessibility-text",
+        ])
+
+        #expect(configuration.usesAccessibilityTextSize)
+    }
+
+    @Test func rejectsDuplicateAccessibilityTextSizeArgument() {
+        let argument = "--linkloom-ui-test-accessibility-text"
+        #expect(throws: UITestLaunchConfigurationError.duplicateArgument(argument)) {
+            try UITestLaunchConfiguration(arguments: ["LinkLoom", argument, argument])
+        }
     }
 
     @Test(arguments: [

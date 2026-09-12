@@ -512,6 +512,47 @@ final class LinkLoomUISmokeTests: XCTestCase {
         XCTAssertEqual(entries["selectable-link"]?.symbolicLinkDestination, destination.path)
     }
 
+    func testPersonDossierFixtureIntegritySnapshotIncludesEveryEntryKind() throws {
+        let fixture = try SmokeFixture.personDossier()
+        self.fixture = fixture
+
+        let snapshot = try fixture.snapshot()
+        let entries = Dictionary(uniqueKeysWithValues: snapshot.map { ($0.relativePath, $0) })
+
+        let regularFiles = [
+            "anchor-care.pdf",
+            "invoices/care-home-invoice.pdf",
+            "payments/payment-confirmation.pdf",
+            "insurance.pdf",
+            "power-of-attorney.pdf",
+            "conflicting-insurance.pdf",
+            "scan.png",
+            "corrupt.pdf",
+        ]
+        for path in regularFiles {
+            let entry = try XCTUnwrap(entries[path], "Missing fixture entry: \(path)")
+            XCTAssertEqual(entry.kind, .regularFile, "Unexpected kind for \(path)")
+            XCTAssertNotNil(entry.sha256, "Missing SHA-256 for \(path)")
+            XCTAssertNotNil(entry.byteCount, "Missing byte count for \(path)")
+            XCTAssertNotNil(entry.modificationDate, "Missing modification date for \(path)")
+            XCTAssertNotEqual(entry.posixMode, -1, "Missing POSIX mode for \(path)")
+        }
+
+        XCTAssertEqual(entries["invoices"]?.kind, .directory)
+        XCTAssertEqual(entries["payments"]?.kind, .directory)
+        XCTAssertEqual(entries[".hidden-evidence"]?.kind, .regularFile)
+        XCTAssertEqual(entries[".hidden-directory"]?.kind, .directory)
+        XCTAssertEqual(entries["anchor-link"]?.kind, .symbolicLink)
+        XCTAssertEqual(entries["anchor-link"]?.symbolicLinkDestination, "anchor-care.pdf")
+        for entry in snapshot where entry.kind == .regularFile {
+            XCTAssertNotNil(entry.sha256, "Missing SHA-256 for \(entry.relativePath)")
+            XCTAssertNotNil(entry.byteCount, "Missing byte count for \(entry.relativePath)")
+            XCTAssertNotNil(entry.modificationDate, "Missing modification date for \(entry.relativePath)")
+            XCTAssertNotEqual(entry.posixMode, -1, "Missing POSIX mode for \(entry.relativePath)")
+        }
+        XCTAssertEqual(try fixture.snapshot(), snapshot)
+    }
+
     func testFailedFixtureConstructionRemovesTemporaryRoot() {
         var temporaryRoot: URL?
         defer {

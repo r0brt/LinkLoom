@@ -13,12 +13,14 @@ public struct UITestLaunchConfiguration: Sendable, Equatable {
     public let sourceURL: URL?
     public let disablesWatcher: Bool
     public let failsStartupOnce: Bool
+    public let usesAccessibilityTextSize: Bool
 
     public init(arguments: [String]) throws {
         var databaseURL: URL?
         var sourceURL: URL?
         var disablesWatcher = false
         var failsStartupOnce = false
+        var usesAccessibilityTextSize = false
         var valuedArguments = Set<String>()
         var index = 0
 
@@ -50,6 +52,11 @@ public struct UITestLaunchConfiguration: Sendable, Equatable {
                 disablesWatcher = true
             case Self.failStartupOnceArgument:
                 failsStartupOnce = true
+            case Self.accessibilityTextSizeArgument:
+                guard valuedArguments.insert(argument).inserted else {
+                    throw UITestLaunchConfigurationError.duplicateArgument(argument)
+                }
+                usesAccessibilityTextSize = true
             default:
                 break
             }
@@ -60,16 +67,19 @@ public struct UITestLaunchConfiguration: Sendable, Equatable {
         self.sourceURL = sourceURL
         self.disablesWatcher = disablesWatcher
         self.failsStartupOnce = failsStartupOnce
+        self.usesAccessibilityTextSize = usesAccessibilityTextSize
     }
 
     private static let databaseArgument = "--linkloom-ui-test-database"
     private static let sourceArgument = "--linkloom-ui-test-source"
     private static let disableWatcherArgument = "--linkloom-ui-test-disable-watcher"
     private static let failStartupOnceArgument = "--linkloom-ui-test-fail-startup-once"
+    private static let accessibilityTextSizeArgument = "--linkloom-ui-test-accessibility-text"
     private static let recognizedArguments: Set<String> = [
         databaseArgument,
         sourceArgument,
         disableWatcherArgument,
         failStartupOnceArgument,
+        accessibilityTextSizeArgument,
     ]
 }

@@ -14,6 +14,9 @@ struct LinkLoomApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var startup: AppStartupController
     private let folderPicker: FolderPicker
+#if LINKLOOM_UI_TESTING
+    private let uiTestLaunchConfiguration: UITestLaunchConfiguration?
+#endif
 
     private static let startupLogger = Logger(
         subsystem: "LinkLoom",
@@ -30,6 +33,7 @@ struct LinkLoomApp: App {
             try UITestLaunchConfiguration(arguments: ProcessInfo.processInfo.arguments)
         }
         let configuration = try? configurationResult.get()
+        uiTestLaunchConfiguration = configuration
         folderPicker = FolderPicker(selectFolders: {
             configuration?.sourceURL.map { [$0] } ?? []
         })
@@ -84,7 +88,16 @@ struct LinkLoomApp: App {
                 .accessibilityIdentifier("startup.progress")
         case .ready:
             if let model = startup.model {
+#if LINKLOOM_UI_TESTING
+                if uiTestLaunchConfiguration?.usesAccessibilityTextSize == true {
+                    ContentView(model: model, folderPicker: folderPicker)
+                        .environment(\.dynamicTypeSize, .accessibility5)
+                } else {
+                    ContentView(model: model, folderPicker: folderPicker)
+                }
+#else
                 ContentView(model: model, folderPicker: folderPicker)
+#endif
             }
         case .failed:
             ContentUnavailableView {

@@ -101,6 +101,29 @@ struct SmokeDatabaseEvidence: CustomStringConvertible {
     }
 }
 
+struct PersonDossierSmokeEvidence: CustomStringConvertible {
+    let sourceCount: Int
+    let documentCount: Int
+    let personAnchorCount: Int
+    let personAnchorEvidenceCount: Int
+    let personDossierCount: Int
+    let costsDossierCount: Int
+    let confirmationCount: Int
+    let exclusionCount: Int
+    let confirmedRelationshipCount: Int
+    let originDocumentStillCatalogued: Int
+
+    var description: String {
+        "source=\(sourceCount), document=\(documentCount), "
+            + "personAnchor=\(personAnchorCount), "
+            + "personAnchorEvidence=\(personAnchorEvidenceCount), "
+            + "personDossier=\(personDossierCount), costsDossier=\(costsDossierCount), "
+            + "confirmation=\(confirmationCount), exclusion=\(exclusionCount), "
+            + "confirmedRelationship=\(confirmedRelationshipCount), "
+            + "originDocumentStillCatalogued=\(originDocumentStillCatalogued)"
+    }
+}
+
 final class SQLiteProbe {
     private var database: OpaquePointer?
 
@@ -256,11 +279,53 @@ final class SQLiteProbe {
         ).lowercased()
     }
 
+    func personDossierEvidence() throws -> PersonDossierSmokeEvidence {
+        PersonDossierSmokeEvidence(
+            sourceCount: try scalar("SELECT COUNT(*) FROM sourceRoot"),
+            documentCount: try scalar("SELECT COUNT(*) FROM document"),
+            personAnchorCount: try scalar("SELECT COUNT(*) FROM personDossierAnchor"),
+            personAnchorEvidenceCount: try scalar(
+                "SELECT COUNT(*) FROM personDossierAnchorEvidence"
+            ),
+            personDossierCount: try scalar(
+                "SELECT COUNT(*) FROM dossier WHERE kind = 'personMatter'"
+            ),
+            costsDossierCount: try scalar(
+                "SELECT COUNT(*) FROM dossier WHERE kind = 'costsAndPayments'"
+            ),
+            confirmationCount: try scalar(
+                "SELECT COUNT(*) FROM dossierMembershipConfirmation"
+            ),
+            exclusionCount: try scalar("SELECT COUNT(*) FROM dossierMembershipExclusion"),
+            confirmedRelationshipCount: try scalar("""
+                SELECT COUNT(*) FROM invoicePaymentUserDecision
+                WHERE relationshipType = 'paymentSettlesInvoice' AND decision = 'confirmed'
+                """),
+            originDocumentStillCatalogued: try scalar("""
+                SELECT COUNT(*)
+                FROM personDossierAnchor AS anchor
+                JOIN document AS document ON document.id = anchor.originDocumentID
+                """)
+        )
+    }
+
     func onlyDossierID() throws -> String {
+        try onlyDossierID(kind: "costsAndPayments")
+    }
+
+    func onlyDossierID(kind: String) throws -> String {
         try onlyUUIDString(
-            "SELECT id FROM dossier",
+            "SELECT id FROM dossier WHERE kind = ?",
+            argument: kind,
+            description: "\(kind) dossier"
+        ).lowercased()
+    }
+
+    func personAnchorOriginDocumentID() throws -> String {
+        try onlyUUIDString(
+            "SELECT originDocumentID FROM personDossierAnchor",
             argument: nil,
-            description: "dossier"
+            description: "person anchor origin document"
         ).lowercased()
     }
 
@@ -330,6 +395,16 @@ final class SQLiteProbe {
 
 enum SQLiteTestDatabaseMutator {
     static func makeSelectableDocumentDNAFailureRetryable(databaseURL: URL) throws {
+        try makeDocumentDNAFailureRetryable(
+            databaseURL: databaseURL,
+            relativePath: "selectable.pdf"
+        )
+    }
+
+    static func makeDocumentDNAFailureRetryable(
+        databaseURL: URL,
+        relativePath: String
+    ) throws {
         var database: OpaquePointer?
         let openResult = sqlite3_open_v2(
             databaseURL.path,
@@ -353,26 +428,28 @@ enum SQLiteTestDatabaseMutator {
                 """
                 DELETE FROM documentDNA
                 WHERE documentID = (
-                    SELECT id FROM document WHERE relativePath = 'selectable.pdf'
+                    SELECT id FROM document WHERE relativePath = ?
                 )
                 """,
+                relativePath: relativePath,
                 in: database
             )
             guard sqlite3_changes(database) == 1 else {
-                throw SQLiteProbeError.mutation("Expected one selectable DNA snapshot")
+                throw SQLiteProbeError.mutation("Expected one DNA snapshot for \(relativePath)")
             }
             try execute(
                 """
                 UPDATE documentDNAAnalysisState
                 SET status = 'failed', failureCode = 'analysisFailure'
                 WHERE documentID = (
-                    SELECT id FROM document WHERE relativePath = 'selectable.pdf'
+                    SELECT id FROM document WHERE relativePath = ?
                 )
                 """,
+                relativePath: relativePath,
                 in: database
             )
             guard sqlite3_changes(database) == 1 else {
-                throw SQLiteProbeError.mutation("Expected one selectable DNA analysis state")
+                throw SQLiteProbeError.mutation("Expected one DNA analysis state for \(relativePath)")
             }
             try execute("COMMIT", in: database)
         } catch {
@@ -388,6 +465,26 @@ enum SQLiteTestDatabaseMutator {
                 ?? String(cString: sqlite3_errmsg(database))
             sqlite3_free(errorMessage)
             throw SQLiteProbeError.query(message)
+        }
+    }
+
+    private static func execute(
+        _ sql: String,
+        relativePath: String,
+        in database: OpaquePointer
+    ) throws {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            throw SQLiteProbeError.query(String(cString: sqlite3_errmsg(database)))
+        }
+        defer { sqlite3_finalize(statement) }
+        let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+        guard sqlite3_bind_text(statement, 1, relativePath, -1, transient) == SQLITE_OK else {
+            throw SQLiteProbeError.query(String(cString: sqlite3_errmsg(database)))
+        }
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw SQLiteProbeError.query(String(cString: sqlite3_errmsg(database)))
         }
     }
 }
