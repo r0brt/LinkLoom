@@ -506,6 +506,89 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 timeout: 20,
                 description: "persisted person dossier row"
             )
+
+            requireExists(
+                element("dossier.person.workspace", in: app),
+                timeout: 20,
+                description: "person dossier workspace"
+            )
+            requireExists(
+                app.staticTexts["Meine Mutter im Pflegeheim"].firstMatch,
+                description: "fixed person dossier title"
+            )
+            requireExists(
+                element("dossier.person.anchor", in: app),
+                description: "person dossier anchor"
+            )
+            requireExists(
+                element("dossier.person.direct-members", in: app),
+                description: "direct person dossier members"
+            )
+            requireExists(
+                element("dossier.person.costs", in: app),
+                description: "person dossier costs and payments"
+            )
+
+            let ocrMember = requirePersonDossierMember(
+                containing: "scan.png",
+                in: app
+            )
+            let paymentMember = requirePersonDossierMember(
+                containing: "payments/payment-confirmation.pdf",
+                in: app
+            )
+            for member in [ocrMember, paymentMember] {
+                requireExists(
+                    element("\(member.identifier).reason.0", in: app),
+                    description: "first membership reason for \(member.identifier)"
+                )
+            }
+
+            ocrMember.click()
+            requireExists(
+                element("document-dna.inspector", in: app),
+                timeout: 20,
+                description: "OCR member evidence inspector"
+            )
+            requireExists(
+                app.staticTexts["Elise Muster"].firstMatch,
+                description: "exact OCR person evidence"
+            )
+            element("dossier.row.\(dossierID)", in: app).click()
+            requireExists(
+                element("dossier.person.workspace", in: app),
+                description: "person workspace after OCR navigation"
+            )
+
+            paymentMember.click()
+            requireExists(
+                element("document-dna.inspector", in: app),
+                timeout: 20,
+                description: "payment member inspector"
+            )
+            element("dossier.row.\(dossierID)", in: app).click()
+            let reloadedPayment = requirePersonDossierMember(
+                containing: "payments/payment-confirmation.pdf",
+                in: app
+            )
+            let counterpart = element("\(reloadedPayment.identifier).counterpart", in: app)
+            requireExists(counterpart, description: "payment counterpart navigation")
+            counterpart.click()
+            requireExists(
+                element("document-dna.inspector", in: app),
+                timeout: 20,
+                description: "invoice counterpart inspector"
+            )
+            requireExists(
+                app.staticTexts["invoices/care-home-invoice.pdf"].firstMatch,
+                description: "invoice counterpart document"
+            )
+            element("dossier.row.\(dossierID)", in: app).click()
+            requireExists(
+                element("dossier.person.workspace", in: app),
+                description: "person workspace after counterpart navigation"
+            )
+            XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
             return dossierID
         }
 
@@ -717,6 +800,24 @@ final class LinkLoomUISmokeTests: XCTestCase {
         app.descendants(matching: .any)
             .matching(NSPredicate(format: "identifier BEGINSWITH %@", "source.row."))
             .firstMatch
+    }
+
+    private func requirePersonDossierMember(
+        containing path: String,
+        in app: XCUIApplication
+    ) -> XCUIElement {
+        let candidates = app.buttons.matching(
+            NSCompoundPredicate(andPredicateWithSubpredicates: [
+                NSPredicate(format: "identifier BEGINSWITH %@", "dossier.person.member."),
+                NSPredicate(format: "identifier NOT CONTAINS %@", ".counterpart"),
+                NSPredicate(format: "identifier NOT CONTAINS %@", ".remove"),
+            ])
+        ).allElementsBoundByIndex
+        guard let member = candidates.first(where: { $0.label.contains(path) }) else {
+            XCTFail("Missing person dossier member for \(path). Hierarchy:\n\(app.debugDescription)")
+            return candidates.first ?? app.buttons.firstMatch
+        }
+        return member
     }
 
     private func requireExists(

@@ -168,6 +168,160 @@ struct PersonDossierPresentationTests {
             )
         )
     }
+
+    @Test func sidebarItemsMixCostsAndPeopleByCreationTimeThenPersistedIdentifier() throws {
+        let costsFirst = try costsSummary(
+            dossierID: uuid("71000000-0000-0000-0000-000000000010"),
+            createdAt: 100,
+            path: "kosten/anker.pdf"
+        )
+        let personEarlierID = uuid("71000000-0000-0000-0000-000000000011")
+        let personLaterID = uuid("71000000-0000-0000-0000-000000000012")
+        let people = [
+            try personSummary(
+                dossierID: personLaterID,
+                originDocumentID: uuid("71000000-0000-0000-0000-000000000013"),
+                role: .resident,
+                displayName: "Beate Muster",
+                normalizedName: "beate muster",
+                contentHash: "later",
+                createdAt: 200
+            ),
+            try personSummary(
+                dossierID: personEarlierID,
+                originDocumentID: uuid("71000000-0000-0000-0000-000000000014"),
+                role: .resident,
+                displayName: "Anna Muster",
+                normalizedName: "anna muster",
+                contentHash: "earlier",
+                createdAt: 200
+            ),
+        ]
+
+        let items = WorkspaceDossierSidebarItem.items(
+            costs: [costsFirst],
+            people: people
+        )
+
+        #expect(items.map(\.id) == [costsFirst.id, personEarlierID, personLaterID])
+        #expect(items.map(\.subtitle) == ["kosten/anker.pdf", "Anna Muster", "Beate Muster"])
+    }
+
+    @Test func workspaceRoutingKeepsKnownPersonSelectionDuringLoadingAndFailure() throws {
+        let person = try PersonDossierAppModelValues.make().snapshot
+        let costs = try CostsAndPaymentsDossierAppModelValues.make().snapshot
+        let personSummary = PersonDossierSummary(dossier: person.dossier, anchor: person.anchor)
+
+        #expect(DossierWorkspaceViewKind(
+            selection: .dossier(person.dossier.id),
+            detail: .available(.personMatter(person)),
+            personSummaries: [personSummary]
+        ) == .personMatter)
+        #expect(DossierWorkspaceViewKind(
+            selection: .dossier(person.dossier.id),
+            detail: .loading(dossierID: person.dossier.id, previous: nil),
+            personSummaries: [personSummary]
+        ) == .personMatter)
+        #expect(DossierWorkspaceViewKind(
+            selection: .dossier(person.dossier.id),
+            detail: .loading(
+                dossierID: person.dossier.id,
+                previous: .costsAndPayments(costs)
+            ),
+            personSummaries: [personSummary]
+        ) == .personMatter)
+        #expect(DossierWorkspaceViewKind(
+            selection: .dossier(person.dossier.id),
+            detail: .failed(dossierID: person.dossier.id, previous: nil),
+            personSummaries: [personSummary]
+        ) == .personMatter)
+        #expect(DossierWorkspaceViewKind(
+            selection: .dossier(costs.dossier.id),
+            detail: .available(.costsAndPayments(costs)),
+            personSummaries: [personSummary]
+        ) == .costsAndPayments)
+    }
+
+    @Test func anchorPresentationNamesCurrentStaleAndUnavailableOriginStates() throws {
+        let values = try PersonDossierAppModelValues.make()
+        let current = PersonDossierAnchorPresentation(
+            snapshot: values.snapshot,
+            selectedSourceID: values.document.sourceRootID
+        )
+        let staleSnapshot = values.snapshot.replacingOrigin(
+            try PersonDossierOriginState(
+                validity: .stale,
+                document: values.document,
+                sourceDisplayName: "Archive"
+            )
+        )
+        let unavailableSnapshot = values.snapshot.replacingOrigin(
+            try PersonDossierOriginState(
+                validity: .unavailable,
+                document: nil,
+                sourceDisplayName: nil
+            )
+        )
+
+        #expect(current.evidenceValidityTitle == "Ursprungsnachweis aktuell")
+        #expect(current.sourceAvailabilityTitle == "Verfügbar")
+        #expect(PersonDossierAnchorPresentation(
+            snapshot: staleSnapshot,
+            selectedSourceID: values.document.sourceRootID
+        ).evidenceValidityTitle == "Ursprungsnachweis veraltet")
+        #expect(PersonDossierAnchorPresentation(
+            snapshot: unavailableSnapshot,
+            selectedSourceID: values.document.sourceRootID
+        ).evidenceValidityTitle == "Ursprungsnachweis nicht verfügbar")
+        #expect(PersonDossierAnchorPresentation(
+            snapshot: unavailableSnapshot,
+            selectedSourceID: values.document.sourceRootID
+        ).sourceAvailabilityTitle == nil)
+    }
+
+    @Test func memberPresentationShowsLocationsAvailabilityAndOrderedReasons() throws {
+        let originSourceID = uuid("71000000-0000-0000-0000-000000000020")
+        let otherSourceID = uuid("71000000-0000-0000-0000-000000000021")
+        let values = try PersonDossierNavigationValues.make(
+            originSourceID: originSourceID,
+            otherSourceID: otherSourceID
+        )
+        let direct = try #require(values.snapshot.directMembers.first)
+        let crossSource = try #require(values.snapshot.directMembers.last)
+        let directPresentation = PersonDossierMemberPresentation(
+            member: direct,
+            selectedSourceID: originSourceID,
+            documents: values.snapshot.allDocuments
+        )
+        let crossSourcePresentation = PersonDossierMemberPresentation(
+            member: crossSource,
+            selectedSourceID: originSourceID,
+            documents: values.snapshot.allDocuments
+        )
+
+        #expect(directPresentation.location == "direct.pdf")
+        #expect(crossSourcePresentation.location == "Archive · cross-source-direct.pdf")
+        #expect(directPresentation.availabilityTitle == "Verfügbar")
+        #expect(directPresentation.membershipRoleTitle == "Direktes Dokument")
+        #expect(directPresentation.reasons == [
+            "Der Name ‹Elise Muster› stimmt exakt mit dem Personenanker überein. Rolle: Bewohnerin.",
+        ])
+        #expect(!directPresentation.reasons.joined().contains(direct.id.uuidString))
+        #expect(!directPresentation.accessibilityLabel.contains(direct.id.uuidString))
+    }
+
+    @Test func memberIdentifiersUseLowercasePersistedUUIDs() {
+        let id = uuid("71000000-0000-0000-0000-0000000000AB")
+
+        #expect(PersonDossierAccessibilityIdentifier.workspace == "dossier.person.workspace")
+        #expect(PersonDossierAccessibilityIdentifier.anchor == "dossier.person.anchor")
+        #expect(PersonDossierAccessibilityIdentifier.directMembers == "dossier.person.direct-members")
+        #expect(PersonDossierAccessibilityIdentifier.costs == "dossier.person.costs")
+        #expect(PersonDossierAccessibilityIdentifier.member(id) == "dossier.person.member.71000000-0000-0000-0000-0000000000ab")
+        #expect(PersonDossierAccessibilityIdentifier.removeMember(id) == "dossier.person.member.remove.71000000-0000-0000-0000-0000000000ab")
+        #expect(PersonDossierAccessibilityIdentifier.counterpart(id) == "dossier.person.member.71000000-0000-0000-0000-0000000000ab.counterpart")
+        #expect(PersonDossierAccessibilityIdentifier.reason(id, ordinal: 2) == "dossier.person.member.71000000-0000-0000-0000-0000000000ab.reason.2")
+    }
 }
 
 private extension PersonDossierPresentationTests {
@@ -242,13 +396,15 @@ private extension PersonDossierPresentationTests {
     }
 
     func personSummary(
+        dossierID: UUID? = nil,
         originDocumentID: UUID,
         role: PersonDossierRole,
         displayName: String,
         normalizedName: String,
-        contentHash: String
+        contentHash: String,
+        createdAt: TimeInterval = 100
     ) throws -> PersonDossierSummary {
-        let timestamp = Date(timeIntervalSince1970: 100)
+        let timestamp = Date(timeIntervalSince1970: createdAt)
         let anchor = try PersonDossierAnchor(
             id: uuid("71000000-0000-0000-0000-0000000000BB"),
             displayName: displayName,
@@ -273,7 +429,7 @@ private extension PersonDossierPresentationTests {
             updatedAt: timestamp
         )
         let dossier = try DossierRecord(
-            id: uuid("71000000-0000-0000-0000-0000000000CC"),
+            id: dossierID ?? uuid("71000000-0000-0000-0000-0000000000CC"),
             kind: .personMatter,
             displayName: "Hauptdossier: \(displayName)",
             anchor: .person(anchor),
@@ -281,5 +437,59 @@ private extension PersonDossierPresentationTests {
             updatedAt: timestamp
         )
         return PersonDossierSummary(dossier: dossier, anchor: anchor)
+    }
+
+    func costsSummary(
+        dossierID: UUID,
+        createdAt: TimeInterval,
+        path: String
+    ) throws -> DossierSummary {
+        let timestamp = Date(timeIntervalSince1970: createdAt)
+        let anchor = DocumentRecord(
+            id: uuid("71000000-0000-0000-0000-000000000030"),
+            sourceRootID: uuid("71000000-0000-0000-0000-000000000031"),
+            relativePath: path,
+            contentHash: "costs-anchor",
+            byteCount: 1,
+            modifiedAt: timestamp,
+            mediaType: .pdf,
+            status: .ready,
+            availability: .available,
+            pageCount: 1,
+            lastSeenAt: timestamp,
+            lastFingerprintAt: timestamp
+        )
+        return DossierSummary(
+            dossier: try DossierRecord(
+                id: dossierID,
+                kind: .costsAndPayments,
+                displayName: "Kosten und Zahlungen",
+                anchorDocumentID: anchor.id,
+                createdAt: timestamp,
+                updatedAt: timestamp
+            ),
+            anchor: anchor
+        )
+    }
+}
+
+private extension PersonDossierSnapshot {
+    var allDocuments: [UUID: DocumentRecord] {
+        Dictionary(uniqueKeysWithValues: (directMembers + costsAndPayments).map {
+            ($0.document.id, $0.document)
+        })
+    }
+
+    func replacingOrigin(_ origin: PersonDossierOriginState) -> Self {
+        PersonDossierSnapshot(
+            dossier: dossier,
+            anchor: anchor,
+            origin: origin,
+            directMembers: directMembers,
+            costsAndPayments: costsAndPayments,
+            suggestions: suggestions,
+            corrections: corrections,
+            token: token
+        )
     }
 }

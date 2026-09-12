@@ -15,7 +15,16 @@ public struct ContentView: View {
         } detail: {
             switch model.workspaceSelection {
             case .dossier:
-                CostsAndPaymentsDossierView(model: model)
+                switch DossierWorkspaceViewKind(
+                    selection: model.workspaceSelection,
+                    detail: model.dossierDetailState,
+                    personSummaries: model.personDossiers
+                ) {
+                case .costsAndPayments:
+                    CostsAndPaymentsDossierView(model: model)
+                case .personMatter:
+                    PersonDossierView(model: model)
+                }
             case .source, nil:
                 ScanDashboard(model: model)
             }
