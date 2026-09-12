@@ -468,6 +468,10 @@ final class LinkLoomUISmokeTests: XCTestCase {
             let confirm = element("invoice-payment-candidates.0.confirm", in: app)
             requireExists(confirm, timeout: 90, description: "payment candidate confirmation")
             confirm.click()
+            requireValue(
+                "Bestätigt",
+                for: element("invoice-payment-candidates.0.decision", in: app)
+            )
 
             let costsEntry = element("document-dna.costs-dossier", in: app)
             requireExists(costsEntry, timeout: 30, description: "costs dossier action")
@@ -487,8 +491,10 @@ final class LinkLoomUISmokeTests: XCTestCase {
 
             let personEntry = element("document-dna.person-dossier.0", in: app)
             requireExists(personEntry, timeout: 60, description: "person dossier entry action")
-            XCTAssertTrue(personEntry.label.contains("Elise Muster"))
-            XCTAssertTrue(personEntry.label.contains("Bewohnerin"))
+            requireLabel(
+                "Hauptdossier erstellen für Elise Muster Rolle Bewohnerin",
+                for: personEntry
+            )
             personEntry.click()
 
             let dossierID = try waitForOnlyDossierID(
@@ -513,7 +519,10 @@ final class LinkLoomUISmokeTests: XCTestCase {
 
             let entry = element("document-dna.person-dossier.0", in: app)
             requireExists(entry, timeout: 30, description: "invoice person dossier entry action")
-            XCTAssertTrue(entry.label.contains("Hauptdossier erstellen"))
+            requireLabel(
+                "Hauptdossier erstellen für Elise Muster Rolle Rechnungsempfängerin",
+                for: entry
+            )
             entry.click()
 
             let existingChoice = element("person-dossier.choice.\(personDossierID)", in: app)
@@ -521,6 +530,11 @@ final class LinkLoomUISmokeTests: XCTestCase {
             let createNewChoice = app.buttons["Neues Hauptdossier erstellen"].firstMatch
             requireExists(createNewChoice, description: "new person dossier alternative")
             existingChoice.click()
+            requireDisappearance(
+                existingChoice,
+                timeout: 20,
+                description: "resolved same-name person dossier choice"
+            )
 
             let evidence = try SQLiteProbe(databaseURL: fixture.databaseURL).personDossierEvidence()
             XCTAssertEqual(evidence.personAnchorCount, 1)

@@ -145,6 +145,29 @@ struct PersonDossierPresentationTests {
             )
         }
     }
+
+    @Test func entryActionsStayDisabledWhileAChoiceIsUnresolved() {
+        let documentID = uuid("71000000-0000-0000-0000-000000000006")
+
+        #expect(
+            PersonDossierEntryInteractionPresentation.actionIsDisabled(
+                mutationState: .idle,
+                hasUnresolvedChoice: true
+            )
+        )
+        #expect(
+            PersonDossierEntryInteractionPresentation.actionIsDisabled(
+                mutationState: .openingPerson(documentID: documentID),
+                hasUnresolvedChoice: false
+            )
+        )
+        #expect(
+            !PersonDossierEntryInteractionPresentation.actionIsDisabled(
+                mutationState: .idle,
+                hasUnresolvedChoice: false
+            )
+        )
+    }
 }
 
 private extension PersonDossierPresentationTests {

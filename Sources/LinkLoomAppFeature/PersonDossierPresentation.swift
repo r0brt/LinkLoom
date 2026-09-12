@@ -74,3 +74,18 @@ struct PersonDossierEntryPresentation: Identifiable, Equatable {
         }
     }
 }
+
+enum PersonDossierEntryInteractionPresentation {
+    static func actionIsDisabled(
+        mutationState: DossierMutationState,
+        hasUnresolvedChoice: Bool
+    ) -> Bool {
+        if hasUnresolvedChoice {
+            return true
+        }
+        if case .openingPerson = mutationState {
+            return true
+        }
+        return false
+    }
+}

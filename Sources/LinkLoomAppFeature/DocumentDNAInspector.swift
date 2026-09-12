@@ -187,7 +187,12 @@ struct DocumentDNAInspector: View {
                         }
                     }
                 }
-                .disabled(isAnyPersonDossierOpening)
+                .disabled(
+                    PersonDossierEntryInteractionPresentation.actionIsDisabled(
+                        mutationState: model.dossierMutationState,
+                        hasUnresolvedChoice: hasUnresolvedPersonDossierChoice
+                    )
+                )
                 .accessibilityIdentifier(entry.accessibilityIdentifier)
                 .accessibilityLabel(entry.accessibilityLabel)
 
@@ -211,6 +216,7 @@ struct DocumentDNAInspector: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
+                        .disabled(isAnyPersonDossierOpening)
                         .accessibilityIdentifier("person-dossier.choice.\(summary.id.uuidString.lowercased())")
                     }
                     Button("Neues Hauptdossier erstellen") {
@@ -227,6 +233,10 @@ struct DocumentDNAInspector: View {
             return documentID == document?.id
         }
         return false
+    }
+
+    private var hasUnresolvedPersonDossierChoice: Bool {
+        pendingPersonSelection != nil && !model.personDossierChoices.isEmpty
     }
 
     private func isOpeningPersonDossier(for entry: PersonDossierEntryPresentation) -> Bool {
