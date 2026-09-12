@@ -5,6 +5,7 @@ import SwiftUI
 public struct PersonDossierView: View {
     @ObservedObject var model: AppModel
     @AccessibilityFocusState private var accessibilityFocus: PersonDossierFocusTarget?
+    @State private var feedbackContext = PersonDossierFeedbackContext()
 
     public init(model: AppModel) {
         self.model = model
@@ -21,6 +22,11 @@ public struct PersonDossierView: View {
         }
         .navigationTitle("Meine Mutter im Pflegeheim")
         .accessibilityIdentifier(PersonDossierAccessibilityIdentifier.workspace)
+        .onReceive(model.$workspaceSelection) { feedbackContext.observeSelection($0) }
+        .onReceive(model.$dossierDetailState) { feedbackContext.observeDetail($0) }
+        .onReceive(model.$selectedDocumentID.dropFirst()) { _ in feedbackContext.invalidate() }
+        .onReceive(model.$selectedSourceID.dropFirst()) { _ in feedbackContext.invalidate() }
+        .onDisappear { feedbackContext.invalidate() }
     }
 
     @ViewBuilder
@@ -347,21 +353,23 @@ public struct PersonDossierView: View {
     private func mutate(
         _ previous: PersonDossierSnapshot,
         outcome: @escaping (PersonDossierSnapshot) -> PersonDossierMutationOutcome,
-        operation: @escaping @MainActor () async -> Void
+        operation: @escaping @MainActor () async -> PersonDossierSnapshot?
     ) {
-        Task { @MainActor in
+        guard !mutationIsInFlight else { return }
+        feedbackContext.perform(dossierID: previous.dossier.id, operation: {
             guard !Task.isCancelled, !mutationIsInFlight,
                   model.workspaceSelection == .dossier(previous.dossier.id),
-                  model.dossierDetailState.personSnapshot?.token == previous.token else { return }
-            await operation()
+                  model.dossierDetailState.personSnapshot?.token == previous.token else { return nil }
+            return await operation()
+        }, publish: { receipt in
             guard PersonDossierMutationOutcome.canPublish(
                 after: previous,
+                receipt: receipt,
                 detail: model.dossierDetailState,
                 errorCode: model.lastErrorCode,
                 isCancelled: Task.isCancelled
-            ), model.workspaceSelection == .dossier(previous.dossier.id),
-               let published = model.dossierDetailState.personSnapshot else { return }
-            let feedback = outcome(published)
+            ), model.workspaceSelection == .dossier(previous.dossier.id) else { return }
+            let feedback = outcome(receipt)
             accessibilityFocus = feedback.focus
             NSAccessibility.post(
                 element: NSApp as Any,
@@ -371,7 +379,7 @@ public struct PersonDossierView: View {
                     .priority: NSAccessibilityPriorityLevel.high.rawValue,
                 ]
             )
-        }
+        })
     }
 
     private var errorState: some View {

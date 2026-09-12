@@ -679,6 +679,11 @@ final class LinkLoomUISmokeTests: XCTestCase {
             )
             let counterpart = element("\(reloadedPayment.identifier).counterpart", in: app)
             requireExists(counterpart, description: "payment counterpart navigation")
+            requireCompletePersonRowContained(
+                summary: reloadedPayment,
+                actions: [counterpart, element("dossier.person.member.remove.\(paymentID)", in: app)],
+                in: app
+            )
             requireKeyboardReachable(counterpart, in: app)
             counterpart.click()
             requireExists(
@@ -741,34 +746,46 @@ final class LinkLoomUISmokeTests: XCTestCase {
             let authorization = element("dossier.person.suggestion.\(authorizationID)", in: app)
             requireExists(authorization, description: "secondary-role suggestion")
             requireLabel("power-of-attorney.pdf. Dokumenttyp: Vollmacht. Verfügbar. Elise Muster, Rolle: Bevollmächtigte. Der Name stimmt exakt, erscheint aber nur in der Rolle Bevollmächtigte. Aufnehmen oder ablehnen.", for: authorization)
+            requirePersonSuggestionContained(authorizationID, in: app)
             requireKeyboardReachable(authorization, in: app)
             authorization.click()
             requireExists(element("document-dna.inspector", in: app), description: "suggestion navigation")
             closeInspector(byReselecting: element("dossier.row.\(personDossierID)", in: app), in: app)
             XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
+            requirePersonSuggestionContained(authorizationID, in: app)
             try mutate("dossier.person.suggestion.accept.\(authorizationID)", in: app)
             requireDisappearance(authorization, timeout: 20, description: "accepted suggestion")
             requireExists(element("dossier.person.member.\(authorizationID)", in: app), description: "accepted member")
             requireExists(element("dossier.person.correction.\(authorizationID)", in: app), description: "confirmation correction")
             let correction = element("dossier.person.correction.\(authorizationID)", in: app)
             requireLabel("power-of-attorney.pdf. Dokumenttyp: Vollmacht. Verfügbar. Von dir aufgenommen. Aufnahme zurücksetzen.", for: correction)
+            requirePersonCorrectionContained(authorizationID, in: app)
             requireKeyboardReachable(correction, in: app)
             correction.click()
             requireExists(element("document-dna.inspector", in: app), description: "correction navigation")
             closeInspector(byReselecting: element("dossier.row.\(personDossierID)", in: app), in: app)
             XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
             requireLabel("Aufnahme zurücksetzen für power-of-attorney.pdf", for: element("dossier.person.correction.reset.\(authorizationID)", in: app))
+            requirePersonCorrectionContained(authorizationID, in: app)
 
             let conflict = element("dossier.person.suggestion.\(conflictID)", in: app)
             requireLabel("conflicting-insurance.pdf. Dokumenttyp: Versicherungsabrechnung. Verfügbar. Elise Muster, Rolle: Versicherte Person. Der Name stimmt, aber dieses Dokument nennt ein anderes Geburtsdatum. Aufnehmen oder ablehnen.", for: conflict)
+            requirePersonSuggestionContained(conflictID, in: app)
             try mutate("dossier.person.suggestion.reject.\(conflictID)", in: app)
             requireDisappearance(conflict, timeout: 20, description: "rejected suggestion")
             requireExists(element("dossier.person.correction.\(conflictID)", in: app), description: "exclusion correction")
+            requirePersonCorrectionContained(conflictID, in: app)
 
+            requireCompletePersonRowContained(
+                summary: element("dossier.person.member.\(insuranceID)", in: app),
+                actions: [element("dossier.person.member.remove.\(insuranceID)", in: app)],
+                in: app
+            )
             try mutate("dossier.person.member.remove.\(insuranceID)", in: app)
             requireDisappearance(element("dossier.person.member.\(insuranceID)", in: app), timeout: 20, description: "removed insurance member")
             requireExists(element("dossier.person.correction.\(insuranceID)", in: app), description: "removed member correction")
             requireLabel("Ausschluss zurücksetzen für insurance.pdf", for: element("dossier.person.correction.reset.\(insuranceID)", in: app))
+            requirePersonCorrectionContained(insuranceID, in: app)
             try mutate("dossier.person.correction.reset.\(insuranceID)", in: app)
             requireDisappearance(element("dossier.person.correction.\(insuranceID)", in: app), timeout: 20, description: "reset exclusion")
             requireExists(element("dossier.person.member.\(insuranceID)", in: app), description: "restored automatic member")
@@ -1215,6 +1232,52 @@ final class LinkLoomUISmokeTests: XCTestCase {
         scrollVerticallyUntilVisible(target, in: scroll, description: target.identifier)
         XCTAssertTrue(app.windows.firstMatch.frame.contains(target.frame), "Outside window: \(target.identifier), \(target.frame)")
         XCTAssertTrue(scroll.frame.contains(target.frame), "Outside viewport: \(target.identifier), \(target.frame)")
+    }
+
+    private func requirePersonSuggestionContained(_ id: String, in app: XCUIApplication) {
+        requireCompletePersonRowContained(
+            summary: element("dossier.person.suggestion.\(id)", in: app),
+            actions: [
+                element("dossier.person.suggestion.accept.\(id)", in: app),
+                element("dossier.person.suggestion.reject.\(id)", in: app),
+            ],
+            in: app
+        )
+    }
+
+    private func requirePersonCorrectionContained(_ id: String, in app: XCUIApplication) {
+        requireCompletePersonRowContained(
+            summary: element("dossier.person.correction.\(id)", in: app),
+            actions: [element("dossier.person.correction.reset.\(id)", in: app)],
+            in: app
+        )
+    }
+
+    private func requireCompletePersonRowContained(
+        summary: XCUIElement,
+        actions: [XCUIElement],
+        in app: XCUIApplication
+    ) {
+        let window = app.windows.firstMatch
+        XCTAssertEqual(window.frame.width, 900, accuracy: 12, "Person row layout requires the minimum window width")
+        let scroll = requireDossierScrollView(containing: element("dossier.person.workspace", in: app), in: app)
+        let parts = [summary] + actions
+        for part in parts { requireExists(part, description: "complete row component \(part.identifier)") }
+        // The summary button encloses its path, role/status and all reason text.
+        // Check the union at one scroll position so sequential scrolling cannot
+        // conceal a clipped summary while making only its final action visible.
+        for _ in 0..<12 {
+            let bounds = parts.reduce(CGRect.null) { $0.union($1.frame) }
+            if scroll.frame.contains(bounds) { break }
+            scroll.scroll(byDeltaX: 0, deltaY: bounds.maxY > scroll.frame.maxY ? -180 : 180)
+        }
+        let bounds = parts.reduce(CGRect.null) { $0.union($1.frame) }
+        XCTAssertTrue(window.frame.contains(bounds), "Complete row extends outside window: \(summary.identifier), \(bounds)")
+        XCTAssertTrue(scroll.frame.contains(bounds), "Complete row extends outside viewport: \(summary.identifier), \(bounds)")
+        for part in parts {
+            XCTAssertTrue(scroll.frame.contains(part.frame), "Clipped row component: \(part.identifier)")
+            XCTAssertTrue(part.isHittable, "Unreachable row component: \(part.identifier)")
+        }
     }
 
     private func requireHittable(

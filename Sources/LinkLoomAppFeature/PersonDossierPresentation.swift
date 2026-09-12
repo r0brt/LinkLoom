@@ -291,6 +291,58 @@ enum PersonDossierFocusTarget: Hashable {
     case section(PersonDossierSectionFocus)
 }
 
+@MainActor
+final class PersonDossierFeedbackContext {
+    private var requestID: UUID?
+    private var dossierID: UUID?
+    private var task: Task<Void, Never>?
+
+    func invalidate() {
+        requestID = nil
+        dossierID = nil
+        task?.cancel()
+        task = nil
+    }
+
+    func observeSelection(_ selection: AppWorkspaceSelection?) {
+        if let dossierID, selection != .dossier(dossierID) {
+            invalidate()
+        }
+    }
+
+    func observeDetail(_ detail: DossierDetailState) {
+        if case .loading = detail { invalidate() }
+    }
+
+    @discardableResult
+    func perform(
+        dossierID: UUID,
+        operation: @escaping @MainActor () async -> PersonDossierSnapshot?,
+        publish: @escaping @MainActor (PersonDossierSnapshot) -> Void
+    ) -> Task<Void, Never> {
+        invalidate()
+        let id = UUID()
+        requestID = id
+        self.dossierID = dossierID
+        let pending = Task { @MainActor [weak self] in
+            guard !Task.isCancelled else { return }
+            let receipt = await operation()
+            guard let self, self.requestID == id else { return }
+            defer {
+                if self.requestID == id {
+                    self.requestID = nil
+                    self.dossierID = nil
+                    self.task = nil
+                }
+            }
+            guard !Task.isCancelled, let receipt else { return }
+            publish(receipt)
+        }
+        task = pending
+        return pending
+    }
+}
+
 struct PersonDossierMutationOutcome: Equatable {
     let focus: PersonDossierFocusTarget
     let announcement: String
@@ -321,13 +373,16 @@ struct PersonDossierMutationOutcome: Equatable {
 
     static func canPublish(
         after previous: PersonDossierSnapshot,
+        receipt: PersonDossierSnapshot?,
         detail: DossierDetailState,
         errorCode: String?,
         isCancelled: Bool
     ) -> Bool {
-        guard !isCancelled, errorCode == nil,
+        guard !isCancelled, errorCode == nil, let receipt,
               case let .available(.personMatter(current)) = detail else { return false }
-        return current.dossier.id == previous.dossier.id && current.token != previous.token
+        return receipt == current
+            && receipt.dossier.id == previous.dossier.id
+            && receipt.token != previous.token
     }
 
     static func errorMessage(detail: DossierDetailState, errorCode: String?) -> String? {

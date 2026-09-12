@@ -2130,6 +2130,83 @@ struct PersonDossierAppModelTests {
     }
 
     @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func personCorrectionReceiptIdentifiesOnlyTheSnapshotPublishedByThatCommand(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        await configure(command, service: context.service, steps: [.result(context.mutatedSnapshot)])
+
+        let receipt = await performWithReceipt(command, in: context)
+
+        #expect(receipt == context.mutatedSnapshot)
+        #expect(context.model.dossierDetailState == .available(.personMatter(context.mutatedSnapshot)))
+        try await assertExactInvocation(command, context: context)
+    }
+
+    @Test(
+        arguments: PersonDossierCorrectionCommand.allCases,
+        PersonDossierReceiptInvalidation.allCases
+    )
+    @MainActor func invalidatedPersonCorrectionDoesNotReturnAnotherPublicationsSnapshot(
+        command: PersonDossierCorrectionCommand,
+        invalidation: PersonDossierReceiptInvalidation
+    ) async throws {
+        for completion in PersonDossierLateCorrectionOutcome.allCases {
+            let other = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
+            let context = try await makeNavigationContext(dossierABASnapshot: other)
+            let previous = context.values.snapshot
+            let refreshed = try PersonDossierAppModelValues.make(
+                dossierID: previous.dossier.id,
+                sourceID: context.originSource.id,
+                documentID: UUID()
+            ).snapshot
+            let step: ScriptedPersonDossierLoader.CorrectionStep = switch completion {
+            case .success: .blocked(.success(context.mutatedSnapshot))
+            case .failure: .blocked(.failure(.loadFailed))
+            }
+            await configure(command, service: context.service, steps: [step])
+            let operation = Task { await performWithReceipt(command, in: context) }
+            await context.service.waitUntilBlockedMutationStarts()
+            switch invalidation {
+            case .dossierABA:
+                await context.service.setSnapshotSteps([.result(other), .result(refreshed)])
+                await context.model.selectDossier(id: other.dossier.id)
+                await context.model.selectDossier(id: previous.dossier.id)
+            case .reload:
+                await context.service.setSnapshotSteps([.result(refreshed)])
+                await context.model.selectDossier(id: previous.dossier.id)
+            case .refresh:
+                await context.service.setSnapshotSteps([.result(refreshed)])
+                await context.model.refreshSelectedDossier()
+            }
+            #expect(context.model.dossierDetailState == .available(.personMatter(refreshed)))
+            #expect(refreshed.token != previous.token)
+            await context.service.releaseNextBlockedMutation()
+            let receipt = await operation.value
+
+            #expect(receipt == nil)
+            #expect(context.model.dossierDetailState == .available(.personMatter(refreshed)))
+            #expect(context.model.lastErrorCode == nil)
+        }
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func personCorrectionReceiptIsNilForStaleFailureCancellationAndNoOp(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        for step: ScriptedPersonDossierLoader.CorrectionStep in [.staleInput, .failure, .cancellation] {
+            let context = try await makeNavigationContext()
+            await configure(command, service: context.service, steps: [step])
+            let receipt = await performWithReceipt(command, in: context)
+            #expect(receipt == nil)
+            #expect(context.model.dossierDetailState == .available(.personMatter(context.values.snapshot)))
+        }
+        let context = try await makeNavigationContext()
+        await context.model.selectSource(id: context.otherSource.id)
+        #expect(await performWithReceipt(command, in: context) == nil)
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
     @MainActor func personCorrectionForwardsExactCurrentInputAndPublishesCompleteSnapshot(
         command: PersonDossierCorrectionCommand
     ) async throws {
@@ -2914,6 +2991,28 @@ private extension PersonDossierAppModelTests {
     }
 
     @MainActor
+    func performWithReceipt(
+        _ command: PersonDossierCorrectionCommand,
+        in context: PersonDossierNavigationContext
+    ) async -> PersonDossierSnapshot? {
+        let snapshot = context.model.dossierDetailState.personSnapshot ?? context.values.snapshot
+        switch command {
+        case .accept:
+            guard let value = snapshot.suggestions.first else { return nil }
+            return await context.model.acceptPersonDossierSuggestion(value)
+        case .reject:
+            guard let value = snapshot.suggestions.first else { return nil }
+            return await context.model.rejectPersonDossierSuggestion(value)
+        case .remove:
+            guard let value = snapshot.directMembers.first else { return nil }
+            return await context.model.removePersonDossierMember(value)
+        case .reset:
+            guard let value = snapshot.corrections.first else { return nil }
+            return await context.model.resetPersonDossierCorrection(value)
+        }
+    }
+
+    @MainActor
     func perform(
         _ command: PersonDossierCorrectionCommand,
         in context: PersonDossierNavigationContext
@@ -3593,6 +3692,10 @@ private struct PersonDossierDocumentPresentation: Equatable {
     let dossierEntryState: DossierEntryState
     let workspaceSelection: AppWorkspaceSelection?
     let dossierDetailState: DossierDetailState
+}
+
+enum PersonDossierReceiptInvalidation: CaseIterable, Sendable {
+    case dossierABA, reload, refresh
 }
 
 enum PersonDossierCorrectionCommand: CaseIterable, Sendable {

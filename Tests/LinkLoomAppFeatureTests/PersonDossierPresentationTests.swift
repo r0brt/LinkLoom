@@ -514,13 +514,102 @@ extension PersonDossierPresentationTests {
         let values = try PersonDossierNavigationValues.make(originSourceID: UUID(), otherSourceID: UUID())
         let previous = values.snapshot
         let changed = values.replacingSnapshot(token: PersonDossierProjectionToken(dossierUpdatedAt: Date(), anchorUpdatedAt: previous.token.anchorUpdatedAt, originValidity: .current, documents: previous.token.documents, memberSupports: previous.token.memberSupports, suggestionSupports: previous.token.suggestionSupports, confirmationRevisionIDs: [UUID()], exclusionRevisionIDs: previous.token.exclusionRevisionIDs))
-        #expect(PersonDossierMutationOutcome.canPublish(after: previous, detail: .available(.personMatter(changed)), errorCode: nil, isCancelled: false))
-        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, detail: .available(.personMatter(previous)), errorCode: nil, isCancelled: false))
-        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, detail: .failed(dossierID: previous.dossier.id, previous: .personMatter(changed)), errorCode: nil, isCancelled: false))
-        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, detail: .available(.personMatter(changed)), errorCode: "dossierMutationStale", isCancelled: false))
-        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, detail: .available(.personMatter(changed)), errorCode: nil, isCancelled: true))
+        #expect(PersonDossierMutationOutcome.canPublish(after: previous, receipt: changed, detail: .available(.personMatter(changed)), errorCode: nil, isCancelled: false))
+        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, receipt: previous, detail: .available(.personMatter(previous)), errorCode: nil, isCancelled: false))
+        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, receipt: changed, detail: .failed(dossierID: previous.dossier.id, previous: .personMatter(changed)), errorCode: nil, isCancelled: false))
+        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, receipt: changed, detail: .available(.personMatter(changed)), errorCode: "dossierMutationStale", isCancelled: false))
+        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, receipt: changed, detail: .available(.personMatter(changed)), errorCode: nil, isCancelled: true))
+        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, receipt: nil, detail: .available(.personMatter(changed)), errorCode: nil, isCancelled: false))
+        let newer = values.replacingSnapshot(suggestions: [], token: changed.token)
+        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, receipt: changed, detail: .available(.personMatter(newer)), errorCode: nil, isCancelled: false))
         let other = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
-        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, detail: .available(.personMatter(other)), errorCode: nil, isCancelled: false))
+        #expect(!PersonDossierMutationOutcome.canPublish(after: previous, receipt: other, detail: .available(.personMatter(other)), errorCode: nil, isCancelled: false))
+    }
+
+    @Test @MainActor func feedbackContextPublishesOneSuccessfulReceiptAndSkipsMissingReceipts() async throws {
+        let snapshot = try PersonDossierAppModelValues.make().snapshot
+        let context = PersonDossierFeedbackContext()
+        var published: [PersonDossierSnapshot] = []
+        await context.perform(dossierID: snapshot.dossier.id, operation: {
+            context.observeSelection(.dossier(snapshot.dossier.id))
+            context.observeDetail(.available(.personMatter(snapshot)))
+            return snapshot
+        }, publish: { published.append($0) }).value
+        await context.perform(dossierID: snapshot.dossier.id, operation: { nil }, publish: { published.append($0) }).value
+        #expect(published == [snapshot])
+    }
+
+    @Test(arguments: [true, false], PersonFeedbackInvalidation.allCases)
+    @MainActor func feedbackInvalidationCancelsBlockedCommandAndSuppressesLateSuccessOrFailure(success: Bool, invalidation: PersonFeedbackInvalidation) async throws {
+        let snapshot = try PersonDossierAppModelValues.make().snapshot
+        let blocker = PersonFeedbackBlocker()
+        let context = PersonDossierFeedbackContext()
+        var published: [PersonDossierSnapshot] = []
+        let operation = context.perform(dossierID: snapshot.dossier.id, operation: {
+            await blocker.wait()
+            return success ? snapshot : nil
+        }, publish: { published.append($0) })
+        await blocker.waitUntilStarted()
+        switch invalidation {
+        case .navigationABA:
+            context.observeSelection(.dossier(UUID()))
+            context.observeSelection(.dossier(snapshot.dossier.id))
+        case .reload:
+            context.observeDetail(.loading(dossierID: snapshot.dossier.id, previous: .personMatter(snapshot)))
+            context.observeDetail(.available(.personMatter(snapshot)))
+        case .disappearance:
+            context.invalidate()
+        }
+        #expect(operation.isCancelled)
+        await blocker.release()
+        await operation.value
+        #expect(published.isEmpty)
+    }
+
+    @Test @MainActor func feedbackFromSupersededCommandCannotClearOrPublishOverTheNewRequest() async throws {
+        let oldSnapshot = try PersonDossierAppModelValues.make().snapshot
+        let newSnapshot = try PersonDossierAppModelValues.make(documentID: UUID()).snapshot
+        let oldBlocker = PersonFeedbackBlocker()
+        let newBlocker = PersonFeedbackBlocker()
+        let context = PersonDossierFeedbackContext()
+        var published: [PersonDossierSnapshot] = []
+        let old = context.perform(dossierID: oldSnapshot.dossier.id, operation: {
+            await oldBlocker.wait()
+            return oldSnapshot
+        }, publish: { published.append($0) })
+        await oldBlocker.waitUntilStarted()
+        let new = context.perform(dossierID: newSnapshot.dossier.id, operation: {
+            await newBlocker.wait()
+            return newSnapshot
+        }, publish: { published.append($0) })
+        await newBlocker.waitUntilStarted()
+        await oldBlocker.release()
+        await old.value
+        #expect(published.isEmpty)
+        #expect(!new.isCancelled)
+        await newBlocker.release()
+        await new.value
+        #expect(published == [newSnapshot])
+    }
+
+    @Test @MainActor func feedbackCallbackCannotDetachTheSuccessorTaskFromCancellation() async throws {
+        let snapshot = try PersonDossierAppModelValues.make().snapshot
+        let context = PersonDossierFeedbackContext()
+        let blocker = PersonFeedbackBlocker()
+        var successor: Task<Void, Never>?
+        let first = context.perform(dossierID: snapshot.dossier.id, operation: { snapshot }, publish: { _ in
+            successor = context.perform(dossierID: snapshot.dossier.id, operation: {
+                await blocker.wait()
+                return snapshot
+            }, publish: { _ in Issue.record("An invalidated successor must not publish feedback") })
+        })
+        await first.value
+        await blocker.waitUntilStarted()
+        context.invalidate()
+        let next = try #require(successor)
+        #expect(next.isCancelled)
+        await blocker.release()
+        await next.value
     }
 
     @Test func mutationProgressMatchesBothDossierAndDocumentAndIdentifiersStayStable() {
@@ -796,6 +885,35 @@ private extension PersonDossierPresentationTests {
                 normalized: normalized
             )
         )
+    }
+}
+
+enum PersonFeedbackInvalidation: CaseIterable {
+    case navigationABA, reload, disappearance
+}
+
+private actor PersonFeedbackBlocker {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private var started = false
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            started = true
+            for waiter in startWaiters { waiter.resume() }
+            startWaiters.removeAll()
+        }
+    }
+
+    func waitUntilStarted() async {
+        if started { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
     }
 }
 
