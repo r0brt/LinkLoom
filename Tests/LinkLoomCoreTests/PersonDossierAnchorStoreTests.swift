@@ -5,6 +5,38 @@ import Testing
 
 @Suite("Person dossier anchor store")
 struct PersonDossierAnchorStoreTests {
+    @Test func analyzedAtRoundTripsSubmillisecondPrecision() throws {
+        let fixture = try PersonDossierAnchorStoreFixture.make()
+        let analyzedAt = Date(timeIntervalSinceReferenceDate: 123_456_789.1234567)
+        let anchor = try fixture.anchor(id: fixture.firstAnchorID, analyzedAt: analyzedAt)
+
+        let inserted = try fixture.db.write { db in
+            try PersonDossierAnchorStore.insertOrFetch(in: db, proposed: anchor)
+        }
+        let reloaded = try fixture.db.read { db in
+            try #require(try PersonDossierAnchorStore.record(in: db, id: anchor.id))
+        }
+
+        #expect(inserted.originDNAAnalyzedAt == analyzedAt)
+        #expect(reloaded.originDNAAnalyzedAt == analyzedAt)
+        #expect(reloaded.originDNAAnalyzedAt.timeIntervalSinceReferenceDate.bitPattern
+            == analyzedAt.timeIntervalSinceReferenceDate.bitPattern)
+    }
+
+    @Test func recordReadsLegacyTextAnalyzedAt() throws {
+        let fixture = try PersonDossierAnchorStoreFixture.make()
+        try fixture.db.write { db in
+            try fixture.insertRawAnchor(in: db, id: fixture.firstAnchorID)
+            try fixture.insertRawEvidence(in: db, personAnchorID: fixture.firstAnchorID)
+            #expect(try String.fetchOne(db, sql:
+                "SELECT typeof(originDNAAnalyzedAt) FROM personDossierAnchor") == "text")
+        }
+        let reloaded = try fixture.db.read { db in
+            try #require(try PersonDossierAnchorStore.record(in: db, id: fixture.firstAnchorID))
+        }
+        #expect(reloaded == (try fixture.anchor(id: fixture.firstAnchorID)))
+    }
+
     @Test func insertOrFetchIsIdempotentForStableOriginIdentity() throws {
         let fixture = try PersonDossierAnchorStoreFixture.make()
         let first = try fixture.anchor(
@@ -391,6 +423,7 @@ private struct PersonDossierAnchorStoreFixture {
         primaryRole: PersonDossierRole = .resident,
         personEvidence: [DocumentDNAEvidence]? = nil,
         birthDate: PersonDossierBirthDate? = nil,
+        analyzedAt: Date? = nil,
         createdAt: Date? = nil
     ) throws -> PersonDossierAnchor {
         try PersonDossierAnchor(
@@ -404,7 +437,7 @@ private struct PersonDossierAnchorStoreFixture {
             originDNASchemaVersion: 1,
             originDNAAnalyzerIdentifier: "local-rules",
             originDNAAnalyzerVersion: "1",
-            originDNAAnalyzedAt: date,
+            originDNAAnalyzedAt: analyzedAt ?? date,
             personEvidence: personEvidence ?? [evidence(pageIndex: 0, exactText: "Elise Muster")],
             birthDate: birthDate,
             createdAt: createdAt ?? date,

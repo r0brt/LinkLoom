@@ -532,6 +532,171 @@ struct AppCompositionTests {
         }
         #expect(await events.snapshot() == ["catalog", "ingest", "dna"])
     }
+
+    @Test func personDossierServiceForwardsReadsExactlyOnce() async throws {
+        let values = try PersonCompositionValues.make()
+        let recorder = PersonDossierServiceRecorder()
+        let service = personDossierService(
+            summaries: {
+                await recorder.recordSummaries()
+                return [values.summary]
+            },
+            snapshot: { id in
+                await recorder.recordSnapshot(id)
+                return values.snapshot
+            }
+        )
+
+        #expect(try await service.personDossierSummaries() == [values.summary])
+        #expect(try await service.personDossierSnapshot(id: values.summary.id) == values.snapshot)
+        #expect(await recorder.summaryCalls == 1)
+        #expect(await recorder.snapshotIDs == [values.summary.id])
+    }
+
+    @Test func personDossierServiceForwardsEveryExactMutationInput() async throws {
+        let values = try PersonCompositionValues.make()
+        let recorder = PersonDossierServiceRecorder()
+        let service = personDossierService(recorder: recorder, returning: values.snapshot)
+
+        _ = try await service.createOrOpenPersonDossier(from: values.selection)
+        _ = try await service.chooseOrCreatePersonDossier(
+            from: values.selection,
+            choice: .new
+        )
+        _ = try await service.acceptPersonSuggestion(
+            dossierID: values.snapshot.dossier.id,
+            documentID: values.suggestion.id,
+            expectedSupport: values.suggestion.commandSupport,
+            expectedToken: values.snapshot.token
+        )
+        _ = try await service.rejectPersonSuggestion(
+            dossierID: values.snapshot.dossier.id,
+            documentID: values.suggestion.id,
+            expectedSupport: values.suggestion.commandSupport,
+            expectedToken: values.snapshot.token
+        )
+        _ = try await service.removePersonMember(
+            dossierID: values.snapshot.dossier.id,
+            documentID: values.member.id,
+            expectedSupport: try values.member.commandSupport,
+            expectedToken: values.snapshot.token
+        )
+        _ = try await service.resetPersonCorrection(
+            dossierID: values.snapshot.dossier.id,
+            documentID: values.correction.id,
+            expectedDecision: values.correction.decision,
+            expectedToken: values.snapshot.token
+        )
+
+        #expect(await recorder.openSelections == [values.selection])
+        #expect(await recorder.choices == [.new])
+        #expect(await recorder.acceptedSupports == [values.suggestion.commandSupport])
+        #expect(await recorder.rejectedSupports == [values.suggestion.commandSupport])
+        #expect(await recorder.removedSupports == [try values.member.commandSupport])
+        #expect(await recorder.resetDecisions == [values.correction.decision])
+        #expect(await recorder.tokens == Array(repeating: values.snapshot.token, count: 4))
+    }
+
+    @Test func personDossierServiceHonorsCancellationBeforeEveryMutation() async throws {
+        let values = try PersonCompositionValues.make()
+        let recorder = PersonDossierServiceRecorder()
+        let service = personDossierService(recorder: recorder, returning: values.snapshot)
+        let memberSupport = try values.member.commandSupport
+        let mutations: [@Sendable () async throws -> Void] = [
+            {
+                let operation = Task {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    _ = try await service.createOrOpenPersonDossier(from: values.selection)
+                }
+                try await operation.value
+            },
+            {
+                let operation = Task {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    _ = try await service.chooseOrCreatePersonDossier(
+                        from: values.selection,
+                        choice: .new
+                    )
+                }
+                try await operation.value
+            },
+            {
+                let operation = Task {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    _ = try await service.acceptPersonSuggestion(
+                        dossierID: values.snapshot.dossier.id,
+                        documentID: values.suggestion.id,
+                        expectedSupport: values.suggestion.commandSupport,
+                        expectedToken: values.snapshot.token
+                    )
+                }
+                try await operation.value
+            },
+            {
+                let operation = Task {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    _ = try await service.rejectPersonSuggestion(
+                        dossierID: values.snapshot.dossier.id,
+                        documentID: values.suggestion.id,
+                        expectedSupport: values.suggestion.commandSupport,
+                        expectedToken: values.snapshot.token
+                    )
+                }
+                try await operation.value
+            },
+            {
+                let operation = Task {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    _ = try await service.removePersonMember(
+                        dossierID: values.snapshot.dossier.id,
+                        documentID: values.member.id,
+                        expectedSupport: memberSupport,
+                        expectedToken: values.snapshot.token
+                    )
+                }
+                try await operation.value
+            },
+            {
+                let operation = Task {
+                    withUnsafeCurrentTask { $0?.cancel() }
+                    _ = try await service.resetPersonCorrection(
+                        dossierID: values.snapshot.dossier.id,
+                        documentID: values.correction.id,
+                        expectedDecision: values.correction.decision,
+                        expectedToken: values.snapshot.token
+                    )
+                }
+                try await operation.value
+            },
+        ]
+
+        for mutation in mutations {
+            await #expect(throws: CancellationError.self) {
+                try await mutation()
+            }
+        }
+        #expect(await recorder.mutationCallCount == 0)
+    }
+
+    @Test func personDossierServicePropagatesRepositoryFailuresUnchanged() async throws {
+        let values = try PersonCompositionValues.make()
+        let service = personDossierService(
+            summaries: { throw CompositionTestError.dossierFailed },
+            accept: { _, _, _, _ in throw CompositionTestError.dossierFailed }
+        )
+
+        await #expect(throws: CompositionTestError.dossierFailed) {
+            try await service.personDossierSummaries()
+        }
+        await #expect(throws: CompositionTestError.dossierFailed) {
+            try await service.acceptPersonSuggestion(
+                dossierID: values.snapshot.dossier.id,
+                documentID: values.suggestion.id,
+                expectedSupport: values.suggestion.commandSupport,
+                expectedToken: values.snapshot.token
+            )
+        }
+    }
 }
 
 private enum CompositionTestError: Error {
@@ -572,6 +737,60 @@ private actor DossierServiceRecorder {
         resetDossierIDs.append(dossierID)
         resetDocumentIDs.append(documentID)
         resetRevisionIDs.append(revisionID)
+    }
+}
+
+private actor PersonDossierServiceRecorder {
+    private(set) var summaryCalls = 0
+    private(set) var snapshotIDs: [UUID] = []
+    private(set) var openSelections: [PersonDossierAnchorSelection] = []
+    private(set) var choices: [PersonDossierCreationChoice] = []
+    private(set) var acceptedSupports: [PersonDossierCandidateSupportIdentity] = []
+    private(set) var rejectedSupports: [PersonDossierCandidateSupportIdentity] = []
+    private(set) var removedSupports: [PersonDossierMembershipSupport] = []
+    private(set) var resetDecisions: [PersonDossierCorrectionDecision] = []
+    private(set) var tokens: [PersonDossierProjectionToken] = []
+
+    var mutationCallCount: Int {
+        openSelections.count + choices.count + acceptedSupports.count + rejectedSupports.count
+            + removedSupports.count + resetDecisions.count
+    }
+
+    func recordSummaries() { summaryCalls += 1 }
+    func recordSnapshot(_ id: UUID) { snapshotIDs.append(id) }
+    func recordOpen(_ selection: PersonDossierAnchorSelection) { openSelections.append(selection) }
+    func recordChoice(_ choice: PersonDossierCreationChoice) { choices.append(choice) }
+
+    func recordAccept(
+        _ support: PersonDossierCandidateSupportIdentity,
+        token: PersonDossierProjectionToken
+    ) {
+        acceptedSupports.append(support)
+        tokens.append(token)
+    }
+
+    func recordReject(
+        _ support: PersonDossierCandidateSupportIdentity,
+        token: PersonDossierProjectionToken
+    ) {
+        rejectedSupports.append(support)
+        tokens.append(token)
+    }
+
+    func recordRemove(
+        _ support: PersonDossierMembershipSupport,
+        token: PersonDossierProjectionToken
+    ) {
+        removedSupports.append(support)
+        tokens.append(token)
+    }
+
+    func recordReset(
+        _ decision: PersonDossierCorrectionDecision,
+        token: PersonDossierProjectionToken
+    ) {
+        resetDecisions.append(decision)
+        tokens.append(token)
     }
 }
 
@@ -649,6 +868,336 @@ private func dossierService(
         exclude: exclude,
         reset: reset
     )
+}
+
+private func personDossierService(
+    summaries: @escaping @Sendable () async throws -> [PersonDossierSummary] = { [] },
+    snapshot: @escaping @Sendable (UUID) async throws -> PersonDossierSnapshot = { _ in
+        throw CompositionTestError.dossierFailed
+    },
+    open: @escaping @Sendable (PersonDossierAnchorSelection) async throws
+        -> PersonDossierOpenResult = { _ in throw CompositionTestError.dossierFailed },
+    choose: @escaping @Sendable (
+        PersonDossierAnchorSelection, PersonDossierCreationChoice
+    ) async throws -> PersonDossierSnapshot = { _, _ in throw CompositionTestError.dossierFailed },
+    accept: @escaping @Sendable (
+        UUID, UUID, PersonDossierCandidateSupportIdentity, PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot = { _, _, _, _ in throw CompositionTestError.dossierFailed },
+    reject: @escaping @Sendable (
+        UUID, UUID, PersonDossierCandidateSupportIdentity, PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot = { _, _, _, _ in throw CompositionTestError.dossierFailed },
+    remove: @escaping @Sendable (
+        UUID, UUID, PersonDossierMembershipSupport, PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot = { _, _, _, _ in throw CompositionTestError.dossierFailed },
+    reset: @escaping @Sendable (
+        UUID, UUID, PersonDossierCorrectionDecision, PersonDossierProjectionToken
+    ) async throws -> PersonDossierSnapshot = { _, _, _, _ in throw CompositionTestError.dossierFailed }
+) -> CurrentPersonDossierService {
+    CurrentPersonDossierService(
+        summaries: summaries,
+        snapshot: snapshot,
+        open: open,
+        choose: choose,
+        accept: accept,
+        reject: reject,
+        remove: remove,
+        reset: reset
+    )
+}
+
+private func personDossierService(
+    recorder: PersonDossierServiceRecorder,
+    returning snapshot: PersonDossierSnapshot
+) -> CurrentPersonDossierService {
+    personDossierService(
+        summaries: { [] },
+        snapshot: { _ in snapshot },
+        open: { selection in
+            await recorder.recordOpen(selection)
+            return .opened(snapshot)
+        },
+        choose: { _, choice in
+            await recorder.recordChoice(choice)
+            return snapshot
+        },
+        accept: { _, _, support, token in
+            await recorder.recordAccept(support, token: token)
+            return snapshot
+        },
+        reject: { _, _, support, token in
+            await recorder.recordReject(support, token: token)
+            return snapshot
+        },
+        remove: { _, _, support, token in
+            await recorder.recordRemove(support, token: token)
+            return snapshot
+        },
+        reset: { _, _, decision, token in
+            await recorder.recordReset(decision, token: token)
+            return snapshot
+        }
+    )
+}
+
+private struct PersonCompositionValues {
+    let selection: PersonDossierAnchorSelection
+    let summary: PersonDossierSummary
+    let snapshot: PersonDossierSnapshot
+    let suggestion: PersonDossierSuggestion
+    let member: PersonDossierMember
+    let correction: PersonDossierCorrection
+
+    static func make() throws -> Self {
+        let timestamp = Date(timeIntervalSince1970: 300)
+        let sourceID = UUID(uuidString: "00000000-0000-0000-0000-000000000701")!
+        let dossierID = UUID(uuidString: "00000000-0000-0000-0000-000000000702")!
+        let anchorID = UUID(uuidString: "00000000-0000-0000-0000-000000000703")!
+        let origin = document(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000704")!,
+            sourceID: sourceID,
+            path: "origin.pdf",
+            timestamp: timestamp
+        )
+        let primaryFinding = try finding(
+            displayName: "Elise Muster",
+            normalizedName: "elise muster",
+            role: .resident
+        )
+        let originDNA = try dna(document: origin, finding: primaryFinding, timestamp: timestamp)
+        let selection = try PersonDossierAnchorSelection(
+            document: origin,
+            snapshot: originDNA,
+            finding: primaryFinding
+        )
+        let anchor = try PersonDossierAnchor(
+            id: anchorID,
+            displayName: "Elise Muster",
+            normalizedName: "elise muster",
+            primaryRole: .resident,
+            originDocumentID: origin.id,
+            originContentHash: origin.contentHash,
+            originExtractionVersion: originDNA.inputExtractionVersion,
+            originDNASchemaVersion: originDNA.schemaVersion,
+            originDNAAnalyzerIdentifier: originDNA.analyzerIdentifier,
+            originDNAAnalyzerVersion: originDNA.analyzerVersion,
+            originDNAAnalyzedAt: timestamp,
+            personEvidence: primaryFinding.evidence,
+            birthDate: nil,
+            createdAt: timestamp,
+            updatedAt: timestamp
+        )
+        let dossier = try DossierRecord(
+            id: dossierID,
+            kind: .personMatter,
+            displayName: "Elise Muster",
+            anchor: .person(anchor),
+            createdAt: timestamp,
+            updatedAt: timestamp
+        )
+        let summary = PersonDossierSummary(dossier: dossier, anchor: anchor)
+
+        let suggestionDocument = document(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000705")!,
+            sourceID: sourceID,
+            path: "suggestion.pdf",
+            timestamp: timestamp
+        )
+        let suggestionFinding = try finding(
+            displayName: "Elise Muster",
+            normalizedName: "elise muster",
+            role: .authorizedPerson
+        )
+        let suggestionCurrent = try CurrentDocumentDNA(
+            document: suggestionDocument,
+            snapshot: try dna(
+                document: suggestionDocument,
+                finding: suggestionFinding,
+                timestamp: timestamp
+            )
+        )
+        let suggestionSupport = try PersonDossierCandidateSupportIdentity(
+            kind: .secondaryRole,
+            person: try PersonDossierFindingSupportIdentity(
+                current: suggestionCurrent,
+                role: .authorizedPerson,
+                finding: suggestionFinding
+            ),
+            conflict: .none
+        )
+        let suggestion = try PersonDossierSuggestion(
+            document: suggestionDocument,
+            sourceDisplayName: "Archive",
+            documentType: .correspondence,
+            section: .directDocuments,
+            kind: .secondaryRole,
+            conflict: .none,
+            currentSupports: [suggestionSupport],
+            commandSupport: suggestionSupport
+        )
+
+        let memberDocument = document(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000706")!,
+            sourceID: sourceID,
+            path: "member.pdf",
+            timestamp: timestamp
+        )
+        let memberFinding = try finding(
+            displayName: "Elise Muster",
+            normalizedName: "elise muster",
+            role: .resident
+        )
+        let memberCurrent = try CurrentDocumentDNA(
+            document: memberDocument,
+            snapshot: try dna(document: memberDocument, finding: memberFinding, timestamp: timestamp)
+        )
+        let member = try PersonDossierMember(
+            document: memberDocument,
+            sourceDisplayName: "Archive",
+            documentType: .correspondence,
+            section: .directDocuments,
+            supports: [.exactPrimary(try PersonDossierFindingSupportIdentity(
+                current: memberCurrent,
+                role: .resident,
+                finding: memberFinding
+            ))],
+            isConfirmationAuthoritative: false,
+            preferredPaymentSupport: nil
+        )
+
+        let correctionDocument = document(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000707")!,
+            sourceID: sourceID,
+            path: "correction.pdf",
+            timestamp: timestamp
+        )
+        let correction = try PersonDossierCorrection(
+            document: correctionDocument,
+            sourceDisplayName: "Archive",
+            documentType: .correspondence,
+            decision: .exclusion(DossierMembershipExclusion(
+                dossierID: dossierID,
+                documentID: correctionDocument.id,
+                revisionID: UUID(uuidString: "00000000-0000-0000-0000-000000000708")!,
+                excludedAt: timestamp
+            ))
+        )
+        let token = PersonDossierProjectionToken(
+            dossierUpdatedAt: timestamp,
+            anchorUpdatedAt: timestamp,
+            originValidity: .current,
+            documents: [
+                PersonDossierDocumentProjectionIdentity(document: origin, dnaAnalyzedAt: timestamp),
+                PersonDossierDocumentProjectionIdentity(document: suggestionDocument, dnaAnalyzedAt: timestamp),
+                PersonDossierDocumentProjectionIdentity(document: memberDocument, dnaAnalyzedAt: timestamp),
+                PersonDossierDocumentProjectionIdentity(document: correctionDocument, dnaAnalyzedAt: nil),
+            ],
+            memberSupports: [member.supports],
+            suggestionSupports: [suggestionSupport],
+            confirmationRevisionIDs: [],
+            exclusionRevisionIDs: [try exclusionRevisionID(correction.decision)]
+        )
+        return Self(
+            selection: selection,
+            summary: summary,
+            snapshot: PersonDossierSnapshot(
+                dossier: dossier,
+                anchor: anchor,
+                origin: try PersonDossierOriginState(
+                    validity: .current,
+                    document: origin,
+                    sourceDisplayName: "Archive"
+                ),
+                directMembers: [member],
+                costsAndPayments: [],
+                suggestions: [suggestion],
+                corrections: [correction],
+                token: token
+            ),
+            suggestion: suggestion,
+            member: member,
+            correction: correction
+        )
+    }
+
+    private static func document(
+        id: UUID,
+        sourceID: UUID,
+        path: String,
+        timestamp: Date
+    ) -> DocumentRecord {
+        DocumentRecord(
+            id: id,
+            sourceRootID: sourceID,
+            relativePath: path,
+            contentHash: "hash-\(path)",
+            byteCount: 20,
+            modifiedAt: timestamp,
+            mediaType: .pdf,
+            status: .ready,
+            pageCount: 1,
+            lastSeenAt: timestamp
+        )
+    }
+
+    private static func finding(
+        displayName: String,
+        normalizedName: String,
+        role: PersonDossierRole
+    ) throws -> DocumentDNAFinding {
+        let evidence = try DocumentDNAEvidence(
+            pageIndex: 0,
+            startUTF16: 0,
+            lengthUTF16: displayName.utf16.count,
+            exactText: displayName,
+            ocrRegionIndexes: []
+        )
+        return try DocumentDNAFinding(
+            kind: .person,
+            qualifier: role.rawValue,
+            displayValue: displayName,
+            normalizedValue: normalizedName,
+            secondaryNormalizedValue: nil,
+            confidence: 0.9,
+            evidence: [evidence]
+        )
+    }
+
+    private static func dna(
+        document: DocumentRecord,
+        finding: DocumentDNAFinding,
+        timestamp: Date
+    ) throws -> DocumentDNA {
+        try DocumentDNA(
+            documentID: document.id,
+            schemaVersion: 1,
+            analyzerIdentifier: "local-rules",
+            analyzerVersion: "1",
+            inputContentHash: document.contentHash,
+            inputExtractionVersion: "text-v1",
+            findings: [
+                try DocumentDNAFinding(
+                    kind: .documentType,
+                    qualifier: nil,
+                    displayValue: "",
+                    normalizedValue: DocumentType.unknown.rawValue,
+                    secondaryNormalizedValue: nil,
+                    confidence: 0,
+                    evidence: []
+                ),
+                finding,
+            ],
+            analyzedAt: timestamp
+        )
+    }
+
+    private static func exclusionRevisionID(
+        _ decision: PersonDossierCorrectionDecision
+    ) throws -> UUID {
+        guard case let .exclusion(exclusion) = decision else {
+            throw CompositionTestError.dossierFailed
+        }
+        return exclusion.revisionID
+    }
 }
 
 private func dossierSummary() throws -> DossierSummary {

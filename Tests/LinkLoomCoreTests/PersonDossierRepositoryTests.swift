@@ -5,6 +5,33 @@ import Testing
 
 @Suite("Person dossier repository")
 struct PersonDossierRepositoryTests {
+    @Test func submillisecondOriginRemainsCurrentAfterCreateAndReload() async throws {
+        let fixture = try await PersonDossierFixture.make()
+        let person = try fixture.personFinding(qualifier: PersonDossierRole.resident.rawValue)
+        let analyzedAt = Date(timeIntervalSinceReferenceDate: 123_456_789.1234567)
+        let current = try await fixture.insertSnapshot(
+            path: "submillisecond-origin.pdf",
+            findings: [person],
+            documentType: .correspondence,
+            analyzedAt: analyzedAt
+        )
+        let repository = fixture.makeDossierRepository()
+        let result = try await repository.createOrOpenPersonDossier(
+            from: fixture.selection(current: current, finding: person)
+        )
+        guard case .opened(let created) = result else {
+            Issue.record("Expected a newly opened person dossier")
+            return
+        }
+        #expect(created.anchor.originDNAAnalyzedAt == analyzedAt)
+        #expect(created.origin.validity == .current)
+
+        let reloaded = try await fixture.makeDossierRepository()
+            .personDossierSnapshot(id: created.dossier.id)
+        #expect(reloaded.anchor.originDNAAnalyzedAt == analyzedAt)
+        #expect(reloaded.origin.validity == .current)
+    }
+
     @Test func loadsCompleteSnapshotWithBoundedIndexedReads() async throws {
         let values = try await PersistedPersonDossierScenario.make()
         let trace = PersonDossierRepositorySQLTrace()
@@ -714,6 +741,38 @@ struct PersonDossierRepositoryTests {
         }
         #expect(try await fixture.personPersistenceCounts() == (0, 0))
         #expect(try await fixture.databaseSnapshot() == beforeFailure)
+    }
+
+    @Test func acceptingSubmillisecondEvidenceKeepsCurrentCandidateAfterReload() async throws {
+        for (index, variant) in PersonSuggestionCommandScenario.Variant.allCases.enumerated() {
+            let values = try await PersonSuggestionCommandScenario.make(
+                variant: variant,
+                sequence: 600 + index * 100,
+                candidateAnalyzedAt: Date(timeIntervalSinceReferenceDate: 810_950_650.9063049554)
+            )
+            let repository = values.fixture.makeDossierRepository(sequence: 800 + index)
+            let before = try await repository.personDossierSnapshot(id: values.dossier.id)
+            let suggestion = try #require(before.suggestions.first { $0.document.id == values.candidate.document.id })
+            let accepted = try await repository.acceptPersonSuggestion(
+                dossierID: values.dossier.id,
+                documentID: values.candidate.document.id,
+                expectedSupport: suggestion.commandSupport,
+                expectedToken: before.token
+            )
+            let reloaded = try await values.fixture.makeDossierRepository(sequence: 900 + index)
+                .personDossierSnapshot(id: values.dossier.id)
+            for snapshot in [accepted, reloaded] {
+                let member = try #require((snapshot.directMembers + snapshot.costsAndPayments).first {
+                    $0.document.id == values.candidate.document.id
+                })
+                guard case let .manualConfirmation(confirmation, currentCandidate) = member.supports.first else {
+                    Issue.record("Expected retained manual confirmation")
+                    continue
+                }
+                #expect(confirmation.acceptedDNAAnalyzedAt == values.candidate.snapshot.analyzedAt)
+                #expect(currentCandidate == suggestion.commandSupport)
+            }
+        }
     }
 
     @Test func acceptsCurrentSecondaryAndBirthConflictSuggestionsExactly() async throws {
@@ -3079,7 +3138,8 @@ private struct PersonSuggestionCommandScenario: Sendable {
     static func make(
         variant: Variant,
         sequence: Int,
-        additionalSuggestion: Bool = false
+        additionalSuggestion: Bool = false,
+        candidateAnalyzedAt: Date? = nil
     ) async throws -> Self {
         let fixture = try await PersonDossierFixture.make()
         let originPerson = try fixture.personFinding(
@@ -3155,7 +3215,7 @@ private struct PersonSuggestionCommandScenario: Sendable {
             path: "commands/\(sequence)-candidate.pdf",
             findings: candidateFindings,
             documentType: candidateType,
-            analyzedAt: PersonDossierFixture.repositoryDate(TimeInterval(sequence + 3))
+            analyzedAt: candidateAnalyzedAt ?? PersonDossierFixture.repositoryDate(TimeInterval(sequence + 3))
         )
         if additionalSuggestion {
             _ = try await fixture.insertSnapshot(

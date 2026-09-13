@@ -259,6 +259,7 @@ struct DocumentDNAEvidencePresentation: Equatable {
 }
 
 struct DocumentDNAFactPresentation: Equatable {
+    let sourceFindingIndex: Int
     let title: String
     let displayValue: String
     let confidence: Double
@@ -282,9 +283,10 @@ struct DocumentDNADetailPresentation: Equatable {
                 exactText: $0.exactText
             )
         } ?? []
-        facts = snapshot.findings.compactMap { finding in
+        facts = snapshot.findings.enumerated().compactMap { sourceFindingIndex, finding in
             guard finding.kind != .documentType else { return nil }
             return DocumentDNAFactPresentation(
+                sourceFindingIndex: sourceFindingIndex,
                 title: Self.factTitle(for: finding),
                 displayValue: finding.displayValue,
                 confidence: finding.confidence,

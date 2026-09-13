@@ -1752,9 +1752,11 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// Returns this command's published snapshot, or nil when it did not publish.
+    @discardableResult
     public func acceptPersonDossierSuggestion(
         _ suggestion: PersonDossierSuggestion
-    ) async {
+    ) async -> PersonDossierSnapshot? {
         guard !isExclusiveSourceOperationActive,
               case .idle = dossierMutationState,
               let personDossierMutator,
@@ -1763,7 +1765,7 @@ public final class AppModel: ObservableObject {
               current.dossier.id == dossierID,
               current.suggestions.contains(suggestion)
         else {
-            return
+            return nil
         }
         dossierMutationGeneration &+= 1
         let mutationGeneration = dossierMutationGeneration
@@ -1785,7 +1787,7 @@ public final class AppModel: ObservableObject {
             }
         }
 
-        await runPersonDossierMutation(
+        return await runPersonDossierMutation(
             state: state,
             mutationGeneration: mutationGeneration,
             loadGeneration: loadGeneration,
@@ -1805,9 +1807,11 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// Returns this command's published snapshot, or nil when it did not publish.
+    @discardableResult
     public func rejectPersonDossierSuggestion(
         _ suggestion: PersonDossierSuggestion
-    ) async {
+    ) async -> PersonDossierSnapshot? {
         guard !isExclusiveSourceOperationActive,
               case .idle = dossierMutationState,
               let personDossierMutator,
@@ -1816,7 +1820,7 @@ public final class AppModel: ObservableObject {
               current.dossier.id == dossierID,
               current.suggestions.contains(suggestion)
         else {
-            return
+            return nil
         }
         dossierMutationGeneration &+= 1
         let mutationGeneration = dossierMutationGeneration
@@ -1838,7 +1842,7 @@ public final class AppModel: ObservableObject {
             }
         }
 
-        await runPersonDossierMutation(
+        return await runPersonDossierMutation(
             state: state,
             mutationGeneration: mutationGeneration,
             loadGeneration: loadGeneration,
@@ -1858,9 +1862,11 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// Returns this command's published snapshot, or nil when it did not publish.
+    @discardableResult
     public func removePersonDossierMember(
         _ member: PersonDossierMember
-    ) async {
+    ) async -> PersonDossierSnapshot? {
         guard !isExclusiveSourceOperationActive,
               case .idle = dossierMutationState,
               let personDossierMutator,
@@ -1870,13 +1876,13 @@ public final class AppModel: ObservableObject {
               current.directMembers.contains(member)
                 || current.costsAndPayments.contains(member)
         else {
-            return
+            return nil
         }
         let support: PersonDossierMembershipSupport
         do {
             support = try member.commandSupport
         } catch {
-            return
+            return nil
         }
         dossierMutationGeneration &+= 1
         let mutationGeneration = dossierMutationGeneration
@@ -1898,7 +1904,7 @@ public final class AppModel: ObservableObject {
             }
         }
 
-        await runPersonDossierMutation(
+        return await runPersonDossierMutation(
             state: state,
             mutationGeneration: mutationGeneration,
             loadGeneration: loadGeneration,
@@ -1918,9 +1924,11 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    /// Returns this command's published snapshot, or nil when it did not publish.
+    @discardableResult
     public func resetPersonDossierCorrection(
         _ correction: PersonDossierCorrection
-    ) async {
+    ) async -> PersonDossierSnapshot? {
         guard !isExclusiveSourceOperationActive,
               case .idle = dossierMutationState,
               let personDossierMutator,
@@ -1929,7 +1937,7 @@ public final class AppModel: ObservableObject {
               current.dossier.id == dossierID,
               current.corrections.contains(correction)
         else {
-            return
+            return nil
         }
         dossierMutationGeneration &+= 1
         let mutationGeneration = dossierMutationGeneration
@@ -1951,7 +1959,7 @@ public final class AppModel: ObservableObject {
             }
         }
 
-        await runPersonDossierMutation(
+        return await runPersonDossierMutation(
             state: state,
             mutationGeneration: mutationGeneration,
             loadGeneration: loadGeneration,
@@ -1971,6 +1979,7 @@ public final class AppModel: ObservableObject {
         }
     }
 
+    @discardableResult
     private func runPersonDossierMutation(
         state: DossierMutationState,
         mutationGeneration: Int,
@@ -1982,7 +1991,7 @@ public final class AppModel: ObservableObject {
         dossierID: UUID,
         expectedToken: PersonDossierProjectionToken,
         operation: () async throws -> PersonDossierSnapshot
-    ) async {
+    ) async -> PersonDossierSnapshot? {
         do {
             let snapshot = try await operation()
             guard snapshot.dossier.id == dossierID else {
@@ -1999,11 +2008,12 @@ public final class AppModel: ObservableObject {
                 dossierID: dossierID,
                 expectedToken: expectedToken
             ) else {
-                return
+                return nil
             }
             publishPersonDossier(snapshot)
+            return snapshot
         } catch is CancellationError {
-            return
+            return nil
         } catch {
             guard matchesPersonDossierMutationContext(
                 state: state,
@@ -2016,13 +2026,14 @@ public final class AppModel: ObservableObject {
                 dossierID: dossierID,
                 expectedToken: expectedToken
             ) else {
-                return
+                return nil
             }
             publishRuntimeFailure(
                 code: "dossierMutationFailure",
                 category: .dossierMutation,
                 error: error
             )
+            return nil
         }
     }
 

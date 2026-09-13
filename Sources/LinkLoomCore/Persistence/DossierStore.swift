@@ -163,7 +163,7 @@ enum DossierStore {
                 confirmation.acceptedDNASchemaVersion,
                 confirmation.acceptedDNAAnalyzerIdentifier,
                 confirmation.acceptedDNAAnalyzerVersion,
-                confirmation.acceptedDNAAnalyzedAt,
+                confirmation.acceptedDNAAnalyzedAt.timeIntervalSinceReferenceDate,
                 confirmation.acceptedRole.rawValue,
                 confirmation.acceptedNormalizedName,
             ]
@@ -278,6 +278,15 @@ enum DossierStore {
                   let acceptedRole = PersonDossierRole(rawValue: acceptedRoleValue) else {
                 throw DossierStoreError.invalidStoredState
             }
+            let analyzedAtValue: DatabaseValue = row["acceptedDNAAnalyzedAt"]
+            let analyzedAt: Date
+            if let interval = Double.fromDatabaseValue(analyzedAtValue) {
+                analyzedAt = Date(timeIntervalSinceReferenceDate: interval)
+            } else if let legacyDate = Date.fromDatabaseValue(analyzedAtValue) {
+                analyzedAt = legacyDate
+            } else {
+                throw DossierStoreError.invalidStoredState
+            }
             return try DossierMembershipConfirmation(
                 dossierID: row.decode(UUID.self, forColumn: "dossierID"),
                 documentID: row.decode(UUID.self, forColumn: "documentID"),
@@ -301,10 +310,7 @@ enum DossierStore {
                     String.self,
                     forColumn: "acceptedDNAAnalyzerVersion"
                 ),
-                acceptedDNAAnalyzedAt: row.decode(
-                    Date.self,
-                    forColumn: "acceptedDNAAnalyzedAt"
-                ),
+                acceptedDNAAnalyzedAt: analyzedAt,
                 acceptedRole: acceptedRole,
                 acceptedNormalizedName: row.decode(
                     String.self,

@@ -98,7 +98,8 @@ enum PersonDossierAnchorStore {
                 proposed.primaryRole.rawValue, proposed.originDocumentID,
                 proposed.originContentHash, proposed.originExtractionVersion,
                 proposed.originDNASchemaVersion, proposed.originDNAAnalyzerIdentifier,
-                proposed.originDNAAnalyzerVersion, proposed.originDNAAnalyzedAt,
+                proposed.originDNAAnalyzerVersion,
+                proposed.originDNAAnalyzedAt.timeIntervalSinceReferenceDate,
                 proposed.birthDate?.displayValue, proposed.birthDate?.normalizedValue,
                 proposed.createdAt, proposed.updatedAt,
             ]
@@ -240,6 +241,16 @@ enum PersonDossierAnchorStore {
                 throw PersonDossierAnchorStoreError.invalidStoredState
             }
 
+            let analyzedAtValue: DatabaseValue = row["originDNAAnalyzedAt"]
+            let analyzedAt: Date
+            if let interval = Double.fromDatabaseValue(analyzedAtValue) {
+                analyzedAt = Date(timeIntervalSinceReferenceDate: interval)
+            } else if let decodedDate = Date.fromDatabaseValue(analyzedAtValue) {
+                analyzedAt = decodedDate
+            } else {
+                throw PersonDossierAnchorStoreError.invalidStoredState
+            }
+
             return try PersonDossierAnchor(
                 id: id,
                 displayName: row.decode(String.self, forColumn: "displayName"),
@@ -251,7 +262,7 @@ enum PersonDossierAnchorStore {
                 originDNASchemaVersion: row.decode(Int.self, forColumn: "originDNASchemaVersion"),
                 originDNAAnalyzerIdentifier: row.decode(String.self, forColumn: "originDNAAnalyzerIdentifier"),
                 originDNAAnalyzerVersion: row.decode(String.self, forColumn: "originDNAAnalyzerVersion"),
-                originDNAAnalyzedAt: row.decode(Date.self, forColumn: "originDNAAnalyzedAt"),
+                originDNAAnalyzedAt: analyzedAt,
                 personEvidence: personEvidence,
                 birthDate: birthDate,
                 createdAt: row.decode(Date.self, forColumn: "createdAt"),

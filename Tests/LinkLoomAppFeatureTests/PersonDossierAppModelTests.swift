@@ -638,6 +638,116 @@ struct PersonDossierAppModelTests {
         #expect(context.model.dossierDetailState == .none)
     }
 
+    @Test(arguments: [false, true])
+    @MainActor func workspaceOnlyNavigationInvalidatesInspectorEntryFeedback(personWorkspace: Bool) async throws {
+        let priorPerson = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
+        let targetPerson = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
+        let priorCosts = try CostsAndPaymentsDossierAppModelValues.make().snapshot
+        let offered = personSummary(targetPerson)
+        let context = try await makeOpenContext(
+            costsLoader: ScriptedPersonDossierCostsLoader(
+                summaries: [costSummary(priorCosts)], snapshots: [priorCosts]
+            ),
+            summarySteps: [.result([personSummary(priorPerson), offered])],
+            snapshotSteps: personWorkspace
+                ? [.result(priorPerson), .result(targetPerson)] : [.result(targetPerson)],
+            openSteps: [.result(.choose([offered]))],
+            choiceSteps: [.failure]
+        )
+        await context.model.selectDossier(id: personWorkspace ? priorPerson.dossier.id : priorCosts.dossier.id)
+        await context.model.selectDocument(id: context.values.document.id)
+        let entry = PersonDossierEntryContext()
+        entry.observeInput(.init(
+            documentID: context.model.selectedDocumentID, snapshot: context.values.dna,
+            workspaceSelection: context.model.workspaceSelection
+        ))
+        await entry.perform(selection: context.values.selection) {
+            await context.model.openOrCreatePersonDossier(from: context.values.selection)
+            return PersonDossierEntryResult(choices: context.model.personDossierChoices, errorCode: context.model.lastErrorCode)
+        }.value
+        await entry.perform(selection: context.values.selection) {
+            await context.model.choosePersonDossier(id: targetPerson.dossier.id)
+            return PersonDossierEntryResult(choices: context.model.personDossierChoices, errorCode: context.model.lastErrorCode)
+        }.value
+        #expect(entry.choices == [offered])
+        #expect(entry.errorMessage != nil)
+
+        await context.model.selectDossier(id: targetPerson.dossier.id)
+
+        #expect(context.model.dossierDetailState == .available(.personMatter(targetPerson)))
+        #expect(context.model.selectedDocumentID == context.values.document.id)
+        #expect(context.model.documentDNADetailState == .available(context.values.dna))
+        #expect(context.model.personDossierChoices.isEmpty)
+        entry.observeInput(.init(
+            documentID: context.model.selectedDocumentID, snapshot: context.values.dna,
+            workspaceSelection: context.model.workspaceSelection
+        ))
+        #expect(entry.pendingSelection == nil)
+        #expect(entry.choices.isEmpty)
+        #expect(entry.errorMessage == nil)
+        #expect(!entry.isPending)
+    }
+
+    @Test(arguments: [false, true], ["open", "choose", "create"])
+    @MainActor func inspectorEntryFailureFromAvailableDossierIsRetryable(personWorkspace: Bool, action: String) async throws {
+        let priorPerson = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
+        let priorCosts = try CostsAndPaymentsDossierAppModelValues.make().snapshot
+        let opened = try PersonDossierAppModelValues.make().snapshot
+        let offered = personSummary(opened)
+        let context = try await makeOpenContext(
+            costsLoader: ScriptedPersonDossierCostsLoader(
+                summaries: [costSummary(priorCosts)], snapshots: [priorCosts]
+            ),
+            summarySteps: [.result([personSummary(priorPerson)]), .result([offered])],
+            snapshotSteps: [.result(priorPerson)],
+            openSteps: action == "open"
+                ? [.failure, .result(.opened(opened))]
+                : [.result(.choose([offered]))],
+            choiceSteps: [.failure, .result(opened)]
+        )
+        await context.model.selectDossier(id: personWorkspace ? priorPerson.dossier.id : priorCosts.dossier.id)
+        await context.model.selectDocument(id: context.values.document.id)
+        let previous = context.model.dossierDetailState
+        #expect(previous == .available(personWorkspace ? .personMatter(priorPerson) : .costsAndPayments(priorCosts)))
+        let entry = PersonDossierEntryContext()
+        entry.observeInput(.init(documentID: context.values.document.id, snapshot: context.values.dna))
+        if action != "open" {
+            await entry.perform(selection: context.values.selection) {
+                await context.model.openOrCreatePersonDossier(from: context.values.selection)
+                return PersonDossierEntryResult(choices: context.model.personDossierChoices, errorCode: context.model.lastErrorCode)
+            }.value
+            #expect(entry.choices == [offered])
+        }
+        let operation: @MainActor () async -> PersonDossierEntryResult = {
+            switch action {
+            case "choose": await context.model.choosePersonDossier(id: opened.dossier.id)
+            case "create": await context.model.createNewPersonDossier()
+            default: await context.model.openOrCreatePersonDossier(from: context.values.selection)
+            }
+            return PersonDossierEntryResult(choices: context.model.personDossierChoices, errorCode: context.model.lastErrorCode)
+        }
+        await entry.perform(selection: context.values.selection, operation: operation).value
+        #expect(context.model.lastErrorCode == "dossierOpenFailure")
+        #expect(context.model.dossierDetailState == previous)
+        #expect(entry.errorMessage == "Das Hauptdossier konnte nicht geöffnet werden. Bitte versuche es erneut.")
+        #expect(entry.pendingSelection == context.values.selection)
+        #expect(!entry.isPending)
+        #expect(context.model.dossierMutationState == .idle)
+        if action == "open" {
+            #expect(!PersonDossierEntryInteractionPresentation.actionIsDisabled(mutationState: context.model.dossierMutationState, hasUnresolvedChoice: !entry.choices.isEmpty))
+        } else {
+            #expect(entry.choices == [offered])
+        }
+        let retry = entry.perform(selection: context.values.selection, operation: operation)
+        #expect(entry.errorMessage == nil)
+        await retry.value
+        #expect(context.model.dossierDetailState == .available(.personMatter(opened)))
+        #expect(context.model.lastErrorCode == nil)
+        #expect(entry.errorMessage == nil)
+        #expect(entry.choices.isEmpty)
+        #expect(entry.pendingSelection == nil)
+    }
+
     @Test @MainActor func personOpenFailurePreservesWorkspaceDetailAndChoicesWithSafeDiagnostic() async throws {
         let context = try await makeOpenContext(openSteps: [.failure])
         let workspace = context.model.workspaceSelection
@@ -2130,6 +2240,83 @@ struct PersonDossierAppModelTests {
     }
 
     @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func personCorrectionReceiptIdentifiesOnlyTheSnapshotPublishedByThatCommand(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        await configure(command, service: context.service, steps: [.result(context.mutatedSnapshot)])
+
+        let receipt = await performWithReceipt(command, in: context)
+
+        #expect(receipt == context.mutatedSnapshot)
+        #expect(context.model.dossierDetailState == .available(.personMatter(context.mutatedSnapshot)))
+        try await assertExactInvocation(command, context: context)
+    }
+
+    @Test(
+        arguments: PersonDossierCorrectionCommand.allCases,
+        PersonDossierReceiptInvalidation.allCases
+    )
+    @MainActor func invalidatedPersonCorrectionDoesNotReturnAnotherPublicationsSnapshot(
+        command: PersonDossierCorrectionCommand,
+        invalidation: PersonDossierReceiptInvalidation
+    ) async throws {
+        for completion in PersonDossierLateCorrectionOutcome.allCases {
+            let other = try PersonDossierAppModelValues.make(dossierID: UUID()).snapshot
+            let context = try await makeNavigationContext(dossierABASnapshot: other)
+            let previous = context.values.snapshot
+            let refreshed = try PersonDossierAppModelValues.make(
+                dossierID: previous.dossier.id,
+                sourceID: context.originSource.id,
+                documentID: UUID()
+            ).snapshot
+            let step: ScriptedPersonDossierLoader.CorrectionStep = switch completion {
+            case .success: .blocked(.success(context.mutatedSnapshot))
+            case .failure: .blocked(.failure(.loadFailed))
+            }
+            await configure(command, service: context.service, steps: [step])
+            let operation = Task { await performWithReceipt(command, in: context) }
+            await context.service.waitUntilBlockedMutationStarts()
+            switch invalidation {
+            case .dossierABA:
+                await context.service.setSnapshotSteps([.result(other), .result(refreshed)])
+                await context.model.selectDossier(id: other.dossier.id)
+                await context.model.selectDossier(id: previous.dossier.id)
+            case .reload:
+                await context.service.setSnapshotSteps([.result(refreshed)])
+                await context.model.selectDossier(id: previous.dossier.id)
+            case .refresh:
+                await context.service.setSnapshotSteps([.result(refreshed)])
+                await context.model.refreshSelectedDossier()
+            }
+            #expect(context.model.dossierDetailState == .available(.personMatter(refreshed)))
+            #expect(refreshed.token != previous.token)
+            await context.service.releaseNextBlockedMutation()
+            let receipt = await operation.value
+
+            #expect(receipt == nil)
+            #expect(context.model.dossierDetailState == .available(.personMatter(refreshed)))
+            #expect(context.model.lastErrorCode == nil)
+        }
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func personCorrectionReceiptIsNilForStaleFailureCancellationAndNoOp(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        for step: ScriptedPersonDossierLoader.CorrectionStep in [.staleInput, .failure, .cancellation] {
+            let context = try await makeNavigationContext()
+            await configure(command, service: context.service, steps: [step])
+            let receipt = await performWithReceipt(command, in: context)
+            #expect(receipt == nil)
+            #expect(context.model.dossierDetailState == .available(.personMatter(context.values.snapshot)))
+        }
+        let context = try await makeNavigationContext()
+        await context.model.selectSource(id: context.otherSource.id)
+        #expect(await performWithReceipt(command, in: context) == nil)
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
     @MainActor func personCorrectionForwardsExactCurrentInputAndPublishesCompleteSnapshot(
         command: PersonDossierCorrectionCommand
     ) async throws {
@@ -2309,6 +2496,53 @@ struct PersonDossierAppModelTests {
             expectedSupport: authoritative,
             expectedToken: current.token
         ))
+    }
+
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func correctionPublicationClearsOwnedInspectorChoicesWithoutNavigation(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        await context.model.selectPersonDossierDocument(documentID: context.values.direct.id)
+        let dna = try #require(context.values.dnaByDocument[context.values.direct.id])
+        let selection = try #require(PersonDossierEntryPresentation.entries(
+            document: context.values.direct, snapshot: dna, summaries: []
+        ).first).selection
+        let input = PersonDossierEntryInput(
+            documentID: context.model.selectedDocumentID, snapshot: dna,
+            workspaceSelection: context.model.workspaceSelection
+        )
+        let offered = personSummary(context.openedSnapshot)
+        await context.service.setOpenSteps([.result(.choose([offered]))])
+        let entry = PersonDossierEntryContext()
+        entry.observeInput(input)
+        await entry.perform(selection: selection) {
+            await context.model.openOrCreatePersonDossier(from: selection)
+            return PersonDossierEntryResult(
+                choices: context.model.personDossierChoices, errorCode: context.model.lastErrorCode
+            )
+        }.value
+        #expect(entry.choices == [offered])
+        #expect(context.model.personDossierChoices == [offered])
+        await configure(command, service: context.service, steps: [.blocked(.success(context.mutatedSnapshot))])
+        let mutation = Task { await performWithReceipt(command, in: context) }
+        await context.service.waitUntilBlockedMutationStarts()
+        #expect(entry.choices == [offered])
+        await context.service.releaseBlockedMutations()
+        #expect(await mutation.value == context.mutatedSnapshot)
+        #expect(context.model.dossierDetailState == .available(.personMatter(context.mutatedSnapshot)))
+        #expect(context.model.selectedDocumentID == input.documentID)
+        #expect(context.model.documentDNADetailState == .available(dna))
+        #expect(context.model.workspaceSelection == input.workspaceSelection)
+        #expect(context.model.personDossierChoices.isEmpty)
+
+        entry.observeAuthoritativeChoices(context.model.personDossierChoices)
+
+        // The Inspector's ForEach can no longer render or click an invalid choice.
+        #expect(entry.choices.isEmpty)
+        #expect(entry.pendingSelection == nil)
+        #expect(entry.errorMessage == nil)
+        #expect(!entry.isPending)
     }
 
     @Test @MainActor func removePersonCostsMemberForwardsExactCommandSupportAndPublishesSnapshot() async throws {
@@ -2911,6 +3145,28 @@ private extension PersonDossierAppModelTests {
             mutationState: model.dossierMutationState,
             errorCode: model.lastErrorCode
         )
+    }
+
+    @MainActor
+    func performWithReceipt(
+        _ command: PersonDossierCorrectionCommand,
+        in context: PersonDossierNavigationContext
+    ) async -> PersonDossierSnapshot? {
+        let snapshot = context.model.dossierDetailState.personSnapshot ?? context.values.snapshot
+        switch command {
+        case .accept:
+            guard let value = snapshot.suggestions.first else { return nil }
+            return await context.model.acceptPersonDossierSuggestion(value)
+        case .reject:
+            guard let value = snapshot.suggestions.first else { return nil }
+            return await context.model.rejectPersonDossierSuggestion(value)
+        case .remove:
+            guard let value = snapshot.directMembers.first else { return nil }
+            return await context.model.removePersonDossierMember(value)
+        case .reset:
+            guard let value = snapshot.corrections.first else { return nil }
+            return await context.model.resetPersonDossierCorrection(value)
+        }
     }
 
     @MainActor
@@ -3593,6 +3849,10 @@ private struct PersonDossierDocumentPresentation: Equatable {
     let dossierEntryState: DossierEntryState
     let workspaceSelection: AppWorkspaceSelection?
     let dossierDetailState: DossierDetailState
+}
+
+enum PersonDossierReceiptInvalidation: CaseIterable, Sendable {
+    case dossierABA, reload, refresh
 }
 
 enum PersonDossierCorrectionCommand: CaseIterable, Sendable {

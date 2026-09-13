@@ -33,6 +33,10 @@ struct SmokeFixture {
         try self.init(prepareSource: Self.prepareDefaultSource)
     }
 
+    static func personDossier() throws -> SmokeFixture {
+        try SmokeFixture(prepareSource: Self.preparePersonDossierSource)
+    }
+
     init(prepareSource: (URL) throws -> Void) throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("LinkLoomUISmoke-\(UUID().uuidString)", isDirectory: true)
@@ -89,6 +93,104 @@ struct SmokeFixture {
 
         guard PDFDocument(url: selectablePDF)?.pageCount == 1 else {
             throw CocoaError(.fileReadCorruptFile)
+        }
+    }
+
+    private static func preparePersonDossierSource(_ source: URL) throws {
+        let anchorCarePDF = source.appendingPathComponent("anchor-care.pdf", isDirectory: false)
+        try Self.writeTextPDF([
+            "Pflegebericht",
+            "Bewohnerin: Elise Muster",
+            "Geburtsdatum: 14.03.1942",
+        ], to: anchorCarePDF)
+
+        let invoicesDirectory = source.appendingPathComponent("invoices", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: invoicesDirectory,
+            withIntermediateDirectories: false
+        )
+        let invoicePDF = invoicesDirectory.appendingPathComponent(
+            "care-home-invoice.pdf",
+            isDirectory: false
+        )
+        try Self.writeTextPDF([
+            "Rechnung",
+            "Rechnungsnummer: PFLEGE-2026-001",
+            "CHF 1250",
+            "Ausstellerin: Pflegeheim Sonnengarten",
+            "Rechnung an: Elise Muster",
+        ], to: invoicePDF)
+
+        let paymentsDirectory = source.appendingPathComponent("payments", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: paymentsDirectory,
+            withIntermediateDirectories: false
+        )
+        let paymentPDF = paymentsDirectory.appendingPathComponent(
+            "payment-confirmation.pdf",
+            isDirectory: false
+        )
+        try Self.writeTextPDF([
+            "Zahlungsbestätigung",
+            "Zahlungsreferenz: PFLEGE-2026-001",
+            "CHF 1250",
+            "Zahlungsempfängerin: Pflegeheim Sonnengarten",
+        ], to: paymentPDF)
+
+        let insurancePDF = source.appendingPathComponent("insurance.pdf", isDirectory: false)
+        try Self.writeTextPDF([
+            "Leistungsabrechnung",
+            "Versicherte Person: Elise Muster",
+        ], to: insurancePDF)
+
+        let powerOfAttorneyPDF = source.appendingPathComponent(
+            "power-of-attorney.pdf",
+            isDirectory: false
+        )
+        try Self.writeTextPDF([
+            "Vollmacht",
+            "Bevollmächtigte: Elise Muster",
+        ], to: powerOfAttorneyPDF)
+
+        let conflictingInsurancePDF = source.appendingPathComponent(
+            "conflicting-insurance.pdf",
+            isDirectory: false
+        )
+        try Self.writeTextPDF([
+            "Leistungsabrechnung",
+            "Versicherte Person: Elise Muster",
+            "Geburtsdatum: 02.01.1950",
+        ], to: conflictingInsurancePDF)
+
+        let scanImage = source.appendingPathComponent("scan.png", isDirectory: false)
+        try Self.writeScanImage("Bewohnerin: Elise Muster", to: scanImage)
+
+        try Data("%PDF-1.7\ncorrupt".utf8).write(
+            to: source.appendingPathComponent("corrupt.pdf", isDirectory: false)
+        )
+        try Data("Hidden fixture evidence".utf8).write(
+            to: source.appendingPathComponent(".hidden-evidence", isDirectory: false)
+        )
+        try FileManager.default.createDirectory(
+            at: source.appendingPathComponent(".hidden-directory", isDirectory: true),
+            withIntermediateDirectories: false
+        )
+        try FileManager.default.createSymbolicLink(
+            atPath: source.appendingPathComponent("anchor-link", isDirectory: false).path,
+            withDestinationPath: "anchor-care.pdf"
+        )
+
+        for documentURL in [
+            anchorCarePDF,
+            invoicePDF,
+            paymentPDF,
+            insurancePDF,
+            powerOfAttorneyPDF,
+            conflictingInsurancePDF,
+        ] {
+            guard PDFDocument(url: documentURL)?.pageCount == 1 else {
+                throw CocoaError(.fileReadCorruptFile)
+            }
         }
     }
 

@@ -177,6 +177,7 @@ struct ScanDashboardTests {
         #expect(presentation.facts.map(\.displayValue) == [
             "Elise Muster", "CHF 1'250.00",
         ])
+        #expect(presentation.facts.map(\.sourceFindingIndex) == [1, 2])
         #expect(presentation.facts.map(\.confidence) == [0.95, 1])
         #expect(presentation.facts.map(\.evidence) == [
             [DocumentDNAEvidencePresentation(pageNumber: 1, exactText: "Elise Muster")],

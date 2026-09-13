@@ -4,11 +4,20 @@ import SwiftUI
 struct DocumentDNAInspector: View {
     @ObservedObject var model: AppModel
     let document: DocumentRecord?
+    @StateObject private var personEntryContext = PersonDossierEntryContext()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Document DNA")
-                .font(.title2.bold())
+            HStack {
+                Text("Document DNA")
+                    .font(.title2.bold())
+                Spacer()
+                Button("Inspector schließen") {
+                    Task { await model.selectDocument(id: nil) }
+                }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("document-dna.close")
+            }
             if let document {
                 Text(document.relativePath)
                     .font(.subheadline)
@@ -23,6 +32,17 @@ struct DocumentDNAInspector: View {
         .inspectorColumnWidth(min: 320, ideal: 380, max: 520)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("document-dna.inspector")
+        .onChange(of: personEntryInput, initial: true) { _, input in
+            personEntryContext.observeInput(input)
+        }
+        .onChange(of: model.personDossierChoices) { _, _ in
+            personEntryContext.observeAuthoritativeChoices(model.personDossierChoices)
+        }
+        .onChange(of: personEntryContext.isPending) { _, isPending in
+            guard !isPending else { return }
+            personEntryContext.observeAuthoritativeChoices(model.personDossierChoices)
+        }
+        .onDisappear { personEntryContext.invalidate() }
     }
 
     @ViewBuilder
@@ -71,8 +91,22 @@ struct DocumentDNAInspector: View {
                 description: Text("Die Dokumentliste und das Original bleiben unverändert.")
             )
         case .available(let snapshot):
-            documentDNADetail(DocumentDNADetailPresentation(snapshot: snapshot))
+            documentDNADetail(snapshot)
         }
+    }
+
+    private var personEntryInput: PersonDossierEntryInput {
+        let snapshot: DocumentDNA?
+        if case .available(let available) = model.documentDNADetailState {
+            snapshot = available
+        } else {
+            snapshot = nil
+        }
+        return PersonDossierEntryInput(
+            documentID: document?.id,
+            snapshot: snapshot,
+            workspaceSelection: model.workspaceSelection
+        )
     }
 
     private var selectedDocumentDNAFailureCode: DocumentDNAAnalysisFailureCode? {
@@ -85,10 +119,16 @@ struct DocumentDNAInspector: View {
         return failureCode
     }
 
-    private func documentDNADetail(
-        _ presentation: DocumentDNADetailPresentation
-    ) -> some View {
-        ScrollView {
+    private func documentDNADetail(_ snapshot: DocumentDNA) -> some View {
+        let presentation = DocumentDNADetailPresentation(snapshot: snapshot)
+        let personEntries = document.map {
+            PersonDossierEntryPresentation.entries(
+                document: $0,
+                snapshot: snapshot,
+                summaries: model.personDossiers
+            )
+        } ?? []
+        return ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Dokumenttyp")
@@ -135,6 +175,10 @@ struct DocumentDNAInspector: View {
                                 fact.evidence,
                                 identifierPrefix: "document-dna.fact.\(index).evidence"
                             )
+                            personDossierEntryContent(
+                                matching: fact.sourceFindingIndex,
+                                entries: personEntries
+                            )
                         }
                         .padding(.vertical, 4)
                     }
@@ -144,6 +188,101 @@ struct DocumentDNAInspector: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    @ViewBuilder
+    private func personDossierEntryContent(
+        matching findingIndex: Int,
+        entries: [PersonDossierEntryPresentation]
+    ) -> some View {
+        ForEach(entries.filter { $0.findingIndex == findingIndex }) { entry in
+            let isOpening = isOpeningPersonDossier(for: entry)
+            VStack(alignment: .leading, spacing: 8) {
+                Button(entry.actionTitle) {
+                    performPersonEntry(selection: entry.selection) {
+                        await model.openOrCreatePersonDossier(from: entry.selection)
+                    }
+                }
+                .disabled(
+                    personEntryContext.isPending || PersonDossierEntryInteractionPresentation.actionIsDisabled(
+                        mutationState: model.dossierMutationState,
+                        hasUnresolvedChoice: hasUnresolvedPersonDossierChoice
+                    )
+                )
+                .accessibilityIdentifier(entry.accessibilityIdentifier)
+                .accessibilityLabel(entry.accessibilityLabel)
+
+                if isOpening {
+                    ProgressView("Hauptdossier wird geöffnet …")
+                }
+
+                if personEntryContext.pendingSelection == entry.selection,
+                   let errorMessage = personEntryContext.errorMessage
+                {
+                    Text(errorMessage)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier(PersonDossierEntryContext.errorAccessibilityIdentifier)
+                }
+
+                if personEntryContext.pendingSelection == entry.selection,
+                   !personEntryContext.choices.isEmpty
+                {
+                    Text("Hauptdossier auswählen")
+                        .font(.headline)
+                    ForEach(personEntryContext.choices) { summary in
+                        Button {
+                            performPersonEntry(selection: entry.selection) {
+                                await model.choosePersonDossier(id: summary.id)
+                            }
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(summary.dossier.displayName)
+                                Text(summary.anchor.displayName)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .disabled(isAnyPersonDossierOpening || personEntryContext.isPending)
+                        .accessibilityIdentifier("person-dossier.choice.\(summary.id.uuidString.lowercased())")
+                    }
+                    Button("Neues Hauptdossier erstellen") {
+                        performPersonEntry(selection: entry.selection) {
+                            await model.createNewPersonDossier()
+                        }
+                    }
+                    .disabled(isAnyPersonDossierOpening || personEntryContext.isPending)
+                }
+            }
+        }
+    }
+
+    private func performPersonEntry(
+        selection: PersonDossierAnchorSelection,
+        operation: @escaping @MainActor () async -> Void
+    ) {
+        personEntryContext.observeInput(personEntryInput)
+        personEntryContext.perform(selection: selection) {
+            await operation()
+            return PersonDossierEntryResult(
+                choices: model.personDossierChoices,
+                errorCode: model.lastErrorCode
+            )
+        }
+    }
+
+    private var isAnyPersonDossierOpening: Bool {
+        if case .openingPerson(let documentID) = model.dossierMutationState {
+            return documentID == document?.id
+        }
+        return false
+    }
+
+    private var hasUnresolvedPersonDossierChoice: Bool {
+        personEntryContext.pendingSelection != nil && !personEntryContext.choices.isEmpty
+    }
+
+    private func isOpeningPersonDossier(for entry: PersonDossierEntryPresentation) -> Bool {
+        personEntryContext.isPending && personEntryContext.pendingSelection == entry.selection
     }
 
     @ViewBuilder

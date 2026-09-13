@@ -203,6 +203,50 @@ struct DossierStoreTests {
         }
     }
 
+    @Test func confirmationAnalysisDatePreservesSubmillisecondPrecision() throws {
+        let fixture = try DossierStoreFixture.make()
+        let dossier = try fixture.personDossier(id: fixture.firstDossierID, anchor: fixture.persistedPersonAnchor)
+        let analyzedAt = Date(timeIntervalSinceReferenceDate: 810_950_650.9063049554)
+        let confirmation = try fixture.confirmation(dossierID: dossier.id, acceptedDNAAnalyzedAt: analyzedAt)
+        try fixture.db.write { db in
+            _ = try DossierStore.insertOrFetchAnchored(in: db, proposed: dossier)
+            try DossierStore.insertConfirmation(in: db, confirmation: confirmation)
+        }
+        let reloaded = try fixture.db.read { db in
+            try #require(DossierStore.confirmations(in: db, dossierID: dossier.id).first)
+        }
+        #expect(reloaded == confirmation)
+        #expect(reloaded.acceptedDNAAnalyzedAt.timeIntervalSinceReferenceDate.bitPattern
+            == analyzedAt.timeIntervalSinceReferenceDate.bitPattern)
+    }
+
+    @Test func confirmationAnalysisDateReadsLegacyTextWithoutChangingConfirmationOrder() throws {
+        let fixture = try DossierStoreFixture.make()
+        let dossier = try fixture.personDossier(id: fixture.firstDossierID, anchor: fixture.persistedPersonAnchor)
+        let legacy = try fixture.confirmation(dossierID: dossier.id)
+        let newer = try fixture.confirmation(
+            dossierID: dossier.id,
+            documentID: fixture.thirdDocumentID,
+            revisionID: fixture.secondRevisionID,
+            confirmedAt: fixture.date.addingTimeInterval(1),
+            acceptedDNAAnalyzedAt: Date(timeIntervalSinceReferenceDate: 810_950_650.9063049554)
+        )
+        try fixture.db.write { db in
+            _ = try DossierStore.insertOrFetchAnchored(in: db, proposed: dossier)
+            try DossierStore.insertConfirmation(in: db, confirmation: newer)
+            try DossierStore.insertConfirmation(in: db, confirmation: legacy)
+            try db.execute(
+                sql: "UPDATE dossierMembershipConfirmation SET acceptedDNAAnalyzedAt = ? WHERE documentID = ?",
+                arguments: [legacy.acceptedDNAAnalyzedAt, legacy.documentID]
+            )
+            let stored = try DossierStore.confirmations(in: db, dossierID: dossier.id)
+            #expect(stored.map(\.documentID) == [legacy.documentID, newer.documentID])
+            #expect(stored.first == legacy)
+            #expect(try String.fetchOne(db, sql: "SELECT typeof(acceptedDNAAnalyzedAt) FROM dossierMembershipConfirmation WHERE documentID = ?", arguments: [legacy.documentID]) == "text")
+            #expect(try String.fetchAll(db, sql: "SELECT typeof(confirmedAt) FROM dossierMembershipConfirmation") == ["text", "text"])
+        }
+    }
+
     @Test func duplicateConfirmationMembershipIsRejected() throws {
         let fixture = try DossierStoreFixture.make()
         let dossier = try fixture.personDossier(
@@ -562,7 +606,8 @@ private struct DossierStoreFixture {
         revisionID: UUID? = nil,
         confirmedAt: Date? = nil,
         candidateKind: PersonDossierCandidateKind = .secondaryRole,
-        acceptedRole: PersonDossierRole = .authorizedPerson
+        acceptedRole: PersonDossierRole = .authorizedPerson,
+        acceptedDNAAnalyzedAt: Date? = nil
     ) throws -> DossierMembershipConfirmation {
         try DossierMembershipConfirmation(
             dossierID: dossierID,
@@ -575,7 +620,7 @@ private struct DossierStoreFixture {
             acceptedDNASchemaVersion: 1,
             acceptedDNAAnalyzerIdentifier: "local-rules",
             acceptedDNAAnalyzerVersion: "1",
-            acceptedDNAAnalyzedAt: date.addingTimeInterval(-1),
+            acceptedDNAAnalyzedAt: acceptedDNAAnalyzedAt ?? date.addingTimeInterval(-1),
             acceptedRole: acceptedRole,
             acceptedNormalizedName: "elise muster"
         )

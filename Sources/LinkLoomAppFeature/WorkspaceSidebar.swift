@@ -12,16 +12,21 @@ public struct WorkspaceSidebar: View {
     public var body: some View {
         List(selection: selection) {
             Section {
-                ForEach(model.dossiers) { summary in
+                ForEach(WorkspaceDossierSidebarItem.items(
+                    costs: model.dossiers,
+                    people: model.personDossiers
+                )) { item in
                     VStack(alignment: .leading, spacing: 2) {
-                        Label(summary.dossier.displayName, systemImage: "folder")
-                        Text(summary.anchor.relativePath)
+                        Label(item.dossier.displayName, systemImage: "folder")
+                        Text(item.subtitle)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    .tag(AppWorkspaceSelection.dossier(summary.id))
+                    .tag(AppWorkspaceSelection.dossier(item.id))
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(item.dossier.displayName). \(item.subtitle)")
                     .accessibilityIdentifier(
-                        DossierAccessibilityIdentifier.row(summary.id)
+                        DossierAccessibilityIdentifier.row(item.id)
                     )
                 }
             } header: {
