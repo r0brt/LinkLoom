@@ -633,7 +633,13 @@ final class LinkLoomUISmokeTests: XCTestCase {
             }
 
             let window = app.windows.firstMatch
+            XCTAssertGreaterThanOrEqual(window.frame.width, 980, "Initial person workspace must verify the wide layout")
+            requirePersonChromeContained(in: app)
             resizeWindow(window, toWidth: 900)
+            requirePersonChromeContained(in: app)
+            XCTAssertEqual(window.frame.width, 900, accuracy: 12, "Compact inspector must preserve resized window width")
+            RunLoop.current.run(until: Date().addingTimeInterval(0.5))
+            XCTAssertEqual(window.frame.width, 900, accuracy: 12, "Compact inspector width must remain stable")
             let workspaceBeforeInspector = element("dossier.person.workspace", in: app)
             let workspaceScrollView = requireDossierScrollView(
                 containing: workspaceBeforeInspector,
@@ -654,6 +660,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
             }
             let longReason = element("dossier.person.member.\(paymentID).reason.0", in: app)
             let shortReason = element("dossier.person.member.\(paymentID).reason.1", in: app)
+            XCTAssertEqual(window.frame.width, 900, accuracy: 12, "Wrap acceptance requires a 900-point window")
             XCTAssertGreaterThan(longReason.frame.height, shortReason.frame.height, "The relationship reason must wrap at accessibility text size")
             requireContained(element("dossier.person.anchor", in: app), scrollingIn: workspaceScrollView, in: app)
             attachPersonScreenshot("Initial person projection", in: app)
@@ -686,7 +693,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
             )
             let workspaceWithInspector = element("dossier.person.workspace", in: app)
             let workspaceWidthWithInspector = workspaceWithInspector.frame.width
-            closeInspector(byReselecting: personRow, in: app)
+            closeInspector(preserving: personRow, in: app)
             XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
             requireExists(
                 element("dossier.person.workspace", in: app),
@@ -713,7 +720,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 timeout: 20,
                 description: "payment member inspector"
             )
-            closeInspector(byReselecting: personRow, in: app)
+            closeInspector(preserving: personRow, in: app)
             XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
             let reloadedPayment = requirePersonDossierMember(
                 containing: "payments/payment-confirmation.pdf",
@@ -737,7 +744,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
                 app.staticTexts["invoices/care-home-invoice.pdf"].firstMatch,
                 description: "invoice counterpart document"
             )
-            closeInspector(byReselecting: personRow, in: app)
+            closeInspector(preserving: personRow, in: app)
             requireExists(
                 element("dossier.person.workspace", in: app),
                 description: "person workspace after counterpart navigation"
@@ -792,7 +799,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireKeyboardReachable(authorization, in: app)
             authorization.click()
             requireExists(element("document-dna.inspector", in: app), description: "suggestion navigation")
-            closeInspector(byReselecting: element("dossier.row.\(personDossierID)", in: app), in: app)
+            closeInspector(preserving: element("dossier.row.\(personDossierID)", in: app), in: app)
             XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
             requirePersonSuggestionContained(authorizationID, in: app)
             try mutate("dossier.person.suggestion.accept.\(authorizationID)", in: app)
@@ -805,7 +812,7 @@ final class LinkLoomUISmokeTests: XCTestCase {
             requireKeyboardReachable(correction, in: app)
             correction.click()
             requireExists(element("document-dna.inspector", in: app), description: "correction navigation")
-            closeInspector(byReselecting: element("dossier.row.\(personDossierID)", in: app), in: app)
+            closeInspector(preserving: element("dossier.row.\(personDossierID)", in: app), in: app)
             XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
             requireLabel("Aufnahme zurücksetzen für power-of-attorney.pdf", for: element("dossier.person.correction.reset.\(authorizationID)", in: app))
             requirePersonCorrectionContained(authorizationID, in: app)
@@ -866,7 +873,10 @@ final class LinkLoomUISmokeTests: XCTestCase {
         let reanalyzedRow = element("dossier.row.\(personDossierID)", in: reanalyzed)
         requireExists(reanalyzedRow, timeout: 20, description: "person dossier before reanalysis")
         reanalyzedRow.click()
-        requireExists(reanalyzed.staticTexts["Ursprungsnachweis veraltet"].firstMatch, description: "stale origin before retry")
+        requireLabel(
+            "Elise Muster Rolle: Bewohnerin. Ursprungsnachweis veraltet Verfügbar",
+            for: element("dossier.person.anchor", in: reanalyzed)
+        )
         sourceRow(in: reanalyzed).click()
         let origin = element("documents.table", in: reanalyzed).staticTexts["anchor-care.pdf"].firstMatch
         requireExists(origin, description: "catalogued origin before retry")
@@ -878,7 +888,10 @@ final class LinkLoomUISmokeTests: XCTestCase {
         XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
         retry.click()
         requireDisappearance(retry, timeout: 60, description: "completed anchor reanalysis")
-        closeInspector(byReselecting: reanalyzedRow, in: reanalyzed)
+        requireLabel("Document DNA Bereit: 7", for: element("dna-status.ready", in: reanalyzed))
+        reanalyzedRow.click()
+        requireExists(element("dossier.person.workspace", in: reanalyzed), description: "person workspace after reanalysis")
+        closeInspector(preserving: reanalyzedRow, in: reanalyzed)
         requireCompletePersonProjection(in: reanalyzed, members: [anchorID, insuranceID, ocrID, invoiceID, paymentID, authorizationID], corrections: [authorizationID, conflictID])
         XCTAssertEqual(try fixture.snapshot(), initialSnapshot)
 
@@ -890,7 +903,10 @@ final class LinkLoomUISmokeTests: XCTestCase {
         requireDisappearance(element("dossier.row.\(costsDossierID)", in: reanalyzed), timeout: 20, description: "removed costs dossier")
         requireExists(reanalyzedRow, description: "durable person dossier after source removal")
         requireExists(element("dossier.person.workspace", in: reanalyzed), description: "durable person workspace")
-        requireExists(reanalyzed.staticTexts["Ursprungsnachweis nicht verfügbar"].firstMatch, description: "unavailable origin")
+        requireLabel(
+            "Elise Muster Rolle: Bewohnerin. Ursprungsnachweis nicht verfügbar",
+            for: element("dossier.person.anchor", in: reanalyzed)
+        )
         requireCompletePersonProjection(in: reanalyzed, members: [], corrections: [])
         attachPersonScreenshot("Person projection with unavailable origin", in: reanalyzed)
         terminateAndWait(reanalyzed)
@@ -1083,7 +1099,8 @@ final class LinkLoomUISmokeTests: XCTestCase {
 
     private func resizeWindow(_ window: XCUIElement, toWidth width: CGFloat) {
         requireExists(window, description: "application window for resize")
-        let resizeHandle = window.coordinate(withNormalizedOffset: CGVector(dx: 0.99, dy: 0.99))
+        let resizeHandle = window.coordinate(withNormalizedOffset: CGVector(dx: 1, dy: 0))
+            .withOffset(CGVector(dx: -1, dy: 40))
         let delta = width - window.frame.width
         resizeHandle.press(
             forDuration: 0.1,
@@ -1135,15 +1152,64 @@ final class LinkLoomUISmokeTests: XCTestCase {
     }
 
     private func closeInspector(
-        byReselecting dossierRow: XCUIElement,
+        preserving dossierRow: XCUIElement,
         in app: XCUIApplication
     ) {
-        dossierRow.click()
+        requireExists(element("dossier.person.workspace", in: app), description: "person workspace before closing its inspector")
+        let closeButtons = app.buttons.matching(identifier: "document-dna.close")
+        XCTAssertEqual(closeButtons.count, 1, "The inspector must expose exactly one close button")
+        let closeButton = closeButtons.firstMatch
+        requireLabel("Inspector schließen", for: closeButton)
+        XCTAssertTrue(closeButton.isHittable, "The inspector close button must be directly reachable")
+        requirePersonChromeContained(in: app)
+        closeButton.click()
         requireDisappearance(
             element("document-dna.inspector", in: app),
             timeout: 20,
-            description: "document inspector after dossier reselection"
+            description: "document inspector after closing"
         )
+        requireSidebarContained(in: app)
+        let selectedRow = app.outlineRows.containing(.any, identifier: dossierRow.identifier).firstMatch
+        XCTAssertTrue(selectedRow.isSelected, "Closing the inspector must preserve dossier selection")
+    }
+
+    private func requirePersonChromeContained(in app: XCUIApplication) {
+        let window = app.windows.firstMatch
+        let sidebar = app.outlines["Sidebar"].firstMatch
+        let sidebarIsVisible = sidebar.exists && window.frame.intersects(sidebar.frame)
+        if window.frame.width < 980 {
+            XCTAssertFalse(sidebarIsVisible, "Compact inspector must hide the sidebar: window=\(window.frame), sidebar=\(sidebar.frame)")
+        } else {
+            requireSidebarContained(in: app)
+        }
+        let workspace = requireDossierScrollView(containing: element("dossier.person.workspace", in: app), in: app)
+        requireExists(workspace.scrollBars.firstMatch, description: "person workspace scrollbar")
+        let controls = [element("document-dna.close", in: app), workspace]
+        requireControlsContained(controls, in: window, app: app)
+    }
+
+    private func requireSidebarContained(in app: XCUIApplication) {
+        let sidebar = app.outlines["Sidebar"].firstMatch
+        requireExists(sidebar, description: "restored sidebar")
+        let controls = ["dossier.sidebar", "source.add"].map {
+            element($0, in: app)
+        }
+        requireControlsContained([sidebar] + controls, in: app.windows.firstMatch, app: app)
+        for control in controls { XCTAssertTrue(control.isHittable, "Sidebar control must be visible: \(control.identifier)") }
+    }
+
+    private func requireControlsContained(_ controls: [XCUIElement], in window: XCUIElement, app: XCUIApplication) {
+        for control in controls { requireExists(control, description: control.identifier) }
+        let frames = controls.map { "\($0.identifier)=\($0.frame)" }.joined(separator: "; ")
+        let isContained = controls.allSatisfy { window.frame.contains($0.frame) }
+        if !isContained {
+            let hierarchy = XCTAttachment(string: app.debugDescription)
+            hierarchy.name = "Person chrome outside window"
+            hierarchy.lifetime = .keepAlways
+            add(hierarchy)
+            attachPersonScreenshot("Person chrome containment failure", in: app)
+        }
+        XCTAssertTrue(isContained, "Person chrome must fit window \(window.frame): \(frames)")
     }
 
     private func requireExists(
@@ -1255,18 +1321,17 @@ final class LinkLoomUISmokeTests: XCTestCase {
         requireExists(target, description: "keyboard target \(target.identifier)")
         let scroll = requireDossierScrollView(containing: element("dossier.person.workspace", in: app), in: app)
         requireHittable(target, scrollingIn: scroll, description: "keyboard target \(target.identifier)")
-        let bound = app.buttons.allElementsBoundByIndex.filter { $0.isHittable }.count
+        let bound = app.buttons.count
         let focused = NSPredicate(format: "hasKeyboardFocus == true")
         for _ in 0..<max(1, bound) {
             app.typeKey(.tab, modifierFlags: [])
-            let expectation = XCTNSPredicateExpectation(predicate: focused, object: target)
-            if XCTWaiter.wait(for: [expectation], timeout: 0.2) == .completed { return }
+            if focused.evaluate(with: target) { return }
         }
         let attachment = XCTAttachment(string: app.debugDescription)
         attachment.name = "Keyboard traversal failure"
         attachment.lifetime = .keepAlways
         add(attachment)
-        XCTFail("\(target.identifier) was not keyboard reachable in \(bound) visible buttons")
+        XCTFail("\(target.identifier) was not keyboard reachable in \(bound) accessibility buttons")
     }
 
     private func requireContained(_ target: XCUIElement, scrollingIn scroll: XCUIElement, in app: XCUIApplication) {

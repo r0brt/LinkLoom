@@ -8,8 +8,16 @@ struct DocumentDNAInspector: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Document DNA")
-                .font(.title2.bold())
+            HStack {
+                Text("Document DNA")
+                    .font(.title2.bold())
+                Spacer()
+                Button("Inspector schließen") {
+                    Task { await model.selectDocument(id: nil) }
+                }
+                .buttonStyle(.borderless)
+                .accessibilityIdentifier("document-dna.close")
+            }
             if let document {
                 Text(document.relativePath)
                     .font(.subheadline)
