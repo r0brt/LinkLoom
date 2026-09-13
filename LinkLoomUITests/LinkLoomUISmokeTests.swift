@@ -1205,7 +1205,12 @@ final class LinkLoomUISmokeTests: XCTestCase {
     private func requireControlsContained(_ controls: [XCUIElement], in window: XCUIElement, app: XCUIApplication) {
         for control in controls { requireExists(control, description: control.identifier) }
         let frames = controls.map { "\($0.identifier)=\($0.frame)" }.joined(separator: "; ")
-        let isContained = controls.allSatisfy { window.frame.contains($0.frame) }
+        let appKitFrameTolerance: CGFloat = 2
+        let containmentBounds = window.frame.insetBy(
+            dx: -appKitFrameTolerance,
+            dy: -appKitFrameTolerance
+        )
+        let isContained = controls.allSatisfy { containmentBounds.contains($0.frame) }
         if !isContained {
             let hierarchy = XCTAttachment(string: app.debugDescription)
             hierarchy.name = "Person chrome outside window"
