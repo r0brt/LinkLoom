@@ -152,6 +152,8 @@ On an interactive macOS host, enable **Keyboard navigation** in System Settings
 → Keyboard for the Tab-reachability checks and leave the desktop undisturbed
 during the run. Restore the original setting afterward. Process-local launch
 defaults alone do not enable AppKit keyboard navigation on the verified host.
+The GitHub Actions UI-smoke job enables the same global preference on its
+ephemeral runner before launching the test host.
 
 For a rollback of the visible person-dossier UI, retain the Core timestamp
 codecs for person anchors and accepted membership evidence. They read both

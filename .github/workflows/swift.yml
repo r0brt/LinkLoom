@@ -59,6 +59,8 @@ jobs:
         run: |
           swift --version
           xcodebuild -version
+      - name: Enable keyboard navigation
+        run: defaults write NSGlobalDomain AppleKeyboardUIMode -int 3
       - name: Process-level UI smoke
         run: |
           xcodebuild test \
