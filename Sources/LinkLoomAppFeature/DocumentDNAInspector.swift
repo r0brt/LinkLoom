@@ -35,6 +35,13 @@ struct DocumentDNAInspector: View {
         .onChange(of: personEntryInput, initial: true) { _, input in
             personEntryContext.observeInput(input)
         }
+        .onChange(of: model.personDossierChoices) { _, _ in
+            personEntryContext.observeAuthoritativeChoices(model.personDossierChoices)
+        }
+        .onChange(of: personEntryContext.isPending) { _, isPending in
+            guard !isPending else { return }
+            personEntryContext.observeAuthoritativeChoices(model.personDossierChoices)
+        }
         .onDisappear { personEntryContext.invalidate() }
     }
 

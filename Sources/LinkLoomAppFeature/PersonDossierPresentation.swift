@@ -42,6 +42,11 @@ final class PersonDossierEntryContext: ObservableObject {
         self.input = input
     }
 
+    func observeAuthoritativeChoices(_ authoritativeChoices: [PersonDossierSummary]) {
+        guard !isPending, !choices.isEmpty, choices != authoritativeChoices else { return }
+        invalidate()
+    }
+
     func invalidate() {
         requestID = nil
         task?.cancel()

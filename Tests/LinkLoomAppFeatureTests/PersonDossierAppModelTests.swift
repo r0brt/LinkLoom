@@ -2498,6 +2498,53 @@ struct PersonDossierAppModelTests {
         ))
     }
 
+    @Test(arguments: PersonDossierCorrectionCommand.allCases)
+    @MainActor func correctionPublicationClearsOwnedInspectorChoicesWithoutNavigation(
+        command: PersonDossierCorrectionCommand
+    ) async throws {
+        let context = try await makeNavigationContext()
+        await context.model.selectPersonDossierDocument(documentID: context.values.direct.id)
+        let dna = try #require(context.values.dnaByDocument[context.values.direct.id])
+        let selection = try #require(PersonDossierEntryPresentation.entries(
+            document: context.values.direct, snapshot: dna, summaries: []
+        ).first).selection
+        let input = PersonDossierEntryInput(
+            documentID: context.model.selectedDocumentID, snapshot: dna,
+            workspaceSelection: context.model.workspaceSelection
+        )
+        let offered = personSummary(context.openedSnapshot)
+        await context.service.setOpenSteps([.result(.choose([offered]))])
+        let entry = PersonDossierEntryContext()
+        entry.observeInput(input)
+        await entry.perform(selection: selection) {
+            await context.model.openOrCreatePersonDossier(from: selection)
+            return PersonDossierEntryResult(
+                choices: context.model.personDossierChoices, errorCode: context.model.lastErrorCode
+            )
+        }.value
+        #expect(entry.choices == [offered])
+        #expect(context.model.personDossierChoices == [offered])
+        await configure(command, service: context.service, steps: [.blocked(.success(context.mutatedSnapshot))])
+        let mutation = Task { await performWithReceipt(command, in: context) }
+        await context.service.waitUntilBlockedMutationStarts()
+        #expect(entry.choices == [offered])
+        await context.service.releaseBlockedMutations()
+        #expect(await mutation.value == context.mutatedSnapshot)
+        #expect(context.model.dossierDetailState == .available(.personMatter(context.mutatedSnapshot)))
+        #expect(context.model.selectedDocumentID == input.documentID)
+        #expect(context.model.documentDNADetailState == .available(dna))
+        #expect(context.model.workspaceSelection == input.workspaceSelection)
+        #expect(context.model.personDossierChoices.isEmpty)
+
+        entry.observeAuthoritativeChoices(context.model.personDossierChoices)
+
+        // The Inspector's ForEach can no longer render or click an invalid choice.
+        #expect(entry.choices.isEmpty)
+        #expect(entry.pendingSelection == nil)
+        #expect(entry.errorMessage == nil)
+        #expect(!entry.isPending)
+    }
+
     @Test @MainActor func removePersonCostsMemberForwardsExactCommandSupportAndPublishesSnapshot() async throws {
         let context = try await makeNavigationContext()
         let member = try #require(context.values.snapshot.costsAndPayments.first)

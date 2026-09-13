@@ -103,6 +103,68 @@ struct PersonDossierPresentationTests {
         #expect(!context.isPending)
     }
 
+    @Test @MainActor func authoritativeEmptyDuringEntryRequestPreservesOwnershipAndFailureRetry() async throws {
+        let values = try PersonDossierAppModelValues.make()
+        let offered = PersonDossierSummary(dossier: values.snapshot.dossier, anchor: values.snapshot.anchor)
+        let context = PersonDossierEntryContext()
+        await context.perform(selection: values.selection) {
+            PersonDossierEntryResult(choices: [offered], errorCode: nil)
+        }.value
+        let blocker = PersonFeedbackBlocker()
+        let retry = context.perform(selection: values.selection) {
+            await blocker.wait()
+            return PersonDossierEntryResult(choices: [offered], errorCode: "dossierOpenFailure")
+        }
+        await blocker.waitUntilStarted()
+        context.observeAuthoritativeChoices([])
+        #expect(context.isPending)
+        #expect(context.pendingSelection == values.selection)
+        await blocker.release()
+        await retry.value
+        context.observeAuthoritativeChoices([offered])
+        #expect(context.choices == [offered])
+        #expect(context.pendingSelection == values.selection)
+        #expect(context.errorMessage != nil)
+        #expect(!context.isPending)
+    }
+
+    @Test @MainActor func authoritativeClearDuringPendingIsReconciledAtRequestEnd() async throws {
+        let values = try PersonDossierAppModelValues.make()
+        let offered = PersonDossierSummary(dossier: values.snapshot.dossier, anchor: values.snapshot.anchor)
+        let context = PersonDossierEntryContext()
+        await context.perform(selection: values.selection) {
+            PersonDossierEntryResult(choices: [offered], errorCode: nil)
+        }.value
+        let blocker = PersonFeedbackBlocker()
+        let request = context.perform(selection: values.selection) {
+            await blocker.wait()
+            return PersonDossierEntryResult(choices: [offered], errorCode: nil)
+        }
+        await blocker.waitUntilStarted()
+        context.observeAuthoritativeChoices([])
+        #expect(context.isPending)
+        #expect(context.pendingSelection == values.selection)
+        await blocker.release()
+        await request.value
+        #expect(!context.isPending)
+        // The request-end observation re-reads authority even without another model change.
+        context.observeAuthoritativeChoices([])
+        #expect(context.choices.isEmpty)
+        #expect(context.pendingSelection == nil)
+    }
+
+    @Test @MainActor func authoritativeEmptyDoesNotEraseDirectEntryFailure() async throws {
+        let values = try PersonDossierAppModelValues.make()
+        let context = PersonDossierEntryContext()
+        await context.perform(selection: values.selection) {
+            PersonDossierEntryResult(choices: [], errorCode: "dossierOpenFailure")
+        }.value
+        context.observeAuthoritativeChoices([])
+        #expect(context.pendingSelection == values.selection)
+        #expect(context.errorMessage != nil)
+        #expect(!context.isPending)
+    }
+
     @Test func projectsPrimaryPersonFindingsInSnapshotOrderWithStableActions() throws {
         let document = document(
             id: uuid("71000000-0000-0000-0000-000000000001"),
