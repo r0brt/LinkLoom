@@ -5,6 +5,104 @@ import Testing
 
 @Suite("Person dossier entry presentation")
 struct PersonDossierPresentationTests {
+    @Test(arguments: [false, true], [false, true])
+    @MainActor func entryRequestsOwnTheirChoicesAcrossDifferentAndABASelections(
+        aba: Bool,
+        oldCompletesFirst: Bool
+    ) async throws {
+        let first = try PersonDossierAppModelValues.make()
+        let other = try PersonDossierAppModelValues.make(documentID: UUID())
+        let latest = aba ? first : other
+        let offered = PersonDossierSummary(
+            dossier: other.snapshot.dossier, anchor: other.snapshot.anchor
+        )
+        let context = PersonDossierEntryContext()
+        context.observeInput(.init(documentID: first.document.id, snapshot: first.dna))
+        let oldBlocker = PersonFeedbackBlocker()
+        let newBlocker = PersonFeedbackBlocker()
+        let old = context.perform(selection: first.selection) {
+            await oldBlocker.wait()
+            return PersonDossierEntryResult(choices: [], errorCode: nil)
+        }
+        await oldBlocker.waitUntilStarted()
+        context.observeInput(.init(documentID: other.document.id, snapshot: other.dna))
+        if aba {
+            context.observeInput(.init(documentID: first.document.id, snapshot: first.dna))
+        }
+        let new = context.perform(selection: latest.selection) {
+            await newBlocker.wait()
+            return PersonDossierEntryResult(choices: [offered], errorCode: nil)
+        }
+        await newBlocker.waitUntilStarted()
+        if oldCompletesFirst {
+            await oldBlocker.release()
+            await old.value
+            #expect(context.pendingSelection == latest.selection)
+            #expect(context.isPending)
+        }
+        await newBlocker.release()
+        await new.value
+        if !oldCompletesFirst {
+            await oldBlocker.release()
+            await old.value
+        }
+        #expect(context.pendingSelection == latest.selection)
+        #expect(context.choices == [offered])
+        #expect(!context.isPending)
+    }
+
+    @Test @MainActor func entryNavigationAndNewDNAIdentityInvalidateOwnedFeedback() async throws {
+        let values = try PersonDossierAppModelValues.make()
+        let context = PersonDossierEntryContext()
+        let original = PersonDossierEntryInput(documentID: values.document.id, snapshot: values.dna)
+        let updated = try DocumentDNA(
+            documentID: values.dna.documentID,
+            schemaVersion: values.dna.schemaVersion,
+            analyzerIdentifier: values.dna.analyzerIdentifier,
+            analyzerVersion: values.dna.analyzerVersion,
+            inputContentHash: values.dna.inputContentHash,
+            inputExtractionVersion: values.dna.inputExtractionVersion,
+            findings: values.dna.findings,
+            analyzedAt: values.dna.analyzedAt.addingTimeInterval(1)
+        )
+        for replacement in [
+            PersonDossierEntryInput(documentID: UUID(), snapshot: nil),
+            .init(documentID: values.document.id, snapshot: updated),
+        ] {
+            context.observeInput(original)
+            await context.perform(selection: values.selection) {
+                PersonDossierEntryResult(choices: [], errorCode: "dossierOpenFailure")
+            }.value
+            #expect(context.errorMessage != nil)
+            context.observeInput(replacement)
+            #expect(context.pendingSelection == nil)
+            #expect(context.choices.isEmpty)
+            #expect(context.errorMessage == nil)
+        }
+    }
+
+    @Test @MainActor func invalidatedEntryCannotRepublishChoicesOrFailure() async throws {
+        let values = try PersonDossierAppModelValues.make()
+        let context = PersonDossierEntryContext()
+        context.observeInput(.init(documentID: values.document.id, snapshot: values.dna))
+        let blocker = PersonFeedbackBlocker()
+        let request = context.perform(selection: values.selection) {
+            await blocker.wait()
+            return PersonDossierEntryResult(
+                choices: [.init(dossier: values.snapshot.dossier, anchor: values.snapshot.anchor)],
+                errorCode: "dossierOpenFailure"
+            )
+        }
+        await blocker.waitUntilStarted()
+        context.observeInput(.init(documentID: values.document.id, snapshot: nil))
+        await blocker.release()
+        await request.value
+        #expect(context.pendingSelection == nil)
+        #expect(context.choices.isEmpty)
+        #expect(context.errorMessage == nil)
+        #expect(!context.isPending)
+    }
+
     @Test func projectsPrimaryPersonFindingsInSnapshotOrderWithStableActions() throws {
         let document = document(
             id: uuid("71000000-0000-0000-0000-000000000001"),

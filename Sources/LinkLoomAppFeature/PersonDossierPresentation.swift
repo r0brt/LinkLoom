@@ -1,5 +1,87 @@
+import Combine
 import Foundation
 import LinkLoomCore
+
+struct PersonDossierEntryInput: Equatable {
+    let documentID: UUID?
+    let snapshot: DocumentDNA?
+    let workspaceSelection: AppWorkspaceSelection?
+
+    init(
+        documentID: UUID?,
+        snapshot: DocumentDNA?,
+        workspaceSelection: AppWorkspaceSelection? = nil
+    ) {
+        self.documentID = documentID
+        self.snapshot = snapshot
+        self.workspaceSelection = workspaceSelection
+    }
+}
+
+struct PersonDossierEntryResult {
+    let choices: [PersonDossierSummary]
+    let errorCode: String?
+}
+
+/// Owns only Inspector feedback; AppModel remains authoritative for mutations.
+@MainActor
+final class PersonDossierEntryContext: ObservableObject {
+    static let errorAccessibilityIdentifier = "document-dna.person-dossier.error"
+
+    @Published private(set) var pendingSelection: PersonDossierAnchorSelection?
+    @Published private(set) var choices: [PersonDossierSummary] = []
+    @Published private(set) var errorMessage: String?
+    @Published private(set) var isPending = false
+    private var input: PersonDossierEntryInput?
+    private var requestID: UUID?
+    private var task: Task<Void, Never>?
+
+    func observeInput(_ input: PersonDossierEntryInput) {
+        guard self.input != input else { return }
+        invalidate()
+        self.input = input
+    }
+
+    func invalidate() {
+        requestID = nil
+        task?.cancel()
+        task = nil
+        pendingSelection = nil
+        choices = []
+        errorMessage = nil
+        isPending = false
+    }
+
+    @discardableResult
+    func perform(
+        selection: PersonDossierAnchorSelection,
+        operation: @escaping @MainActor () async -> PersonDossierEntryResult
+    ) -> Task<Void, Never> {
+        task?.cancel()
+        let requestID = UUID()
+        self.requestID = requestID
+        if pendingSelection != selection { choices = [] }
+        pendingSelection = selection
+        errorMessage = nil
+        isPending = true
+        let task = Task { [weak self] in
+            let result = await operation()
+            guard let self, self.requestID == requestID, !Task.isCancelled else { return }
+            self.choices = result.choices
+            self.errorMessage = result.errorCode == "dossierOpenFailure"
+                ? "Das Hauptdossier konnte nicht geöffnet werden. Bitte versuche es erneut."
+                : nil
+            if self.choices.isEmpty && self.errorMessage == nil {
+                self.pendingSelection = nil
+            }
+            self.isPending = false
+            self.requestID = nil
+            self.task = nil
+        }
+        self.task = task
+        return task
+    }
+}
 
 enum WorkspaceDossierSidebarItem: Identifiable, Equatable {
     case costs(DossierSummary)

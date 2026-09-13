@@ -4,7 +4,7 @@ import SwiftUI
 struct DocumentDNAInspector: View {
     @ObservedObject var model: AppModel
     let document: DocumentRecord?
-    @State private var pendingPersonSelection: PersonDossierAnchorSelection?
+    @StateObject private var personEntryContext = PersonDossierEntryContext()
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -32,12 +32,10 @@ struct DocumentDNAInspector: View {
         .inspectorColumnWidth(min: 320, ideal: 380, max: 520)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("document-dna.inspector")
-        .onChange(of: document?.id) { _, _ in
-            pendingPersonSelection = nil
+        .onChange(of: personEntryInput, initial: true) { _, input in
+            personEntryContext.observeInput(input)
         }
-        .onChange(of: documentDNAInputIdentity) { _, _ in
-            pendingPersonSelection = nil
-        }
+        .onDisappear { personEntryContext.invalidate() }
     }
 
     @ViewBuilder
@@ -90,11 +88,18 @@ struct DocumentDNAInspector: View {
         }
     }
 
-    private var documentDNAInputIdentity: String? {
-        guard case .available(let snapshot) = model.documentDNADetailState else {
-            return nil
+    private var personEntryInput: PersonDossierEntryInput {
+        let snapshot: DocumentDNA?
+        if case .available(let available) = model.documentDNADetailState {
+            snapshot = available
+        } else {
+            snapshot = nil
         }
-        return "\(snapshot.documentID.uuidString.lowercased()):\(snapshot.inputContentHash)"
+        return PersonDossierEntryInput(
+            documentID: document?.id,
+            snapshot: snapshot,
+            workspaceSelection: model.workspaceSelection
+        )
     }
 
     private var selectedDocumentDNAFailureCode: DocumentDNAAnalysisFailureCode? {
@@ -187,16 +192,12 @@ struct DocumentDNAInspector: View {
             let isOpening = isOpeningPersonDossier(for: entry)
             VStack(alignment: .leading, spacing: 8) {
                 Button(entry.actionTitle) {
-                    pendingPersonSelection = entry.selection
-                    Task {
+                    performPersonEntry(selection: entry.selection) {
                         await model.openOrCreatePersonDossier(from: entry.selection)
-                        if model.personDossierChoices.isEmpty {
-                            pendingPersonSelection = nil
-                        }
                     }
                 }
                 .disabled(
-                    PersonDossierEntryInteractionPresentation.actionIsDisabled(
+                    personEntryContext.isPending || PersonDossierEntryInteractionPresentation.actionIsDisabled(
                         mutationState: model.dossierMutationState,
                         hasUnresolvedChoice: hasUnresolvedPersonDossierChoice
                     )
@@ -208,14 +209,24 @@ struct DocumentDNAInspector: View {
                     ProgressView("Hauptdossier wird geöffnet …")
                 }
 
-                if pendingPersonSelection == entry.selection,
-                   !model.personDossierChoices.isEmpty
+                if personEntryContext.pendingSelection == entry.selection,
+                   let errorMessage = personEntryContext.errorMessage
+                {
+                    Text(errorMessage)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier(PersonDossierEntryContext.errorAccessibilityIdentifier)
+                }
+
+                if personEntryContext.pendingSelection == entry.selection,
+                   !personEntryContext.choices.isEmpty
                 {
                     Text("Hauptdossier auswählen")
                         .font(.headline)
-                    ForEach(model.personDossierChoices) { summary in
+                    ForEach(personEntryContext.choices) { summary in
                         Button {
-                            Task { await model.choosePersonDossier(id: summary.id) }
+                            performPersonEntry(selection: entry.selection) {
+                                await model.choosePersonDossier(id: summary.id)
+                            }
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(summary.dossier.displayName)
@@ -224,15 +235,31 @@ struct DocumentDNAInspector: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        .disabled(isAnyPersonDossierOpening)
+                        .disabled(isAnyPersonDossierOpening || personEntryContext.isPending)
                         .accessibilityIdentifier("person-dossier.choice.\(summary.id.uuidString.lowercased())")
                     }
                     Button("Neues Hauptdossier erstellen") {
-                        Task { await model.createNewPersonDossier() }
+                        performPersonEntry(selection: entry.selection) {
+                            await model.createNewPersonDossier()
+                        }
                     }
-                    .disabled(isAnyPersonDossierOpening)
+                    .disabled(isAnyPersonDossierOpening || personEntryContext.isPending)
                 }
             }
+        }
+    }
+
+    private func performPersonEntry(
+        selection: PersonDossierAnchorSelection,
+        operation: @escaping @MainActor () async -> Void
+    ) {
+        personEntryContext.observeInput(personEntryInput)
+        personEntryContext.perform(selection: selection) {
+            await operation()
+            return PersonDossierEntryResult(
+                choices: model.personDossierChoices,
+                errorCode: model.lastErrorCode
+            )
         }
     }
 
@@ -244,11 +271,11 @@ struct DocumentDNAInspector: View {
     }
 
     private var hasUnresolvedPersonDossierChoice: Bool {
-        pendingPersonSelection != nil && !model.personDossierChoices.isEmpty
+        personEntryContext.pendingSelection != nil && !personEntryContext.choices.isEmpty
     }
 
     private func isOpeningPersonDossier(for entry: PersonDossierEntryPresentation) -> Bool {
-        isAnyPersonDossierOpening && pendingPersonSelection == entry.selection
+        personEntryContext.isPending && personEntryContext.pendingSelection == entry.selection
     }
 
     @ViewBuilder
