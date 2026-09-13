@@ -1091,10 +1091,14 @@ final class LinkLoomUISmokeTests: XCTestCase {
         let window = application.windows.firstMatch
         XCTAssertTrue(window.waitForExistence(timeout: 10), "LinkLoom window is unavailable")
         let titleBar = window.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.04))
+        let targetX: CGFloat = 12
         titleBar.press(
             forDuration: 0.1,
-            thenDragTo: titleBar.withOffset(CGVector(dx: 0, dy: -100))
+            thenDragTo: titleBar.withOffset(
+                CGVector(dx: targetX - window.frame.minX, dy: -100)
+            )
         )
+        resizeWindow(window, toWidth: 1_000)
     }
 
     private func resizeWindow(_ window: XCUIElement, toWidth width: CGFloat) {
