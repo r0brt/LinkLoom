@@ -74,6 +74,48 @@ Alle Analysen, Entscheidungen und Dossier-Korrekturen bleiben lokal. Die
 ausgewählten Originaldateien werden weder umbenannt noch verschoben oder
 inhaltlich verändert.
 
+## Meine Mutter im Pflegeheim
+
+Wähle ein analysiertes Dokument und beim gewünschten primären Personenbefund
+„Hauptdossier erstellen“ beziehungsweise „Hauptdossier öffnen“. Unterstützt
+werden Bewohnerin, versicherte Person, Kontoinhaberin, Rechnungsempfängerin und
+Vollmachtgeberin; eine freie Namenseingabe gibt es nicht. Das Hauptdossier heißt
+„Meine Mutter im Pflegeheim“ und zeigt den ausgewählten Namen als Personenanker.
+Bei gleichem Namen aus einem anderen Ursprung musst du ausdrücklich ein
+vorhandenes Dossier oder „Neues Hauptdossier erstellen“ wählen: Namensgleichheit
+beweist keine Personenidentität.
+
+Prüfe „Direkte Dokumente“ und „Kosten und Zahlungen“ sowie die Gründe jeder
+Zuordnung. Exakte normalisierte Namensübereinstimmungen in primären Rollen
+werden automatisch aufgenommen, sofern kein unterstützter Identitätskonflikt
+besteht. Eine zugehörige Rechnung kann ihre aktuell bestätigte Zahlung über
+genau eine Rechnungs-/Zahlungsbeziehung einbeziehen. Dokumentauswahl und
+„Gegenstück anzeigen“ führen zu den verfügbaren Ursprungsnachweisen im Inspector.
+„Inspector schließen“ kehrt zum unverändert ausgewählten Dossier zurück.
+In schmalen Fenstern wird die Seitenleiste bei geöffnetem Inspector ausgeblendet;
+nach dem Schließen erscheint sie wieder, sofern sie zuvor eingeblendet war.
+
+Sekundäre Rollen und unterstützte Identitätskonflikte erscheinen als Vorschläge.
+Mit „Aufnehmen“ oder „Ablehnen“ entscheidest du für dieses Dossier.
+„Aus Dossier entfernen“ schließt ein Mitglied hier aus; unter „Korrekturen“
+setzen „Aufnahme zurücksetzen“ und „Ausschluss zurücksetzen“ die jeweilige
+Entscheidung zurück. Danach bestimmt die aktuelle Analyse, ob das Dokument als
+Mitglied, Vorschlag oder gar nicht erscheint. Sichtbare Schaltflächen,
+Tastaturbedienung, VoiceOver-Beschriftungen und Statusansagen unterstützen die
+Bedienung; Gründe und Status sind als Text verfügbar.
+
+Personenanker und Entscheidungen werden lokal gespeichert und bleiben nach
+einem Neustart erhalten. Eine erneute Analyse aktualisiert die Zuordnungen;
+gespeicherte Aufnahme- und Ausschlussentscheidungen bleiben bestehen, solange
+der Dokumenteintrag existiert. Ein veralteter oder nicht verfügbarer
+Ursprungsnachweis ist ein normaler Zustand. Auch nach Entfernen einer Quelle
+aus dem Katalog bleiben Personenanker und Hauptdossier erhalten; Dokumente
+dieser Quelle und ihre dokumentgebundenen Entscheidungen entfallen.
+
+Verarbeitung und Entscheidungen bleiben auf dem Mac. Die Originaldateien sind
+maßgeblich und werden weder umbenannt, verschoben, gelöscht noch umgeschrieben.
+Das Entfernen einer Katalogquelle verändert keine Quelldatei.
+
 ## Optional 10,000-document benchmark
 
 The performance fixture is disabled during normal test runs. Enable it explicitly with:
@@ -98,6 +140,24 @@ xcodebuild test \
   -derivedDataPath /tmp/LinkLoomDerivedData \
   -resultBundlePath /tmp/LinkLoomUISmoke.xcresult
 ```
+
+This command is the authoritative full UI smoke. The scheme exercises both
+the costs workflow and the complete person-dossier workflow, including hidden
+entries, symbolic links, restart, reanalysis, and catalog source removal. Its
+integrity assertions compare relative paths, entry kinds, SHA-256, byte counts,
+modification dates, POSIX modes, and symbolic-link destinations with the initial
+snapshot. A run passes only when all workflow and integrity assertions pass.
+
+On an interactive macOS host, enable **Keyboard navigation** in System Settings
+→ Keyboard for the Tab-reachability checks and leave the desktop undisturbed
+during the run. Restore the original setting afterward. Process-local launch
+defaults alone do not enable AppKit keyboard navigation on the verified host.
+
+For a rollback of the visible person-dossier UI, retain the Core timestamp
+codecs for person anchors and accepted membership evidence. They read both
+legacy TEXT dates and newly written precise REAL dates; older Core readers
+interpret the new numeric dates using a different epoch. No schema migration
+or source-file rollback is required.
 
 The `Swift / UI smoke` pull-request job is authoritative when the local host
 has only the Xcode Command Line Tools.
